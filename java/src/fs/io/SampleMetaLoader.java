@@ -11,30 +11,41 @@ import java.sql.Statement;
 
 public class SampleMetaLoader {
     public static SampleMeta load(String sampleMetaPath, BuildShardConfig config, boolean orderBySampleId) throws SQLException {
+        long[] sampleIds;
+        double[] y;
+        byte[] yMask;
         try (Connection conn = DuckDBUtils.connect(null)) {
-            String orderClause = orderBySampleId ? (" ORDER BY " + config.sampleIdCol) : "";
-            String countSql = "SELECT COUNT(*) FROM read_parquet(" + DuckDBUtils.quotePath(sampleMetaPath) + ")";
-            int count;
-            try (Statement st = conn.createStatement();
-                 ResultSet rs = st.executeQuery(countSql)) {
-                rs.next();
-                count = rs.getInt(1);
+            int count = countRows(conn, sampleMetaPath);
+            sampleIds = new long[count];
+            y = new double[count];
+            yMask = new byte[count];
+
+            StringBuilder sql = new StringBuilder();
+            sql.append("SELECT ").append(config.sampleIdCol).append(", ").append(config.yCol);
+            if (hasColumn(conn, sampleMetaPath, config.pathCol)) {
+                sql.append(", ").append(config.pathCol);
+            }
+            sql.append(" FROM read_parquet(").append(DuckDBUtils.quotePath(sampleMetaPath)).append(")");
+            if (orderBySampleId) {
+                sql.append(" ORDER BY ").append(config.sampleIdCol);
             }
 
-            long[] sampleIds = new long[count];
-            double[] y = new double[count];
-            byte[] yMask = new byte[count];
-            String[] samplePaths = new String[count];
-
-            String sql = "SELECT " + config.sampleIdCol + ", " + config.yCol + ", " + config.pathCol
-                    + " FROM read_parquet(" + DuckDBUtils.quotePath(sampleMetaPath) + ")"
-                    + orderClause;
+            String[] samplePaths = null;
             File baseDir = new File(sampleMetaPath).getParentFile();
             int i = 0;
             try (Statement st = conn.createStatement();
-                 ResultSet rs = st.executeQuery(sql)) {
+                 ResultSet rs = st.executeQuery(sql.toString())) {
+                java.sql.ResultSetMetaData meta = rs.getMetaData();
+                boolean hasPath = meta.getColumnCount() >= 3;
+                if (hasPath) {
+                    samplePaths = new String[count];
+                }
                 while (rs.next()) {
-                    sampleIds[i] = rs.getLong(1);
+                    long sampleId = rs.getLong(1);
+                    sampleIds[i] = sampleId;
+                    if (sampleId != i) {
+                        throw new SQLException("sample_meta sample_id must equal dense row order 0..n-1; row=" + i + " value=" + sampleId);
+                    }
                     Object yObj = rs.getObject(2);
                     double yVal = (yObj == null) ? Double.NaN : rs.getDouble(2);
                     if (Double.isNaN(yVal)) {
@@ -44,14 +55,16 @@ public class SampleMetaLoader {
                         y[i] = yVal;
                         yMask[i] = 1;
                     }
-                    String path = rs.getString(3);
-                    if (path != null && baseDir != null) {
-                        File f = new File(path);
-                        if (!f.isAbsolute()) {
-                            path = new File(baseDir, path).getAbsolutePath();
+                    if (hasPath) {
+                        String path = rs.getString(3);
+                        if (path != null && baseDir != null) {
+                            File f = new File(path);
+                            if (!f.isAbsolute()) {
+                                path = new File(baseDir, path).getAbsolutePath();
+                            }
                         }
+                        samplePaths[i] = path;
                     }
-                    samplePaths[i] = path;
                     i++;
                 }
             }
@@ -59,8 +72,67 @@ public class SampleMetaLoader {
         }
     }
 
+    public static SampleMeta loadTargets(String sampleMetaPath, BuildShardConfig config, boolean orderBySampleId) throws SQLException {
+        BuildShardConfig copy = copyConfig(config);
+        copy.pathCol = "";
+        SampleMeta meta = load(sampleMetaPath, copy, orderBySampleId);
+        return new SampleMeta(meta.sampleIds, meta.y, meta.yMask, null);
+    }
+
+    public static SampleMeta loadTargets(String sampleMetaPath, String yCol, String sampleIdCol) throws SQLException {
+        BuildShardConfig cfg = new BuildShardConfig();
+        cfg.yCol = yCol;
+        cfg.sampleIdCol = sampleIdCol;
+        cfg.pathCol = "";
+        return loadTargets(sampleMetaPath, cfg, true);
+    }
+
     public static SampleMeta load(String sampleMetaPath) throws SQLException {
         BuildShardConfig cfg = new BuildShardConfig();
         return load(sampleMetaPath, cfg, true);
+    }
+
+    private static BuildShardConfig copyConfig(BuildShardConfig cfg) {
+        BuildShardConfig out = new BuildShardConfig();
+        out.nShards = cfg.nShards;
+        out.targetShardBytes = cfg.targetShardBytes;
+        out.featureIdCol = cfg.featureIdCol;
+        out.valueCol = cfg.valueCol;
+        out.sampleIdCol = cfg.sampleIdCol;
+        out.sampleKeyCol = cfg.sampleKeyCol;
+        out.featureKeyCol = cfg.featureKeyCol;
+        out.featureMetaPath = cfg.featureMetaPath;
+        out.pathCol = cfg.pathCol;
+        out.yCol = cfg.yCol;
+        out.statsYCols = cfg.statsYCols;
+        out.valuesType = cfg.valuesType;
+        out.validType = cfg.validType;
+        return out;
+    }
+
+    private static int countRows(Connection conn, String path) throws SQLException {
+        String sql = "SELECT COUNT(*) FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")";
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            rs.next();
+            return rs.getInt(1);
+        }
+    }
+
+    private static boolean hasColumn(Connection conn, String path, String columnName) throws SQLException {
+        if (columnName == null || columnName.isEmpty()) {
+            return false;
+        }
+        String sql = "SELECT * FROM read_parquet(" + DuckDBUtils.quotePath(path) + ") LIMIT 0";
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            java.sql.ResultSetMetaData meta = rs.getMetaData();
+            for (int i = 1; i <= meta.getColumnCount(); i++) {
+                if (columnName.equalsIgnoreCase(meta.getColumnLabel(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 }

@@ -3,6 +3,8 @@ package fs.io;
 import fs.model.ArrayBinaryShardInfo;
 import fs.model.ArrayFeatureBlock;
 import fs.model.ArrayShardManifest;
+import fs.model.LogicalType;
+import fs.model.PointColumnSpec;
 
 import java.io.File;
 import java.io.IOException;
@@ -10,18 +12,35 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 public class ArrayBinaryShardReader implements AutoCloseable {
     private final ArrayShardManifest manifest;
     private final HashMap<Integer, CachedShard> shardCache;
+    private final HashMap<String, HashMap<Long, String>> dictionaryCache;
 
     public ArrayBinaryShardReader(ArrayShardManifest manifest) {
         this.manifest = manifest;
         this.shardCache = new HashMap<Integer, CachedShard>();
+        this.dictionaryCache = new HashMap<String, HashMap<Long, String>>();
+    }
+
+    public List<PointColumnSpec> pointSchema() {
+        return manifest.pointSchema;
     }
 
     public ArrayFeatureBlock loadBlock(int shardId, int rowInShard) throws IOException {
+        return loadBlock(shardId, rowInShard, false);
+    }
+
+    public ArrayFeatureBlock loadBlock(int shardId, int rowInShard, boolean decodeCategorical) throws IOException {
         CachedShard shard = shard(shardId);
         ArrayBinaryShardInfo shardInfo = manifest.shardInfo(shardId);
         if (rowInShard < 0 || rowInShard >= shardInfo.blockCount) {
@@ -39,15 +58,17 @@ public class ArrayBinaryShardReader implements AutoCloseable {
         int sampleCount = sampleCountForBlock(blockId);
 
         ArrayBinaryFormat.BlockIndexRecord record = ArrayBinaryFormat.readBlockRecord(shard.blocksIndexChannel, rowInShard);
+        ArrayFeatureBlock block;
         if (record.dataLength == 0L) {
-            return emptyBlock(featureId, blockId, sampleIdStart, sampleCount);
+            block = emptyBlock(featureId, blockId, sampleIdStart, sampleCount, decodeCategorical);
+        } else {
+            if (record.codec != ArrayBinaryFormat.CODEC_NONE) {
+                throw new IOException("unsupported codec id=" + record.codec + " for shard_id=" + shardId);
+            }
+            byte[] payload = ArrayBinaryFormat.readBytes(shard.blocksDataChannel, record.dataOffset, (int) record.dataLength);
+            block = decodePayload(featureId, blockId, sampleIdStart, sampleCount, record, payload, decodeCategorical);
         }
-        if (record.codec != ArrayBinaryFormat.CODEC_NONE) {
-            throw new IOException("unsupported codec id=" + record.codec + " for shard_id=" + shardId);
-        }
-
-        byte[] payload = ArrayBinaryFormat.readBytes(shard.blocksDataChannel, record.dataOffset, (int) record.dataLength);
-        return decodePayload(featureId, blockId, sampleIdStart, sampleCount, record, payload);
+        return block;
     }
 
     private ArrayFeatureBlock decodePayload(
@@ -56,7 +77,8 @@ public class ArrayBinaryShardReader implements AutoCloseable {
             long expectedSampleIdStart,
             int expectedSampleCount,
             ArrayBinaryFormat.BlockIndexRecord record,
-            byte[] payload) throws IOException {
+            byte[] payload,
+            boolean decodeCategorical) throws IOException {
         if (payload.length < ArrayBinaryFormat.BLOCK_PAYLOAD_HEADER_BYTES) {
             throw new IOException("payload too short: " + payload.length);
         }
@@ -66,13 +88,13 @@ public class ArrayBinaryShardReader implements AutoCloseable {
         long sampleIdStart = bb.getLong();
         int sampleCount = bb.getInt();
         int codec = bb.get() & 0xFF;
-        bb.get();
-        bb.getShort();
+        int headerFlags = bb.get() & 0xFF;
+        int schemaColumnCount = bb.getShort() & 0xFFFF;
         long pointCount = bb.getLong();
         int flagsBytes = bb.getInt();
         int offsetsBytes = bb.getInt();
-        int timeBytes = bb.getInt();
-        int valueBytes = bb.getInt();
+        int encodedColumnsOrTimeBytes = bb.getInt();
+        int valueBytesOrReserved = bb.getInt();
 
         if (featureId != expectedFeatureId || blockId != expectedBlockId) {
             throw new IOException("payload/index mismatch");
@@ -87,20 +109,10 @@ public class ArrayBinaryShardReader implements AutoCloseable {
             throw new IOException("unsupported codec id=" + codec);
         }
 
-        int expectedLength = ArrayBinaryFormat.BLOCK_PAYLOAD_HEADER_BYTES + flagsBytes + offsetsBytes + timeBytes + valueBytes;
-        if (expectedLength != payload.length) {
-            throw new IOException("payload length mismatch: expected=" + expectedLength + " got=" + payload.length);
-        }
-
         byte[] sampleFlags = new byte[sampleCount];
         bb.get(sampleFlags);
         byte[] sampleOffsetsBlob = new byte[offsetsBytes];
         bb.get(sampleOffsetsBlob);
-        byte[] timeBlob = new byte[timeBytes];
-        bb.get(timeBlob);
-        byte[] valueBlob = new byte[valueBytes];
-        bb.get(valueBlob);
-
         long[] sampleOffsets = ArrayUtils.decodeLongArray(sampleOffsetsBlob);
         if (sampleOffsets.length != sampleCount + 1) {
             throw new IOException("invalid sample_offsets length=" + sampleOffsets.length);
@@ -108,10 +120,44 @@ public class ArrayBinaryShardReader implements AutoCloseable {
         if (sampleOffsets[sampleOffsets.length - 1] != pointCount) {
             throw new IOException("point_count/sample_offsets mismatch");
         }
-        double[] time = ArrayUtils.decodeDoubleArray(timeBlob);
-        double[] value = ArrayUtils.decodeDoubleArray(valueBlob);
-        if (time.length != pointCount || value.length != pointCount) {
-            throw new IOException("point_count mismatch");
+
+        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
+        if (manifest.version == ArrayBinaryFormat.LEGACY_FILE_VERSION) {
+            int expectedLength = ArrayBinaryFormat.BLOCK_PAYLOAD_HEADER_BYTES + flagsBytes + offsetsBytes + encodedColumnsOrTimeBytes + valueBytesOrReserved;
+            if (expectedLength != payload.length) {
+                throw new IOException("payload length mismatch: expected=" + expectedLength + " got=" + payload.length);
+            }
+            byte[] timeBlob = new byte[encodedColumnsOrTimeBytes];
+            bb.get(timeBlob);
+            byte[] valueBlob = new byte[valueBytesOrReserved];
+            bb.get(valueBlob);
+            columns.put("time", ArrayUtils.decodeDoubleArray(timeBlob, (int) pointCount));
+            columns.put("value", ArrayUtils.decodeDoubleArray(valueBlob, (int) pointCount));
+        } else {
+            if (schemaColumnCount != manifest.pointSchema.size()) {
+                throw new IOException("payload point_schema mismatch: expected=" + manifest.pointSchema.size() + " got=" + schemaColumnCount);
+            }
+            int expectedLength = ArrayBinaryFormat.BLOCK_PAYLOAD_HEADER_BYTES + flagsBytes + offsetsBytes + encodedColumnsOrTimeBytes;
+            if (expectedLength != payload.length) {
+                throw new IOException("payload length mismatch: expected=" + expectedLength + " got=" + payload.length);
+            }
+            byte[] encodedColumns = new byte[encodedColumnsOrTimeBytes];
+            bb.get(encodedColumns);
+            int cursor = 0;
+            for (PointColumnSpec spec : manifest.pointSchema) {
+                int byteCount = ArrayUtils.pointColumnBytes(spec, (int) pointCount);
+                byte[] blob = new byte[byteCount];
+                System.arraycopy(encodedColumns, cursor, blob, 0, byteCount);
+                cursor += byteCount;
+                Object values = ArrayUtils.decodePointColumn(blob, pointCount, spec);
+                if (decodeCategorical && spec.logicalType == LogicalType.CATEGORICAL && spec.dictionaryPath != null && !spec.dictionaryPath.isEmpty()) {
+                    values = ArrayUtils.decodeCategoricalLabels(values, loadDictionary(spec.dictionaryPath));
+                }
+                columns.put(spec.name, values);
+            }
+            if (cursor != encodedColumns.length) {
+                throw new IOException("decoded point column bytes mismatch: expected=" + encodedColumns.length + " got=" + cursor);
+            }
         }
         return new ArrayFeatureBlock(
                 featureId,
@@ -121,11 +167,15 @@ public class ArrayBinaryShardReader implements AutoCloseable {
                 pointCount,
                 sampleFlags,
                 sampleOffsets,
-                time,
-                value);
+                columns);
     }
 
-    private ArrayFeatureBlock emptyBlock(int featureId, int blockId, long sampleIdStart, int sampleCount) {
+    private ArrayFeatureBlock emptyBlock(int featureId, int blockId, long sampleIdStart, int sampleCount, boolean decodeCategorical) {
+        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
+        List<PointColumnSpec> schema = manifest.pointSchema;
+        for (PointColumnSpec spec : schema) {
+            columns.put(spec.name, ArrayUtils.emptyPointColumn(spec, decodeCategorical && spec.logicalType == LogicalType.CATEGORICAL));
+        }
         return new ArrayFeatureBlock(
                 featureId,
                 blockId,
@@ -134,8 +184,7 @@ public class ArrayBinaryShardReader implements AutoCloseable {
                 0L,
                 new byte[sampleCount],
                 new long[sampleCount + 1],
-                new double[0],
-                new double[0]);
+                columns);
     }
 
     private int sampleCountForBlock(int blockId) {
@@ -145,6 +194,27 @@ public class ArrayBinaryShardReader implements AutoCloseable {
             return 0;
         }
         return (int) Math.min((long) manifest.samplesPerBlock, remaining);
+    }
+
+    private HashMap<Long, String> loadDictionary(String dictionaryPath) throws IOException {
+        HashMap<Long, String> cached = dictionaryCache.get(dictionaryPath);
+        if (cached != null) {
+            return cached;
+        }
+        HashMap<Long, String> out = new HashMap<Long, String>();
+        try (Connection conn = DuckDBUtils.connect(null)) {
+            String sql = "SELECT code, label FROM read_parquet(" + DuckDBUtils.quotePath(dictionaryPath) + ") ORDER BY code";
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery(sql)) {
+                while (rs.next()) {
+                    out.put(rs.getLong(1), rs.getString(2));
+                }
+            }
+        } catch (Exception e) {
+            throw new IOException("failed to load categorical dictionary: " + dictionaryPath, e);
+        }
+        dictionaryCache.put(dictionaryPath, out);
+        return out;
     }
 
     private CachedShard shard(int shardId) throws IOException {
@@ -182,6 +252,7 @@ public class ArrayBinaryShardReader implements AutoCloseable {
             }
         }
         shardCache.clear();
+        dictionaryCache.clear();
         if (first != null) {
             throw first;
         }

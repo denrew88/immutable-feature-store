@@ -1,8 +1,10 @@
 package fs.model;
 
 import java.io.File;
+import java.util.List;
 
 public class ArrayShardManifest {
+    public final int version;
     public final String sampleMetaPath;
     public final String featureMetaPath;
     public final int nSamples;
@@ -21,8 +23,10 @@ public class ArrayShardManifest {
     public final String sampleKeyCol;
     public final String featureKeyCol;
     public final ArrayBinaryShardInfo[] shards;
+    public final List<PointColumnSpec> pointSchema;
 
     public ArrayShardManifest(
+            int version,
             String sampleMetaPath,
             String featureMetaPath,
             int nSamples,
@@ -40,7 +44,9 @@ public class ArrayShardManifest {
             String endianness,
             String sampleKeyCol,
             String featureKeyCol,
-            ArrayBinaryShardInfo[] shards) {
+            ArrayBinaryShardInfo[] shards,
+            List<PointColumnSpec> pointSchema) {
+        this.version = version;
         this.sampleMetaPath = sampleMetaPath;
         this.featureMetaPath = featureMetaPath;
         this.nSamples = nSamples;
@@ -59,6 +65,7 @@ public class ArrayShardManifest {
         this.sampleKeyCol = sampleKeyCol;
         this.featureKeyCol = featureKeyCol;
         this.shards = (shards == null) ? new ArrayBinaryShardInfo[0] : shards;
+        this.pointSchema = PointColumnSpec.normalizeList(pointSchema);
     }
 
     public ArrayBinaryShardInfo shardInfo(int shardId) {

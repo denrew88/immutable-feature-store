@@ -1,5 +1,7 @@
 package fs.io;
 
+import java.util.Map;
+
 public final class ArrayFeatureFlags {
     public static final byte PRESENT = 0x01;
     public static final byte EMPTY = 0x02;
@@ -37,6 +39,29 @@ public final class ArrayFeatureFlags {
         }
         if (hasNonfiniteValue) {
             flags |= HAS_NONFINITE_VALUE;
+        }
+        return flags;
+    }
+
+    public static byte compute(Map<String, Object> columns) {
+        if (columns == null) {
+            throw new IllegalArgumentException("columns must not be null");
+        }
+        Object timeValues = columns.get("time");
+        Object valueValues = columns.get("value");
+        if (timeValues != null && valueValues != null) {
+            return compute(
+                    ArrayUtils.toDoubleArray(timeValues, "time"),
+                    ArrayUtils.toDoubleArray(valueValues, "value"));
+        }
+        int traceLen = 0;
+        for (Object values : columns.values()) {
+            traceLen = ArrayUtils.pointColumnLength(values);
+            break;
+        }
+        byte flags = PRESENT;
+        if (traceLen == 0) {
+            flags |= EMPTY;
         }
         return flags;
     }

@@ -4,6 +4,7 @@ import fs.config.ArrayShardConfig;
 import fs.model.ArrayBinaryShardInfo;
 import fs.model.ArrayBundleManifest;
 import fs.model.ArrayShardManifest;
+import fs.model.PointColumnSpec;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -18,7 +19,9 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public class ArrayShardBuilder {
     public static String buildFromBundles(String bundleManifestPath, String outDir, ArrayShardConfig config) throws Exception {
@@ -44,26 +47,27 @@ public class ArrayShardBuilder {
         String sourceFeatureMetaPath = resolveFeatureMetaPath(bundleManifestPath, bundleManifest);
         String artifactSampleMetaPath = materializeMetadataFile(bundleManifest.sampleMetaPath, out, "sample_meta.parquet");
         String artifactFeatureMetaPath = materializeMetadataFile(sourceFeatureMetaPath, out, "feature_meta.parquet");
+        List<PointColumnSpec> pointSchema = copyCategoricalDictionaries(bundleManifest.pointSchema, out);
 
         try (Connection conn = DuckDBUtils.connect(null)) {
             validateDenseIds(conn, bundleManifest.sampleMetaPath, "sample_id");
             validateDenseIds(conn, sourceFeatureMetaPath, "feature_id");
             int nFeatures = countRows(conn, sourceFeatureMetaPath);
             int blocksPerFeature = blocksPerFeature(bundleManifest.nSamples, cfg.samplesPerBlock);
-            ArrayFeatureStats featureStats = collectFeatureStats(conn, bundleManifest, nFeatures, cfg.samplesPerBlock);
+            ArrayFeatureStats featureStats = collectFeatureStats(conn, bundleManifest, nFeatures, cfg.samplesPerBlock, pointSchema);
             int[][] shardPartitions = buildShardPartitions(featureStats, cfg);
             HashMap<Integer, Integer> featureToShard = buildFeatureToShard(shardPartitions);
-            int nShards = Math.max(1, shardPartitions.length);
 
-            BinaryShardSink sink = new BinaryShardSink(shardDir, bundleManifest.nSamples, cfg.samplesPerBlock, blocksPerFeature, shardPartitions);
+            BinaryShardSink sink = new BinaryShardSink(shardDir, bundleManifest.nSamples, cfg.samplesPerBlock, blocksPerFeature, shardPartitions, pointSchema);
             try {
-                processInputRows(conn, bundleManifest, cfg, featureToShard, sink);
+                processInputRows(conn, bundleManifest, cfg, featureToShard, sink, pointSchema);
             } finally {
                 sink.close();
             }
 
             ArrayBinaryShardInfo[] shardInfos = sink.shardInfos();
             ArrayShardManifest manifest = new ArrayShardManifest(
+                    ArrayBinaryFormat.FILE_VERSION,
                     artifactSampleMetaPath,
                     artifactFeatureMetaPath,
                     bundleManifest.nSamples,
@@ -75,17 +79,38 @@ public class ArrayShardBuilder {
                     "INT32",
                     "UINT8",
                     "INT64",
-                    "FLOAT64_LE",
-                    "FLOAT64_LE",
+                    hasColumn(pointSchema, "time") ? "FLOAT64_LE" : "",
+                    hasColumn(pointSchema, "value") ? "FLOAT64_LE" : "",
                     ArrayBinaryFormat.DEFAULT_CODEC_NAME,
                     ArrayBinaryFormat.FILE_ENDIANNESS,
                     ArrayBinaryFormat.DEFAULT_SAMPLE_KEY_COL,
                     ArrayBinaryFormat.DEFAULT_FEATURE_KEY_COL,
-                    shardInfos);
+                    shardInfos,
+                    pointSchema);
             ArrayShardManifestIO.write(manifest, manifestPath);
         }
 
         return manifestPath;
+    }
+
+    private static List<PointColumnSpec> copyCategoricalDictionaries(List<PointColumnSpec> pointSchema, File outDir) throws IOException {
+        List<PointColumnSpec> normalized = PointColumnSpec.normalizeList(pointSchema);
+        ArrayList<PointColumnSpec> out = new ArrayList<PointColumnSpec>(normalized.size());
+        File dictDir = new File(outDir, "categorical_dictionaries");
+        for (PointColumnSpec spec : normalized) {
+            if (spec.dictionaryPath == null || spec.dictionaryPath.isEmpty()) {
+                out.add(spec);
+                continue;
+            }
+            if (!dictDir.exists() && !dictDir.mkdirs()) {
+                throw new IOException("failed to create categorical dictionary dir: " + dictDir.getAbsolutePath());
+            }
+            File src = new File(spec.dictionaryPath).getAbsoluteFile();
+            File dst = new File(dictDir, src.getName()).getAbsoluteFile();
+            Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            out.add(spec.withDictionaryPath(dst.getAbsolutePath()));
+        }
+        return out;
     }
 
     private static String resolveFeatureMetaPath(String bundleManifestPath, ArrayBundleManifest bundleManifest) {
@@ -141,13 +166,22 @@ public class ArrayShardBuilder {
         return Math.max(1, (nSamples + samplesPerBlock - 1) / samplesPerBlock);
     }
 
-    private static ArrayFeatureStats collectFeatureStats(Connection conn, ArrayBundleManifest manifest, int nFeatures, int samplesPerBlock) throws SQLException {
+    private static ArrayFeatureStats collectFeatureStats(
+            Connection conn,
+            ArrayBundleManifest manifest,
+            int nFeatures,
+            int samplesPerBlock,
+            List<PointColumnSpec> pointSchema) throws SQLException {
         long[] estimatedBytes = new long[nFeatures];
         Arrays.fill(estimatedBytes, 1L);
         if (manifest.nBundles <= 0) {
             return new ArrayFeatureStats(buildDenseFeatureIds(nFeatures), estimatedBytes);
         }
         long blockOverhead = estimateBlockOverheadBytes(samplesPerBlock);
+        long bytesPerPoint = 0L;
+        for (PointColumnSpec spec : pointSchema) {
+            bytesPerPoint += spec.storageType.itemSize;
+        }
         String sql = "SELECT feature_id, SUM(trace_len) AS total_trace_len, COUNT(DISTINCT sample_id / " + samplesPerBlock + ") AS block_count "
                 + "FROM read_parquet(" + buildParquetPathListLiteral(manifest) + ") "
                 + "GROUP BY feature_id ORDER BY feature_id";
@@ -160,7 +194,7 @@ public class ArrayShardBuilder {
                 }
                 long totalTraceLen = rs.getLong(2);
                 long blockCount = rs.getLong(3);
-                long estBytes = Math.max(1L, totalTraceLen * 16L + blockCount * blockOverhead);
+                long estBytes = Math.max(1L, totalTraceLen * bytesPerPoint + blockCount * blockOverhead);
                 estimatedBytes[featureId] = estBytes;
             }
         }
@@ -263,13 +297,12 @@ public class ArrayShardBuilder {
             ArrayBundleManifest manifest,
             ArrayShardConfig config,
             HashMap<Integer, Integer> featureToShard,
-            BinaryShardSink sink) throws SQLException {
+            BinaryShardSink sink,
+            List<PointColumnSpec> pointSchema) throws SQLException {
         if (manifest.nBundles <= 0) {
             return;
         }
-        String sql = "SELECT feature_id, sample_id, flags, trace_len, time_blob, value_blob "
-                + "FROM read_parquet(" + buildParquetPathListLiteral(manifest) + ") "
-                + "ORDER BY feature_id, sample_id";
+        String sql = buildSelectSql(manifest, config.samplesPerBlock, pointSchema);
 
         int currentFeatureId = Integer.MIN_VALUE;
         Integer currentFeatureShardId = null;
@@ -282,8 +315,6 @@ public class ArrayShardBuilder {
                 long sampleId = rs.getLong(2);
                 byte flags = rs.getByte(3);
                 int traceLen = rs.getInt(4);
-                byte[] timeBlob = rs.getBytes(5);
-                byte[] valueBlob = rs.getBytes(6);
 
                 if (sampleId < 0 || sampleId >= manifest.nSamples) {
                     throw new SQLException("sample_id out of range: " + sampleId);
@@ -291,8 +322,14 @@ public class ArrayShardBuilder {
                 if (traceLen < 0) {
                     throw new SQLException("trace_len must be >= 0");
                 }
-                validateBlobLength(timeBlob, traceLen, "time_blob");
-                validateBlobLength(valueBlob, traceLen, "value_blob");
+
+                LinkedHashMap<String, byte[]> columnBlobs = new LinkedHashMap<String, byte[]>();
+                int columnIndex = 5;
+                for (PointColumnSpec spec : pointSchema) {
+                    byte[] blob = rs.getBytes(columnIndex++);
+                    validatePointBlobLength(blob, traceLen, spec);
+                    columnBlobs.put(spec.name, (blob == null) ? new byte[0] : blob);
+                }
 
                 if (featureId != currentFeatureId) {
                     finalizeBlock(block, currentFeatureId, currentFeatureShardId, sink);
@@ -307,20 +344,31 @@ public class ArrayShardBuilder {
                 int blockId = (int) (sampleId / config.samplesPerBlock);
                 if (block == null || block.blockId != blockId) {
                     finalizeBlock(block, currentFeatureId, currentFeatureShardId, sink);
-                    block = new BlockAccumulator(featureId, blockId, config.samplesPerBlock, manifest.nSamples);
+                    block = new BlockAccumulator(featureId, blockId, config.samplesPerBlock, manifest.nSamples, pointSchema);
                 }
-                block.append(sampleId, flags, traceLen, timeBlob, valueBlob);
+                block.append(sampleId, flags, traceLen, columnBlobs);
             }
         }
 
         finalizeBlock(block, currentFeatureId, currentFeatureShardId, sink);
     }
 
-    private static void validateBlobLength(byte[] blob, int traceLen, String name) throws SQLException {
-        int expectedBytes = traceLen * 8;
+    private static String buildSelectSql(ArrayBundleManifest manifest, int samplesPerBlock, List<PointColumnSpec> pointSchema) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("SELECT feature_id, sample_id, flags, trace_len");
+        for (PointColumnSpec spec : pointSchema) {
+            sb.append(", ").append(blobColumnName(spec.name));
+        }
+        sb.append(" FROM read_parquet(").append(buildParquetPathListLiteral(manifest)).append(")");
+        sb.append(" ORDER BY feature_id, sample_id");
+        return sb.toString();
+    }
+
+    private static void validatePointBlobLength(byte[] blob, int traceLen, PointColumnSpec spec) throws SQLException {
+        int expectedBytes = ArrayUtils.pointColumnBytes(spec, traceLen);
         int actual = (blob == null) ? 0 : blob.length;
         if (actual != expectedBytes) {
-            throw new SQLException(name + " length mismatch: expected " + expectedBytes + " got " + actual);
+            throw new SQLException(spec.name + "_blob length mismatch: expected " + expectedBytes + " got " + actual);
         }
     }
 
@@ -339,8 +387,10 @@ public class ArrayShardBuilder {
 
         int shardId = shardIdObj.intValue();
         byte[] sampleOffsetsBlob = ArrayUtils.encodeLongArray(block.sampleOffsets);
-        byte[] timeBlob = block.timeOut.toByteArray();
-        byte[] valueBlob = block.valueOut.toByteArray();
+        LinkedHashMap<String, byte[]> columnBlobs = new LinkedHashMap<String, byte[]>();
+        for (Map.Entry<String, ByteArrayOutputStream> entry : block.columnOuts.entrySet()) {
+            columnBlobs.put(entry.getKey(), entry.getValue().toByteArray());
+        }
         ArrayShardRow row = new ArrayShardRow(
                 currentFeatureId,
                 block.blockId,
@@ -349,8 +399,7 @@ public class ArrayShardBuilder {
                 block.pointCount,
                 Arrays.copyOf(block.sampleFlags, block.sampleFlags.length),
                 sampleOffsetsBlob,
-                timeBlob,
-                valueBlob);
+                columnBlobs);
         try {
             sink.writeRow(shardId, row);
         } catch (IOException e) {
@@ -371,6 +420,19 @@ public class ArrayShardBuilder {
         return sb.toString();
     }
 
+    private static boolean hasColumn(List<PointColumnSpec> pointSchema, String name) {
+        for (PointColumnSpec spec : pointSchema) {
+            if (spec.name.equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String blobColumnName(String name) {
+        return name + "_blob";
+    }
+
     private static final class ArrayFeatureStats {
         final int[] featureIds;
         final long[] estimatedBytes;
@@ -388,13 +450,12 @@ public class ArrayShardBuilder {
         final int sampleCount;
         final byte[] sampleFlags;
         final long[] sampleOffsets;
-        final ByteArrayOutputStream timeOut;
-        final ByteArrayOutputStream valueOut;
+        final LinkedHashMap<String, ByteArrayOutputStream> columnOuts;
         long pointCount;
         int nextRelativeSample;
         int presentCount;
 
-        BlockAccumulator(int featureId, int blockId, int samplesPerBlock, int nSamples) {
+        BlockAccumulator(int featureId, int blockId, int samplesPerBlock, int nSamples, List<PointColumnSpec> pointSchema) {
             this.featureId = featureId;
             this.blockId = blockId;
             this.sampleIdStart = ((long) blockId) * samplesPerBlock;
@@ -405,14 +466,16 @@ public class ArrayShardBuilder {
             }
             this.sampleFlags = new byte[sampleCount];
             this.sampleOffsets = new long[sampleCount + 1];
-            this.timeOut = new ByteArrayOutputStream();
-            this.valueOut = new ByteArrayOutputStream();
+            this.columnOuts = new LinkedHashMap<String, ByteArrayOutputStream>();
+            for (PointColumnSpec spec : pointSchema) {
+                this.columnOuts.put(spec.name, new ByteArrayOutputStream());
+            }
             this.pointCount = 0L;
             this.nextRelativeSample = 0;
             this.presentCount = 0;
         }
 
-        void append(long sampleId, byte flags, int traceLen, byte[] timeBlob, byte[] valueBlob) throws SQLException {
+        void append(long sampleId, byte flags, int traceLen, Map<String, byte[]> columnBlobs) throws SQLException {
             int relativeSample = (int) (sampleId - sampleIdStart);
             if (relativeSample < 0 || relativeSample >= sampleCount) {
                 throw new SQLException("sample_id out of block range: " + sampleId);
@@ -422,7 +485,6 @@ public class ArrayShardBuilder {
             }
 
             while (nextRelativeSample < relativeSample) {
-                sampleFlags[nextRelativeSample] = 0;
                 sampleOffsets[nextRelativeSample + 1] = pointCount;
                 nextRelativeSample++;
             }
@@ -434,11 +496,12 @@ public class ArrayShardBuilder {
             if (traceLen == 0 && !ArrayFeatureFlags.isEmpty(outFlags)) {
                 outFlags |= ArrayFeatureFlags.EMPTY;
             }
-
             sampleFlags[relativeSample] = outFlags;
+
             if (traceLen > 0) {
-                timeOut.write(timeBlob, 0, timeBlob.length);
-                valueOut.write(valueBlob, 0, valueBlob.length);
+                for (Map.Entry<String, byte[]> entry : columnBlobs.entrySet()) {
+                    columnOuts.get(entry.getKey()).write(entry.getValue(), 0, entry.getValue().length);
+                }
                 pointCount += traceLen;
             }
             sampleOffsets[relativeSample + 1] = pointCount;
@@ -448,7 +511,6 @@ public class ArrayShardBuilder {
 
         void finish() {
             while (nextRelativeSample < sampleCount) {
-                sampleFlags[nextRelativeSample] = 0;
                 sampleOffsets[nextRelativeSample + 1] = pointCount;
                 nextRelativeSample++;
             }
@@ -467,8 +529,7 @@ public class ArrayShardBuilder {
         final long pointCount;
         final byte[] sampleFlags;
         final byte[] sampleOffsetsBlob;
-        final byte[] timeBlob;
-        final byte[] valueBlob;
+        final LinkedHashMap<String, byte[]> columnBlobs;
 
         ArrayShardRow(
                 int featureId,
@@ -478,8 +539,7 @@ public class ArrayShardBuilder {
                 long pointCount,
                 byte[] sampleFlags,
                 byte[] sampleOffsetsBlob,
-                byte[] timeBlob,
-                byte[] valueBlob) {
+                LinkedHashMap<String, byte[]> columnBlobs) {
             this.featureId = featureId;
             this.blockId = blockId;
             this.sampleIdStart = sampleIdStart;
@@ -487,8 +547,7 @@ public class ArrayShardBuilder {
             this.pointCount = pointCount;
             this.sampleFlags = sampleFlags;
             this.sampleOffsetsBlob = sampleOffsetsBlob;
-            this.timeBlob = timeBlob;
-            this.valueBlob = valueBlob;
+            this.columnBlobs = columnBlobs;
         }
     }
 
@@ -499,18 +558,26 @@ public class ArrayShardBuilder {
         private final int samplesPerBlock;
         private final int blocksPerFeature;
         private final int[][] shardPartitions;
+        private final List<PointColumnSpec> pointSchema;
         private final ArrayBinaryShardInfo[] shardInfos;
 
         private int currentShardId;
         private BinaryShardWriter currentWriter;
 
-        BinaryShardSink(File shardDir, int nSamples, int samplesPerBlock, int blocksPerFeature, int[][] shardPartitions) {
+        BinaryShardSink(
+                File shardDir,
+                int nSamples,
+                int samplesPerBlock,
+                int blocksPerFeature,
+                int[][] shardPartitions,
+                List<PointColumnSpec> pointSchema) {
             this.shardDir = shardDir;
             this.nShards = shardPartitions.length;
             this.nSamples = nSamples;
             this.samplesPerBlock = samplesPerBlock;
             this.blocksPerFeature = blocksPerFeature;
             this.shardPartitions = shardPartitions;
+            this.pointSchema = pointSchema;
             this.shardInfos = new ArrayBinaryShardInfo[nShards];
             this.currentShardId = -1;
             this.currentWriter = null;
@@ -541,7 +608,8 @@ public class ArrayShardBuilder {
                     shardPartitions[shardId],
                     nSamples,
                     samplesPerBlock,
-                    blocksPerFeature);
+                    blocksPerFeature,
+                    pointSchema);
         }
 
         @Override
@@ -567,7 +635,8 @@ public class ArrayShardBuilder {
                             shardPartitions[shardId],
                             nSamples,
                             samplesPerBlock,
-                            blocksPerFeature).closeAndBuildInfo();
+                            blocksPerFeature,
+                            pointSchema).closeAndBuildInfo();
                 } catch (IOException e) {
                     if (first == null) {
                         first = e;
@@ -583,9 +652,8 @@ public class ArrayShardBuilder {
     private static final class BinaryShardWriter {
         private final int shardId;
         private final int[] featureIds;
-        private final int nSamples;
-        private final int samplesPerBlock;
         private final int blocksPerFeature;
+        private final List<PointColumnSpec> pointSchema;
         private final File blocksIndexFile;
         private final File blocksDataFile;
         private final RandomAccessFile blocksIndex;
@@ -598,12 +666,18 @@ public class ArrayShardBuilder {
         private long nextRecordIndex;
         private boolean closed;
 
-        BinaryShardWriter(File shardDir, int shardId, int[] featureIds, int nSamples, int samplesPerBlock, int blocksPerFeature) throws IOException {
+        BinaryShardWriter(
+                File shardDir,
+                int shardId,
+                int[] featureIds,
+                int nSamples,
+                int samplesPerBlock,
+                int blocksPerFeature,
+                List<PointColumnSpec> pointSchema) throws IOException {
             this.shardId = shardId;
             this.featureIds = (featureIds == null) ? new int[0] : featureIds;
-            this.nSamples = nSamples;
-            this.samplesPerBlock = samplesPerBlock;
             this.blocksPerFeature = blocksPerFeature;
+            this.pointSchema = pointSchema;
             this.featureCount = this.featureIds.length;
             this.featureIdStart = (featureCount == 0) ? 0 : this.featureIds[0];
             this.featureIdEnd = (featureCount == 0) ? -1 : this.featureIds[featureCount - 1];
@@ -637,6 +711,11 @@ public class ArrayShardBuilder {
             while (nextRecordIndex < targetRecordIndex) {
                 writeEmptyRecord();
             }
+            ByteArrayOutputStream encodedColumns = new ByteArrayOutputStream();
+            for (PointColumnSpec spec : pointSchema) {
+                byte[] blob = row.columnBlobs.get(spec.name);
+                encodedColumns.write(blob, 0, (blob == null) ? 0 : blob.length);
+            }
             long dataOffset = blocksData.getFilePointer();
             long dataLength = ArrayBinaryFormat.writeBlockPayload(
                     blocksData,
@@ -647,8 +726,8 @@ public class ArrayShardBuilder {
                     row.pointCount,
                     row.sampleFlags,
                     row.sampleOffsetsBlob,
-                    row.timeBlob,
-                    row.valueBlob,
+                    encodedColumns.toByteArray(),
+                    pointSchema.size(),
                     ArrayBinaryFormat.CODEC_NONE);
             ArrayBinaryFormat.writeBlockRecord(
                     blocksIndex,
@@ -671,6 +750,7 @@ public class ArrayShardBuilder {
                 ArrayBinaryFormat.writeFileHeader(
                         blocksIndex,
                         ArrayBinaryFormat.BLOCKS_INDEX_MAGIC,
+                        ArrayBinaryFormat.FILE_VERSION,
                         ArrayBinaryFormat.BLOCK_RECORD_BYTES,
                         blockCount,
                         featureCount,
@@ -679,6 +759,7 @@ public class ArrayShardBuilder {
                 ArrayBinaryFormat.writeFileHeader(
                         blocksData,
                         ArrayBinaryFormat.BLOCKS_DATA_MAGIC,
+                        ArrayBinaryFormat.FILE_VERSION,
                         0,
                         blockCount,
                         dataBytes,

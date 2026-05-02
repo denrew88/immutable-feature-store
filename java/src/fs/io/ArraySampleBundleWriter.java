@@ -2,6 +2,7 @@ package fs.io;
 
 import fs.config.ArrayBundleConfig;
 import fs.model.ArrayBundleManifest;
+import fs.model.PointColumnSpec;
 
 import java.io.File;
 import java.io.IOException;
@@ -9,6 +10,9 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 public class ArraySampleBundleWriter implements AutoCloseable {
     private static final int INSERT_BATCH_SIZE = 256;
@@ -20,8 +24,10 @@ public class ArraySampleBundleWriter implements AutoCloseable {
     private final File bundleDir;
     private final String manifestPath;
     private final Connection conn;
+    private final List<PointColumnSpec> pointSchema;
 
     private PreparedStatement insertPs;
+    private String insertSql;
     private int pendingBatch;
     private int currentRows;
     private long currentBytes;
@@ -29,14 +35,25 @@ public class ArraySampleBundleWriter implements AutoCloseable {
     private boolean finished;
 
     public ArraySampleBundleWriter(String outDir, String sampleMetaPath, int nSamples, ArrayBundleConfig config) throws Exception {
-        this(outDir, sampleMetaPath, "", nSamples, config);
+        this(outDir, sampleMetaPath, "", nSamples, config, null);
     }
 
     public ArraySampleBundleWriter(String outDir, String sampleMetaPath, String featureMetaPath, int nSamples, ArrayBundleConfig config) throws Exception {
+        this(outDir, sampleMetaPath, featureMetaPath, nSamples, config, null);
+    }
+
+    public ArraySampleBundleWriter(
+            String outDir,
+            String sampleMetaPath,
+            String featureMetaPath,
+            int nSamples,
+            ArrayBundleConfig config,
+            List<PointColumnSpec> pointSchema) throws Exception {
         this.sampleMetaPath = (sampleMetaPath == null) ? "" : sampleMetaPath;
         this.featureMetaPath = (featureMetaPath == null) ? "" : featureMetaPath;
         this.nSamples = nSamples;
         this.config = (config == null) ? new ArrayBundleConfig() : config;
+        this.pointSchema = PointColumnSpec.normalizeList(pointSchema);
         File out = new File(outDir);
         if (!out.exists() && !out.mkdirs()) {
             throw new IOException("Failed to create out dir: " + out.getAbsolutePath());
@@ -51,21 +68,38 @@ public class ArraySampleBundleWriter implements AutoCloseable {
     }
 
     public void appendTrace(long sampleId, int featureId, double[] time, double[] value) throws SQLException {
+        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
+        columns.put("time", (time == null) ? new double[0] : time);
+        columns.put("value", (value == null) ? new double[0] : value);
+        appendTrace(sampleId, featureId, columns);
+    }
+
+    public void appendTrace(long sampleId, int featureId, Map<String, Object> columns) throws SQLException {
         ensureOpen();
         if (sampleId < 0 || sampleId >= nSamples) {
             throw new IllegalArgumentException("sample_id out of range: " + sampleId);
         }
-        byte flags = ArrayFeatureFlags.compute(time, value);
-        int traceLen = (time == null) ? 0 : time.length;
-        byte[] timeBlob = ArrayUtils.encodeDoubleArray(time);
-        byte[] valueBlob = ArrayUtils.encodeDoubleArray(value);
-
+        LinkedHashMap<String, Object> normalized = normalizeColumns(columns);
+        byte flags = ArrayFeatureFlags.compute(normalized);
+        int traceLen = 0;
+        int paramIndex = 1;
         insertPs.setLong(1, sampleId);
         insertPs.setInt(2, featureId);
         insertPs.setByte(3, flags);
+        for (PointColumnSpec spec : pointSchema) {
+            int columnTraceLen = ArrayUtils.pointColumnLength(normalized.get(spec.name));
+            if (traceLen == 0) {
+                traceLen = columnTraceLen;
+            } else if (traceLen != columnTraceLen) {
+                throw new IllegalArgumentException("point column length mismatch for " + spec.name);
+            }
+        }
         insertPs.setInt(4, traceLen);
-        insertPs.setBytes(5, timeBlob);
-        insertPs.setBytes(6, valueBlob);
+        paramIndex = 5;
+        for (PointColumnSpec spec : pointSchema) {
+            byte[] blob = ArrayUtils.encodePointColumn(normalized.get(spec.name), spec);
+            insertPs.setBytes(paramIndex++, blob);
+        }
         insertPs.addBatch();
         pendingBatch++;
 
@@ -93,11 +127,21 @@ public class ArraySampleBundleWriter implements AutoCloseable {
                 nBundles,
                 "INT32",
                 "UINT8",
-                "FLOAT64_LE_BLOB",
-                "FLOAT64_LE_BLOB");
+                hasColumn("time") ? "FLOAT64_LE_BLOB" : "",
+                hasColumn("value") ? "FLOAT64_LE_BLOB" : "",
+                pointSchema);
         ArrayBundleManifestIO.write(manifest, manifestPath);
         finished = true;
         return manifestPath;
+    }
+
+    public void updatePointSchema(List<PointColumnSpec> pointSchema) {
+        List<PointColumnSpec> normalized = PointColumnSpec.normalizeList(pointSchema);
+        if (normalized.size() != this.pointSchema.size()) {
+            throw new IllegalArgumentException("point_schema column count cannot change after bundle writer initialization");
+        }
+        this.pointSchema.clear();
+        this.pointSchema.addAll(normalized);
     }
 
     @Override
@@ -142,20 +186,71 @@ public class ArraySampleBundleWriter implements AutoCloseable {
     }
 
     private void resetBundleTable() throws SQLException {
-        try (Statement st = conn.createStatement()) {
-            st.execute("CREATE TEMP TABLE IF NOT EXISTS tmp_array_bundle ("
-                    + "sample_id BIGINT, "
-                    + "feature_id INTEGER, "
-                    + "flags TINYINT, "
-                    + "trace_len INTEGER, "
-                    + "time_blob BLOB, "
-                    + "value_blob BLOB)");
+        StringBuilder create = new StringBuilder();
+        create.append("CREATE TEMP TABLE IF NOT EXISTS tmp_array_bundle (");
+        create.append("sample_id BIGINT, ");
+        create.append("feature_id INTEGER, ");
+        create.append("flags TINYINT, ");
+        create.append("trace_len INTEGER");
+        for (PointColumnSpec spec : pointSchema) {
+            create.append(", ").append(blobColumnName(spec.name)).append(" BLOB");
         }
-        this.insertPs = conn.prepareStatement("INSERT INTO tmp_array_bundle VALUES (?, ?, ?, ?, ?, ?)");
+        create.append(")");
+        StringBuilder insert = new StringBuilder();
+        insert.append("INSERT INTO tmp_array_bundle VALUES (?, ?, ?, ?");
+        for (int i = 0; i < pointSchema.size(); i++) {
+            insert.append(", ?");
+        }
+        insert.append(")");
+        try (Statement st = conn.createStatement()) {
+            st.execute(create.toString());
+        }
+        this.insertSql = insert.toString();
+        this.insertPs = conn.prepareStatement(insertSql);
         this.pendingBatch = 0;
     }
 
-    private static long estimateRowBytes(int traceLen) {
-        return 8L + 8L + 4L + 1L + 4L + ((long) traceLen * 16L);
+    private long estimateRowBytes(int traceLen) {
+        long bytes = 8L + 8L + 4L + 1L + 4L;
+        for (PointColumnSpec spec : pointSchema) {
+            bytes += (long) traceLen * (long) spec.storageType.itemSize;
+        }
+        return bytes;
+    }
+
+    private boolean hasColumn(String name) {
+        for (PointColumnSpec spec : pointSchema) {
+            if (spec.name.equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private LinkedHashMap<String, Object> normalizeColumns(Map<String, Object> columns) {
+        if (columns == null) {
+            throw new IllegalArgumentException("columns must not be null");
+        }
+        LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+        for (Map.Entry<String, Object> entry : columns.entrySet()) {
+            out.put(entry.getKey(), entry.getValue());
+        }
+        for (PointColumnSpec spec : pointSchema) {
+            if (!out.containsKey(spec.name)) {
+                throw new IllegalArgumentException("missing point column: " + spec.name);
+            }
+        }
+        if (out.size() != pointSchema.size()) {
+            for (String name : out.keySet()) {
+                if (!hasColumn(name)) {
+                    throw new IllegalArgumentException("unexpected point column: " + name);
+                }
+            }
+        }
+        return out;
+    }
+
+    private static String blobColumnName(String name) {
+        return name + "_blob";
     }
 }

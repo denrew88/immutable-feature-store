@@ -2,6 +2,10 @@ package fs.io;
 
 import fs.config.ArrayShardConfig;
 import fs.model.ArrayShardManifest;
+import fs.model.PointColumnSpec;
+
+import java.util.List;
+import java.util.Map;
 
 public final class ArrayBinaryShards {
     private ArrayBinaryShards() {
@@ -29,5 +33,20 @@ public final class ArrayBinaryShards {
 
     public static ArrayFeatureIdIndex loadFeatureIds(ArrayShardManifest manifest) throws Exception {
         return ArrayFeatureIdIndex.load(manifest.featureMetaPath, manifest.featureKeyCol);
+    }
+
+    public static String writeSampleMeta(List<Map<String, Object>> records, String path) throws Exception {
+        return ArrayMetadataWriter.writeSampleMeta(records, path);
+    }
+
+    public static String writeFeatureMeta(List<Map<String, Object>> records, String path) throws Exception {
+        return ArrayMetadataWriter.writeFeatureMeta(records, path);
+    }
+
+    public static ArrayDatasetBuilder newBuilder(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema) throws Exception {
+        return new ArrayDatasetBuilder(outDir, sampleMetaPath, pointSchema);
     }
 }

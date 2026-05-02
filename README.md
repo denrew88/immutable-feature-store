@@ -33,6 +33,7 @@ packages/
   array_binary_shard/
   scalar_feature_shard/
   array_binary_shard_java/
+  scalar_feature_shard_java/
 ```
 
 ## Main pieces
@@ -76,6 +77,7 @@ Scalar shard supports:
   - [java/README.md](java/README.md)
 - Java jar package:
   - [packages/array_binary_shard_java](packages/array_binary_shard_java)
+  - [packages/scalar_feature_shard_java](packages/scalar_feature_shard_java)
 
 ## Python server
 

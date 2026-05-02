@@ -3,16 +3,21 @@ package fs.io;
 import fs.config.BuildShardConfig;
 import fs.math.Pearson;
 import fs.model.SampleMeta;
+import fs.model.ScalarSampleBundleManifest;
 import fs.model.ShardManifest;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.lang.reflect.Method;
+import java.net.URLEncoder;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -20,8 +25,9 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
@@ -60,8 +66,7 @@ public class ShardBuilder {
 
         void setValue(int row, int col, double value) {
             int idx = row * nSamples + col;
-            int bytePos = idx * 8;
-            valuesBuf.putDouble(bytePos, value);
+            valuesBuf.putDouble(idx * 8, value);
         }
 
         void setValid(int row, int col) {
@@ -78,13 +83,11 @@ public class ShardBuilder {
             IOException closeEx = null;
             try {
                 tryUnmap(valuesBuf);
-            } catch (Throwable t) {
-                // best-effort; GC fallback will eventually unmap
+            } catch (Throwable ignored) {
             }
             try {
                 tryUnmap(validBuf);
-            } catch (Throwable t) {
-                // best-effort; GC fallback will eventually unmap
+            } catch (Throwable ignored) {
             }
             try {
                 valuesChannel.close();
@@ -105,6 +108,35 @@ public class ShardBuilder {
     }
 
     public static String buildShardsFromSampleMajor(String sampleMetaPath, String outDir, BuildShardConfig config) throws Exception {
+        BuildShardConfig cfg = normalizeConfig(config);
+        File featureMetaFile = resolveFeatureMetaPath(sampleMetaPath, cfg.featureIdCol, cfg);
+        SampleMeta meta = SampleMetaLoader.load(sampleMetaPath, cfg, true);
+        if (meta.samplePaths == null) {
+            throw new IllegalArgumentException("sample_meta parquet must contain sample paths to build from sample-major files");
+        }
+        int[] featureIds = loadDenseFeatureIds(featureMetaFile.getAbsolutePath(), cfg.featureIdCol);
+        return buildFromSources(sampleMetaPath, meta, featureIds, featureMetaFile, outDir, cfg, new SampleMajorRowFiller(meta.samplePaths));
+    }
+
+    public static String buildShardsFromSampleBundles(String sampleBundleManifestPath, String outDir, BuildShardConfig config) throws Exception {
+        BuildShardConfig cfg = normalizeConfig(config);
+        ScalarSampleBundleManifest stage = ScalarSampleBundleManifestIO.read(sampleBundleManifestPath);
+        SampleMeta meta = SampleMetaLoader.loadTargets(stage.sampleMetaPath, cfg, true);
+        int[] featureIds = loadDenseFeatureIds(stage.featureMetaPath, cfg.featureIdCol);
+        cfg.sampleIdCol = stage.sampleIdCol;
+        cfg.featureIdCol = stage.featureIdCol;
+        cfg.valueCol = stage.valueCol;
+        return buildFromSources(stage.sampleMetaPath, meta, featureIds, new File(stage.featureMetaPath), outDir, cfg, new SampleBundleRowFiller(stage.bundlePaths));
+    }
+
+    private static String buildFromSources(
+            String sourceSampleMetaPath,
+            SampleMeta meta,
+            int[] featureIds,
+            File sourceFeatureMetaFile,
+            String outDir,
+            BuildShardConfig config,
+            RowFiller rowFiller) throws Exception {
         File out = new File(outDir);
         String outKey = out.getCanonicalPath();
         ReentrantLock outLock = OUT_DIR_LOCKS.computeIfAbsent(outKey, new java.util.function.Function<String, ReentrantLock>() {
@@ -132,129 +164,107 @@ public class ShardBuilder {
             }
             runTmpDir = createRunTmpDir(tmpRoot);
 
-            SampleMeta meta = SampleMetaLoader.load(sampleMetaPath, config, true);
             int nSamples = meta.nSamples();
-
-            int[] featureIds = collectFeatureIds(meta.samplePaths, config.featureIdCol);
             int nFeatures = featureIds.length;
+            HashMapIntInt idToIndex = buildIdToIndex(featureIds);
+            ShardLayout layout = computeShardLayout(nFeatures, nSamples, config);
 
-            HashMap<Integer, Integer> idToIndex = new HashMap<Integer, Integer>(nFeatures * 2);
-            for (int i = 0; i < nFeatures; i++) {
-                idToIndex.put(featureIds[i], i);
-            }
-
-            int shardSize = (nFeatures + config.nShards - 1) / config.nShards;
-            int[] shardStarts = new int[config.nShards];
-            int[] shardEnds = new int[config.nShards];
-            for (int s = 0; s < config.nShards; s++) {
-                shardStarts[s] = s * shardSize;
-                shardEnds[s] = Math.min((s + 1) * shardSize, nFeatures);
-            }
-
-            for (int s = 0; s < config.nShards; s++) {
-                int start = shardStarts[s];
-                int end = shardEnds[s];
+            for (int shardId = 0; shardId < layout.nShards; shardId++) {
+                int start = layout.shardStarts[shardId];
+                int end = layout.shardEnds[shardId];
                 int rows = Math.max(0, end - start);
                 if (rows == 0) {
                     shards.add(null);
                     continue;
                 }
-                long totalValueBytes = (long) rows * nSamples * 8;
+                long totalValueBytes = (long) rows * nSamples * 8L;
                 long totalValidBytes = (long) rows * nSamples;
                 if (totalValueBytes > Integer.MAX_VALUE || totalValidBytes > Integer.MAX_VALUE) {
-                    throw new IllegalArgumentException("Shard too large for memory mapping. Increase nShards. shard=" + s);
+                    throw new IllegalArgumentException("shard too large for memory mapping; increase shard count");
                 }
                 int[] shardFeatureIds = Arrays.copyOfRange(featureIds, start, end);
-                File valuesFile = new File(runTmpDir, String.format("shard_%04d_values.bin", s));
-                File validFile = new File(runTmpDir, String.format("shard_%04d_valid.bin", s));
-                shards.add(new MappedShard(s, rows, nSamples, shardFeatureIds, valuesFile, validFile));
+                File valuesFile = new File(runTmpDir, String.format("shard_%04d_values.bin", shardId));
+                File validFile = new File(runTmpDir, String.format("shard_%04d_valid.bin", shardId));
+                shards.add(new MappedShard(shardId, rows, nSamples, shardFeatureIds, valuesFile, validFile));
             }
 
-            try (Connection conn = DuckDBUtils.connect(null)) {
-                for (int sIdx = 0; sIdx < meta.samplePaths.length; sIdx++) {
-                    String path = meta.samplePaths[sIdx];
-                    String sql = "SELECT " + config.featureIdCol + ", " + config.valueCol
-                            + " FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")";
-                    try (Statement st = conn.createStatement();
-                         ResultSet rs = st.executeQuery(sql)) {
-                        while (rs.next()) {
-                            long fidLong = rs.getLong(1);
-                            int fid = toIntFeatureId(fidLong);
-                            Object vObj = rs.getObject(2);
-                            if (vObj == null) {
-                                continue;
-                            }
-                            double v = rs.getDouble(2);
-                            if (Double.isNaN(v)) {
-                                continue;
-                            }
-                            Integer idxObj = idToIndex.get(fid);
-                            int idx = (idxObj == null) ? -1 : idxObj.intValue();
-                            if (idx < 0) {
-                                continue;
-                            }
-                            int shardId = idx / shardSize;
-                            int offset = idx - shardId * shardSize;
-                            MappedShard shard = shards.get(shardId);
-                            if (shard == null) {
-                                continue;
-                            }
-                            shard.setValue(offset, sIdx, v);
-                            shard.setValid(offset, sIdx);
-                        }
-                    }
-                }
-            }
-
+            rowFiller.fill(config, idToIndex, layout, shards);
             for (MappedShard shard : shards) {
                 if (shard != null) {
                     shard.flush();
                 }
             }
 
-            double[] r2yByRank = new double[nFeatures];
-            int[] nYOverlapByRank = new int[nFeatures];
-            Arrays.fill(r2yByRank, Double.NaN);
-            Arrays.fill(nYOverlapByRank, -1);
+            List<String> statsYCols = resolveStatsYCols(config);
+            LinkedHashMap<String, double[]> r2yByY = new LinkedHashMap<String, double[]>();
+            LinkedHashMap<String, int[]> nOverlapByY = new LinkedHashMap<String, int[]>();
+            LinkedHashMap<String, SampleMeta> targetsByY = new LinkedHashMap<String, SampleMeta>();
+            for (String statsYCol : statsYCols) {
+                targetsByY.put(statsYCol, SampleMetaLoader.loadTargets(sourceSampleMetaPath, statsYCol, config.sampleIdCol));
+                r2yByY.put(statsYCol, new double[nFeatures]);
+                nOverlapByY.put(statsYCol, new int[nFeatures]);
+                Arrays.fill(r2yByY.get(statsYCol), Double.NaN);
+                Arrays.fill(nOverlapByY.get(statsYCol), -1);
+            }
 
             try (Connection conn = DuckDBUtils.connect(null)) {
-                for (int s = 0; s < config.nShards; s++) {
-                    int start = shardStarts[s];
-                    int end = shardEnds[s];
+                for (int shardId = 0; shardId < layout.nShards; shardId++) {
+                    int start = layout.shardStarts[shardId];
+                    int end = layout.shardEnds[shardId];
                     int rows = Math.max(0, end - start);
-                    String shardPath = new File(shardDir, String.format("shard_%04d.parquet", s)).getAbsolutePath();
+                    String shardPath = new File(shardDir, String.format("shard_%04d.parquet", shardId)).getAbsolutePath();
                     if (rows == 0) {
-                        try (Statement st = conn.createStatement()) {
-                            st.execute("CREATE TEMP TABLE tmp_shard (feature_id INTEGER, value_len INTEGER, values_blob BLOB, valid_blob BLOB)");
-                            st.execute("COPY tmp_shard TO " + DuckDBUtils.quotePath(shardPath) + " (FORMAT PARQUET)");
-                            st.execute("DROP TABLE tmp_shard");
-                        }
+                        writeEmptyShard(conn, shardPath);
                         continue;
                     }
-                    MappedShard shard = shards.get(s);
-                    if (shard == null) {
-                        continue;
-                    }
-                    writeShardParquet(conn, shard, shardPath, meta.y, meta.yMask, r2yByRank, nYOverlapByRank, start);
+                    MappedShard shard = shards.get(shardId);
+                    writeShardParquet(conn, shard, shardPath, targetsByY, r2yByY, nOverlapByY, start);
                 }
             }
 
+            String sampleMetaOut = new File(out, "sample_meta.parquet").getAbsolutePath();
+            String featureMetaOut = new File(out, "feature_meta.parquet").getAbsolutePath();
+            materializeMetadataFile(sourceSampleMetaPath, sampleMetaOut);
+            materializeMetadataFile(sourceFeatureMetaFile.getAbsolutePath(), featureMetaOut);
+
             String locatorPath = new File(out, "feature_locator.parquet").getAbsolutePath();
             try (Connection conn = DuckDBUtils.connect(null)) {
-                writeFeatureLocatorParquet(conn, featureIds, shardSize, locatorPath, r2yByRank, nYOverlapByRank);
+                writeFeatureLocatorParquet(conn, featureIds, layout.shardSize, locatorPath);
+            }
+
+            LinkedHashMap<String, String> selectionStats = new LinkedHashMap<String, String>();
+            File selectionStatsDir = new File(out, "selection_stats");
+            if (!selectionStatsDir.exists() && !selectionStatsDir.mkdirs()) {
+                throw new IOException("failed to create selection_stats dir: " + selectionStatsDir.getAbsolutePath());
+            }
+            try (Connection conn = DuckDBUtils.connect(null)) {
+                for (String statsYCol : statsYCols) {
+                    String fileName = encodeStatsFilename(statsYCol) + ".parquet";
+                    File statsFile = new File(selectionStatsDir, fileName);
+                    writeSelectionStatsParquet(conn, statsFile.getAbsolutePath(), featureIds, layout.shardSize, r2yByY.get(statsYCol), nOverlapByY.get(statsYCol));
+                    selectionStats.put(statsYCol, statsFile.getAbsolutePath());
+                }
             }
 
             ShardManifest manifest = new ShardManifest(
-                    sampleMetaPath,
+                    sampleMetaOut,
+                    featureMetaOut,
                     nSamples,
+                    nFeatures,
                     shardDir.getAbsolutePath(),
-                    config.nShards,
+                    layout.nShards,
                     locatorPath,
-                    "PARQUET_V1",
+                    "parquet_v1",
                     "INT32",
-                    "BLOB_DOUBLE",
-                    "BLOB_UINT8_LEN",
-                    config.yCol);
+                    "blob_float64_le_len",
+                    "blob_uint8_len",
+                    "dense_row_ids",
+                    config.sampleKeyCol,
+                    config.featureKeyCol,
+                    (config.nShards > 0) ? null : Long.valueOf(config.targetShardBytes),
+                    selectionStats,
+                    null
+            );
             String manifestPath = new File(out, "shard_manifest.json").getAbsolutePath();
             ManifestIO.write(manifest, manifestPath);
             return manifestPath;
@@ -269,43 +279,269 @@ public class ShardBuilder {
         }
     }
 
-    private static int[] collectFeatureIds(String[] samplePaths, String featureIdCol) throws SQLException {
-        if (samplePaths == null || samplePaths.length == 0) {
-            return new int[0];
+    private static void materializeMetadataFile(String sourcePath, String outPath) throws IOException {
+        if (sourcePath == null || sourcePath.isEmpty()) {
+            return;
         }
-        List<Integer> ids = new ArrayList<Integer>(1 << 20);
-        String pathList = buildParquetPathListLiteral(samplePaths);
-        String sql = "SELECT DISTINCT " + featureIdCol + " AS feature_id"
-                + " FROM read_parquet(" + pathList + ")"
-                + " WHERE " + featureIdCol + " IS NOT NULL"
-                + " ORDER BY feature_id";
+        File source = new File(sourcePath).getAbsoluteFile();
+        File target = new File(outPath).getAbsoluteFile();
+        if (source.getCanonicalPath().equals(target.getCanonicalPath())) {
+            return;
+        }
+        Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    private static BuildShardConfig normalizeConfig(BuildShardConfig config) {
+        BuildShardConfig cfg = (config == null) ? new BuildShardConfig() : config;
+        if (cfg.nShards < 0) {
+            throw new IllegalArgumentException("nShards must be >= 0");
+        }
+        if (cfg.nShards == 0 && cfg.targetShardBytes <= 0L) {
+            throw new IllegalArgumentException("targetShardBytes must be > 0 when nShards is not set");
+        }
+        return cfg;
+    }
+
+    private static File resolveFeatureMetaPath(String sampleMetaPath, String featureIdCol, BuildShardConfig config) {
+        if (config.featureMetaPath != null && !config.featureMetaPath.isEmpty()) {
+            File explicit = new File(config.featureMetaPath).getAbsoluteFile();
+            if (!explicit.exists()) {
+                throw new IllegalArgumentException("feature_meta not found: " + explicit.getAbsolutePath());
+            }
+            return explicit;
+        }
+        if (config.featureKeyCol == null || config.featureKeyCol.isEmpty()) {
+            config.featureKeyCol = "feature_key";
+        }
+        File sampleMetaFile = new File(sampleMetaPath).getAbsoluteFile();
+        File candidate = new File(sampleMetaFile.getParentFile(), "feature_meta.parquet");
+        if (!candidate.exists()) {
+            throw new IllegalArgumentException("feature_meta.parquet not found next to sample_meta: " + candidate.getAbsolutePath());
+        }
+        return candidate;
+    }
+
+    private static int[] loadDenseFeatureIds(String featureMetaPath, String featureIdCol) throws SQLException {
         try (Connection conn = DuckDBUtils.connect(null)) {
+            int count = countRows(conn, featureMetaPath);
+            int[] featureIds = new int[count];
+            String sql = "SELECT " + featureIdCol + " FROM read_parquet(" + DuckDBUtils.quotePath(featureMetaPath) + ") ORDER BY " + featureIdCol;
+            int i = 0;
             try (Statement st = conn.createStatement();
                  ResultSet rs = st.executeQuery(sql)) {
                 while (rs.next()) {
-                    long fidLong = rs.getLong(1);
-                    ids.add(toIntFeatureId(fidLong));
+                    long value = rs.getLong(1);
+                    if (value != i) {
+                        throw new SQLException("feature_meta " + featureIdCol + " must equal dense row order 0..n-1; row=" + i + " value=" + value);
+                    }
+                    featureIds[i] = toIntFeatureId(value);
+                    i++;
+                }
+            }
+            if (i != count) {
+                throw new SQLException("feature_meta row count mismatch");
+            }
+            return featureIds;
+        }
+    }
+
+    private static List<String> resolveStatsYCols(BuildShardConfig config) {
+        ArrayList<String> out = new ArrayList<String>();
+        if (config.statsYCols != null) {
+            for (String value : config.statsYCols) {
+                if (value != null && !value.isEmpty() && !out.contains(value)) {
+                    out.add(value);
                 }
             }
         }
-        int[] out = new int[ids.size()];
-        for (int i = 0; i < ids.size(); i++) {
-            out[i] = ids.get(i);
+        if (out.isEmpty()) {
+            out.add(config.yCol);
         }
         return out;
     }
 
-    private static String buildParquetPathListLiteral(String[] samplePaths) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("[");
-        for (int i = 0; i < samplePaths.length; i++) {
-            if (i > 0) {
-                sb.append(", ");
-            }
-            sb.append(DuckDBUtils.quotePath(samplePaths[i]));
+    private static ShardLayout computeShardLayout(int nFeatures, int nSamples, BuildShardConfig config) {
+        if (nFeatures <= 0) {
+            return new ShardLayout(1, 1, new int[]{0}, new int[]{0});
         }
-        sb.append("]");
-        return sb.toString();
+        if (config.nShards > 0) {
+            int shardSize = (nFeatures + config.nShards - 1) / config.nShards;
+            int[] starts = new int[config.nShards];
+            int[] ends = new int[config.nShards];
+            for (int i = 0; i < config.nShards; i++) {
+                starts[i] = i * shardSize;
+                ends[i] = Math.min((i + 1) * shardSize, nFeatures);
+            }
+            return new ShardLayout(config.nShards, shardSize, starts, ends);
+        }
+        long featureBytes = Math.max(1L, (long) nSamples * 9L + 64L);
+        int shardSize = Math.max(1, (int) (config.targetShardBytes / featureBytes));
+        int nShards = Math.max(1, (nFeatures + shardSize - 1) / shardSize);
+        int[] starts = new int[nShards];
+        int[] ends = new int[nShards];
+        for (int i = 0; i < nShards; i++) {
+            starts[i] = i * shardSize;
+            ends[i] = Math.min((i + 1) * shardSize, nFeatures);
+        }
+        return new ShardLayout(nShards, shardSize, starts, ends);
+    }
+
+    private static void writeEmptyShard(Connection conn, String shardPath) throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("CREATE TEMP TABLE tmp_shard (feature_id INTEGER, value_len INTEGER, values_blob BLOB, valid_blob BLOB)");
+            st.execute("COPY tmp_shard TO " + DuckDBUtils.quotePath(shardPath) + " (FORMAT PARQUET)");
+            st.execute("DROP TABLE tmp_shard");
+        }
+    }
+
+    private static void writeShardParquet(
+            Connection conn,
+            MappedShard shard,
+            String shardPath,
+            Map<String, SampleMeta> targetsByY,
+            Map<String, double[]> r2yByY,
+            Map<String, int[]> nOverlapByY,
+            int globalStart) throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("CREATE TEMP TABLE tmp_shard (feature_id INTEGER, value_len INTEGER, values_blob BLOB, valid_blob BLOB)");
+        }
+        String insertSql = "INSERT INTO tmp_shard VALUES (?, ?, ?, ?)";
+        int batchSize = 64;
+        int rowValueBytes = shard.rowValueBytes;
+        int rowValidBytes = shard.rowValidBytes;
+
+        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+            int batch = 0;
+            for (int row = 0; row < shard.rows; row++) {
+                byte[] valuesBytes = new byte[rowValueBytes];
+                byte[] validBytes = new byte[rowValidBytes];
+                ByteBuffer vb = shard.valuesBuf.duplicate();
+                vb.position(row * rowValueBytes);
+                vb.get(valuesBytes, 0, rowValueBytes);
+                ByteBuffer mb = shard.validBuf.duplicate();
+                mb.position(row * rowValidBytes);
+                mb.get(validBytes, 0, rowValidBytes);
+
+                double[] values = ArrayUtils.decodeDoubleArray(valuesBytes, shard.nSamples);
+                for (Map.Entry<String, SampleMeta> entry : targetsByY.entrySet()) {
+                    Pearson.PairwiseResult stats = Pearson.pairwiseR2(entry.getValue().y, entry.getValue().yMask, values, validBytes, 0);
+                    r2yByY.get(entry.getKey())[globalStart + row] = stats.r2;
+                    nOverlapByY.get(entry.getKey())[globalStart + row] = stats.n;
+                }
+
+                ps.setInt(1, shard.featureIds[row]);
+                ps.setInt(2, shard.nSamples);
+                ps.setBytes(3, valuesBytes);
+                ps.setBytes(4, validBytes);
+                ps.addBatch();
+                batch++;
+                if (batch >= batchSize) {
+                    ps.executeBatch();
+                    batch = 0;
+                }
+            }
+            if (batch > 0) {
+                ps.executeBatch();
+            }
+        }
+        try (Statement st = conn.createStatement()) {
+            st.execute("COPY tmp_shard TO " + DuckDBUtils.quotePath(shardPath) + " (FORMAT PARQUET)");
+            st.execute("DROP TABLE tmp_shard");
+        }
+    }
+
+    private static void writeFeatureLocatorParquet(Connection conn, int[] featureIds, int shardSize, String locatorPath) throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("CREATE TEMP TABLE tmp_feature_locator (feature_id INTEGER, global_rank INTEGER, shard_id INTEGER, offset_in_shard INTEGER)");
+        }
+        String insertSql = "INSERT INTO tmp_feature_locator VALUES (?, ?, ?, ?)";
+        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+            int batch = 0;
+            for (int i = 0; i < featureIds.length; i++) {
+                int shardId = i / shardSize;
+                int offsetInShard = i - shardId * shardSize;
+                ps.setInt(1, featureIds[i]);
+                ps.setInt(2, i);
+                ps.setInt(3, shardId);
+                ps.setInt(4, offsetInShard);
+                ps.addBatch();
+                batch++;
+                if (batch >= 1024) {
+                    ps.executeBatch();
+                    batch = 0;
+                }
+            }
+            if (batch > 0) {
+                ps.executeBatch();
+            }
+        }
+        try (Statement st = conn.createStatement()) {
+            st.execute("COPY tmp_feature_locator TO " + DuckDBUtils.quotePath(locatorPath) + " (FORMAT PARQUET)");
+            st.execute("DROP TABLE tmp_feature_locator");
+        }
+    }
+
+    private static void writeSelectionStatsParquet(
+            Connection conn,
+            String path,
+            int[] featureIds,
+            int shardSize,
+            double[] r2y,
+            int[] nYOverlap) throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("CREATE TEMP TABLE tmp_selection_stats (feature_id INTEGER, shard_id INTEGER, offset_in_shard INTEGER, r2y DOUBLE, n_y_overlap INTEGER)");
+        }
+        String insertSql = "INSERT INTO tmp_selection_stats VALUES (?, ?, ?, ?, ?)";
+        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+            int batch = 0;
+            for (int i = 0; i < featureIds.length; i++) {
+                int shardId = i / shardSize;
+                int offsetInShard = i - shardId * shardSize;
+                ps.setInt(1, featureIds[i]);
+                ps.setInt(2, shardId);
+                ps.setInt(3, offsetInShard);
+                ps.setDouble(4, r2y[i]);
+                ps.setInt(5, nYOverlap[i]);
+                ps.addBatch();
+                batch++;
+                if (batch >= 1024) {
+                    ps.executeBatch();
+                    batch = 0;
+                }
+            }
+            if (batch > 0) {
+                ps.executeBatch();
+            }
+        }
+        try (Statement st = conn.createStatement()) {
+            st.execute("COPY tmp_selection_stats TO " + DuckDBUtils.quotePath(path) + " (FORMAT PARQUET)");
+            st.execute("DROP TABLE tmp_selection_stats");
+        }
+    }
+
+    private static String encodeStatsFilename(String yCol) {
+        try {
+            return URLEncoder.encode(yCol, StandardCharsets.UTF_8.name()).replace("+", "%20");
+        } catch (java.io.UnsupportedEncodingException e) {
+            throw new IllegalStateException("UTF-8 encoding is unavailable", e);
+        }
+    }
+
+    private static HashMapIntInt buildIdToIndex(int[] featureIds) {
+        HashMapIntInt out = new HashMapIntInt(Math.max(16, featureIds.length * 2));
+        for (int i = 0; i < featureIds.length; i++) {
+            out.put(featureIds[i], i);
+        }
+        return out;
+    }
+
+    private static int countRows(Connection conn, String path) throws SQLException {
+        String sql = "SELECT COUNT(*) FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")";
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            rs.next();
+            return rs.getInt(1);
+        }
     }
 
     private static int toIntFeatureId(long value) {
@@ -337,8 +573,7 @@ public class ShardBuilder {
             }
             try {
                 shard.close();
-            } catch (IOException e) {
-                // close best-effort on cleanup path
+            } catch (IOException ignored) {
             }
         }
     }
@@ -355,8 +590,7 @@ public class ShardBuilder {
                 Method cleanMethod = cleaner.getClass().getMethod("clean");
                 cleanMethod.invoke(cleaner);
             }
-        } catch (Throwable t) {
-            // best-effort only
+        } catch (Throwable ignored) {
         }
     }
 
@@ -373,7 +607,7 @@ public class ShardBuilder {
             }
         }
         if (!file.delete()) {
-            // best-effort cleanup; leave if OS lock remains
+            // best-effort cleanup
         }
     }
 
@@ -390,103 +624,129 @@ public class ShardBuilder {
         }
     }
 
-    private static void writeShardParquet(
-            Connection conn,
-            MappedShard shard,
-            String shardPath,
-            double[] y,
-            byte[] yMask,
-            double[] r2yByRank,
-            int[] nYOverlapByRank,
-            int globalStart) throws SQLException {
-        try (Statement st = conn.createStatement()) {
-            st.execute("CREATE TEMP TABLE tmp_shard (feature_id INTEGER, value_len INTEGER, values_blob BLOB, valid_blob BLOB)");
+    private interface RowFiller {
+        void fill(BuildShardConfig config, HashMapIntInt idToIndex, ShardLayout layout, List<MappedShard> shards) throws SQLException;
+
+    }
+
+    private static final class SampleMajorRowFiller implements RowFiller {
+        private final String[] samplePaths;
+
+        SampleMajorRowFiller(String[] samplePaths) {
+            this.samplePaths = samplePaths;
         }
-        String insertSql = "INSERT INTO tmp_shard VALUES (?, ?, ?, ?)";
-        int batchSize = 64;
-        int rowValueBytes = shard.rowValueBytes;
-        int rowValidBytes = shard.rowValidBytes;
 
-        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
-            int batch = 0;
-            for (int row = 0; row < shard.rows; row++) {
-                byte[] valuesBytes = new byte[rowValueBytes];
-                byte[] validBytes = new byte[rowValidBytes];
-                ByteBuffer vb = shard.valuesBuf.duplicate();
-                vb.position(row * rowValueBytes);
-                vb.get(valuesBytes, 0, rowValueBytes);
-                ByteBuffer mb = shard.validBuf.duplicate();
-                mb.position(row * rowValidBytes);
-                mb.get(validBytes, 0, rowValidBytes);
-
-                Pearson.PairwiseResult stats = Pearson.pairwiseR2(
-                        y,
-                        yMask,
-                        ArrayUtils.decodeDoubleArray(valuesBytes, shard.nSamples),
-                        validBytes,
-                        0
-                );
-                r2yByRank[globalStart + row] = stats.r2;
-                nYOverlapByRank[globalStart + row] = stats.n;
-
-                ps.setInt(1, shard.featureIds[row]);
-                ps.setInt(2, shard.nSamples);
-                ps.setBytes(3, valuesBytes);
-                ps.setBytes(4, validBytes);
-                ps.addBatch();
-                batch++;
-                if (batch >= batchSize) {
-                    ps.executeBatch();
-                    batch = 0;
+        @Override
+        public void fill(BuildShardConfig config, HashMapIntInt idToIndex, ShardLayout layout, List<MappedShard> shards) throws SQLException {
+            try (Connection conn = DuckDBUtils.connect(null)) {
+                for (int sampleIdx = 0; sampleIdx < samplePaths.length; sampleIdx++) {
+                    String path = samplePaths[sampleIdx];
+                    String sql = "SELECT " + config.featureIdCol + ", " + config.valueCol
+                            + " FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")";
+                    try (Statement st = conn.createStatement();
+                         ResultSet rs = st.executeQuery(sql)) {
+                        while (rs.next()) {
+                            int fid = toIntFeatureId(rs.getLong(1));
+                            Object vObj = rs.getObject(2);
+                            if (vObj == null) {
+                                continue;
+                            }
+                            double value = rs.getDouble(2);
+                            if (Double.isNaN(value)) {
+                                continue;
+                            }
+                            int idx = idToIndex.getOrDefault(fid, -1);
+                            if (idx < 0) {
+                                continue;
+                            }
+                            int shardId = idx / layout.shardSize;
+                            int offset = idx - shardId * layout.shardSize;
+                            MappedShard shard = shards.get(shardId);
+                            if (shard == null) {
+                                continue;
+                            }
+                            shard.setValue(offset, sampleIdx, value);
+                            shard.setValid(offset, sampleIdx);
+                        }
+                    }
                 }
             }
-            if (batch > 0) {
-                ps.executeBatch();
-            }
-        }
-        try (Statement st = conn.createStatement()) {
-            st.execute("COPY tmp_shard TO " + DuckDBUtils.quotePath(shardPath) + " (FORMAT PARQUET)");
-            st.execute("DROP TABLE tmp_shard");
         }
     }
 
-    private static void writeFeatureLocatorParquet(
-            Connection conn,
-            int[] featureIds,
-            int shardSize,
-            String locatorPath,
-            double[] r2yByRank,
-            int[] nYOverlapByRank) throws SQLException {
-        try (Statement st = conn.createStatement()) {
-            st.execute("CREATE TEMP TABLE tmp_feature_locator (feature_id INTEGER, global_rank INTEGER, shard_id INTEGER, offset_in_shard INTEGER, r2y DOUBLE, n_y_overlap INTEGER)");
+    private static final class SampleBundleRowFiller implements RowFiller {
+        private final List<String> bundlePaths;
+
+        SampleBundleRowFiller(List<String> bundlePaths) {
+            this.bundlePaths = bundlePaths;
         }
-        String insertSql = "INSERT INTO tmp_feature_locator VALUES (?, ?, ?, ?, ?, ?)";
-        int batchSize = 1024;
-        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
-            int batch = 0;
-            for (int i = 0; i < featureIds.length; i++) {
-                int shardId = i / shardSize;
-                int offsetInShard = i - shardId * shardSize;
-                ps.setInt(1, featureIds[i]);
-                ps.setInt(2, i);
-                ps.setInt(3, shardId);
-                ps.setInt(4, offsetInShard);
-                ps.setDouble(5, r2yByRank[i]);
-                ps.setInt(6, nYOverlapByRank[i]);
-                ps.addBatch();
-                batch++;
-                if (batch >= batchSize) {
-                    ps.executeBatch();
-                    batch = 0;
+
+        @Override
+        public void fill(BuildShardConfig config, HashMapIntInt idToIndex, ShardLayout layout, List<MappedShard> shards) throws SQLException {
+            try (Connection conn = DuckDBUtils.connect(null)) {
+                for (String path : bundlePaths) {
+                    String sql = "SELECT " + config.sampleIdCol + ", " + config.featureIdCol + ", " + config.valueCol
+                            + " FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")";
+                    try (Statement st = conn.createStatement();
+                         ResultSet rs = st.executeQuery(sql)) {
+                        while (rs.next()) {
+                            int sampleId = (int) rs.getLong(1);
+                            int fid = toIntFeatureId(rs.getLong(2));
+                            Object vObj = rs.getObject(3);
+                            if (vObj == null) {
+                                continue;
+                            }
+                            double value = rs.getDouble(3);
+                            if (Double.isNaN(value)) {
+                                continue;
+                            }
+                            int idx = idToIndex.getOrDefault(fid, -1);
+                            if (idx < 0) {
+                                continue;
+                            }
+                            int shardId = idx / layout.shardSize;
+                            int offset = idx - shardId * layout.shardSize;
+                            MappedShard shard = shards.get(shardId);
+                            if (shard == null) {
+                                continue;
+                            }
+                            shard.setValue(offset, sampleId, value);
+                            shard.setValid(offset, sampleId);
+                        }
+                    }
                 }
             }
-            if (batch > 0) {
-                ps.executeBatch();
-            }
         }
-        try (Statement st = conn.createStatement()) {
-            st.execute("COPY tmp_feature_locator TO " + DuckDBUtils.quotePath(locatorPath) + " (FORMAT PARQUET)");
-            st.execute("DROP TABLE tmp_feature_locator");
+    }
+
+    private static final class ShardLayout {
+        final int nShards;
+        final int shardSize;
+        final int[] shardStarts;
+        final int[] shardEnds;
+
+        ShardLayout(int nShards, int shardSize, int[] shardStarts, int[] shardEnds) {
+            this.nShards = nShards;
+            this.shardSize = shardSize;
+            this.shardStarts = shardStarts;
+            this.shardEnds = shardEnds;
+        }
+    }
+
+    private static final class HashMapIntInt {
+        private final java.util.HashMap<Integer, Integer> delegate;
+
+        HashMapIntInt(int capacity) {
+            this.delegate = new java.util.HashMap<Integer, Integer>(capacity);
+        }
+
+        void put(int key, int value) {
+            delegate.put(Integer.valueOf(key), Integer.valueOf(value));
+        }
+
+        int getOrDefault(int key, int fallback) {
+            Integer out = delegate.get(Integer.valueOf(key));
+            return (out == null) ? fallback : out.intValue();
         }
     }
 }

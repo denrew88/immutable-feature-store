@@ -1,7 +1,10 @@
 package fs.io;
 
 import fs.model.ArrayBinaryShardInfo;
+import fs.model.LogicalType;
+import fs.model.PointColumnSpec;
 import fs.model.ArrayShardManifest;
+import fs.model.StorageType;
 
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
@@ -11,6 +14,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -19,7 +23,7 @@ public class ArrayShardManifestIO {
         StringBuilder sb = new StringBuilder();
         sb.append("{\n");
         sb.append("  \"format\": \"array-binary-shard\",\n");
-        sb.append("  \"version\": 2,\n");
+        sb.append("  \"version\": ").append(manifest.version).append(",\n");
         sb.append("  \"endianness\": \"").append(escapeJson(manifest.endianness)).append("\",\n");
         sb.append("  \"id_scheme\": \"dense_row_ids\",\n");
         sb.append("  \"sample_meta_path\": \"").append(escapeJson(relativeTo(path, manifest.sampleMetaPath))).append("\",\n");
@@ -33,11 +37,35 @@ public class ArrayShardManifestIO {
         sb.append("  \"feature_id_dtype\": \"").append(escapeJson(manifest.featureIdType)).append("\",\n");
         sb.append("  \"flags_dtype\": \"").append(escapeJson(manifest.flagsType)).append("\",\n");
         sb.append("  \"offset_dtype\": \"").append(escapeJson(manifest.offsetType)).append("\",\n");
-        sb.append("  \"time_dtype\": \"").append(escapeJson(manifest.timeType)).append("\",\n");
-        sb.append("  \"value_dtype\": \"").append(escapeJson(manifest.valueType)).append("\",\n");
         sb.append("  \"default_codec\": \"").append(escapeJson(manifest.defaultCodec)).append("\",\n");
         sb.append("  \"sample_key_col\": \"").append(escapeJson(manifest.sampleKeyCol)).append("\",\n");
         sb.append("  \"feature_key_col\": \"").append(escapeJson(manifest.featureKeyCol)).append("\",\n");
+        sb.append("  \"point_schema\": [\n");
+        for (int i = 0; i < manifest.pointSchema.size(); i++) {
+            PointColumnSpec spec = manifest.pointSchema.get(i);
+            sb.append("    {\n");
+            sb.append("      \"name\": \"").append(escapeJson(spec.name)).append("\",\n");
+            sb.append("      \"storage_type\": \"").append(escapeJson(spec.storageType.value)).append("\",\n");
+            sb.append("      \"logical_type\": \"").append(escapeJson(spec.logicalType.value)).append("\"");
+            if (spec.dictionaryPath != null && !spec.dictionaryPath.isEmpty()) {
+                sb.append(",\n");
+                sb.append("      \"dictionary_path\": \"").append(escapeJson(relativeTo(path, spec.dictionaryPath))).append("\"\n");
+            } else {
+                sb.append("\n");
+            }
+            sb.append("    }");
+            if (i + 1 < manifest.pointSchema.size()) {
+                sb.append(",");
+            }
+            sb.append("\n");
+        }
+        sb.append("  ],\n");
+        if (manifest.timeType != null && !manifest.timeType.isEmpty()) {
+            sb.append("  \"time_dtype\": \"").append(escapeJson(manifest.timeType)).append("\",\n");
+        }
+        if (manifest.valueType != null && !manifest.valueType.isEmpty()) {
+            sb.append("  \"value_dtype\": \"").append(escapeJson(manifest.valueType)).append("\",\n");
+        }
         sb.append("  \"shards\": [\n");
         for (int i = 0; i < manifest.shards.length; i++) {
             ArrayBinaryShardInfo shard = manifest.shards[i];
@@ -88,6 +116,7 @@ public class ArrayShardManifestIO {
                 }
             }
             return new ArrayShardManifest(
+                    intValue(root.get("version")) == 0 ? ArrayBinaryFormat.LEGACY_FILE_VERSION : intValue(root.get("version")),
                     resolveAgainst(path, stringValue(root.get("sample_meta_path"))),
                     resolveAgainst(path, stringValue(root.get("feature_meta_path"))),
                     intValue(root.get("n_samples")),
@@ -105,10 +134,28 @@ public class ArrayShardManifestIO {
                     stringValue(root.get("endianness")),
                     defaultString(root.get("sample_key_col"), ArrayBinaryFormat.DEFAULT_SAMPLE_KEY_COL),
                     defaultString(root.get("feature_key_col"), ArrayBinaryFormat.DEFAULT_FEATURE_KEY_COL),
-                    shardInfos);
+                    shardInfos,
+                    parsePointSchema(path, (List<Object>) root.get("point_schema")));
         } catch (Exception e) {
             throw new IOException("failed to parse manifest: " + path, e);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<PointColumnSpec> parsePointSchema(String manifestPath, List<Object> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return PointColumnSpec.defaultPointSchema();
+        }
+        ArrayList<PointColumnSpec> out = new ArrayList<PointColumnSpec>(raw.size());
+        for (Object item : raw) {
+            Map<String, Object> data = (Map<String, Object>) item;
+            out.add(new PointColumnSpec(
+                    stringValue(data.get("name")),
+                    StorageType.fromValue(stringValue(data.get("storage_type"))),
+                    LogicalType.fromValue(defaultString(data.get("logical_type"), LogicalType.CONTINUOUS.value)),
+                    resolveAgainst(manifestPath, stringValue(data.get("dictionary_path")))));
+        }
+        return PointColumnSpec.normalizeList(out);
     }
 
     private static String relativeTo(String manifestPath, String targetPath) {

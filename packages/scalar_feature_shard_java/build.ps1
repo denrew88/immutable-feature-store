@@ -2,8 +2,8 @@ $ErrorActionPreference = "Stop"
 
 $packageRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $packageRoot)
-$version = "0.3.0"
-$artifactName = "array-binary-shard-java-$version.jar"
+$version = "0.1.0"
+$artifactName = "scalar-feature-shard-java-$version.jar"
 
 $jdkBin = "C:\Program Files\Java\jdk-1.8\bin"
 $javac = Join-Path $jdkBin "javac.exe"
@@ -31,33 +31,42 @@ New-Item -ItemType Directory -Path $classesDir | Out-Null
 New-Item -ItemType Directory -Path $distDir | Out-Null
 
 $sources = @(
-    "java\src\fs\config\ArrayBundleConfig.java",
-    "java\src\fs\config\ArrayShardConfig.java",
-    "java\src\fs\io\ArrayBinaryFormat.java",
-    "java\src\fs\io\ArrayBinaryShardReader.java",
-    "java\src\fs\io\ArrayBinaryShards.java",
-    "java\src\fs\io\ArrayBundleManifestIO.java",
-    "java\src\fs\io\ArrayDatasetBuilder.java",
-    "java\src\fs\io\ArrayFeatureFlags.java",
+    "java\src\fs\config\BuildShardConfig.java",
+    "java\src\fs\config\SelectionConfig.java",
     "java\src\fs\io\ArrayFeatureIdIndex.java",
-    "java\src\fs\io\ArrayFeatureLocatorIndex.java",
     "java\src\fs\io\ArrayMetadataWriter.java",
-    "java\src\fs\io\ArraySampleBundleWriter.java",
     "java\src\fs\io\ArraySampleIdIndex.java",
-    "java\src\fs\io\ArrayShardBuilder.java",
-    "java\src\fs\io\ArrayShardManifestIO.java",
-    "java\src\fs\io\ArrayShardReader.java",
     "java\src\fs\io\ArrayUtils.java",
+    "java\src\fs\io\DuckDBShardReader.java",
     "java\src\fs\io\DuckDBUtils.java",
-    "java\src\fs\model\ArrayBinaryShardInfo.java",
-    "java\src\fs\model\ArrayBlockLocation.java",
-    "java\src\fs\model\ArrayBundleManifest.java",
-    "java\src\fs\model\ArrayFeatureBlock.java",
-    "java\src\fs\model\ArrayShardManifest.java",
-    "java\src\fs\model\ArrayTrace.java",
+    "java\src\fs\io\FeatureIdIndex.java",
+    "java\src\fs\io\FeatureLocatorIndex.java",
+    "java\src\fs\io\ManifestIO.java",
+    "java\src\fs\io\SampleIdIndex.java",
+    "java\src\fs\io\SampleMetaLoader.java",
+    "java\src\fs\io\ScalarDatasetBuilder.java",
+    "java\src\fs\io\ScalarFeatureShards.java",
+    "java\src\fs\io\ScalarMetadataWriter.java",
+    "java\src\fs\io\ScalarSampleBundleManifestIO.java",
+    "java\src\fs\io\ScalarSampleBundleWriter.java",
+    "java\src\fs\io\ScalarShardDataset.java",
+    "java\src\fs\io\ShardBuilder.java",
+    "java\src\fs\io\ShardReader.java",
+    "java\src\fs\math\Pearson.java",
+    "java\src\fs\model\Candidate.java",
+    "java\src\fs\model\Feature.java",
+    "java\src\fs\model\FeatureLocation.java",
     "java\src\fs\model\LogicalType.java",
     "java\src\fs\model\PointColumnSpec.java",
-    "java\src\fs\model\StorageType.java"
+    "java\src\fs\model\RowBatch.java",
+    "java\src\fs\model\SampleMeta.java",
+    "java\src\fs\model\ScalarFeatureValues.java",
+    "java\src\fs\model\ScalarSampleBundleManifest.java",
+    "java\src\fs\model\ScalarValue.java",
+    "java\src\fs\model\ShardManifest.java",
+    "java\src\fs\model\StorageType.java",
+    "java\src\fs\pipeline\CandidateBuilder.java",
+    "java\src\fs\pipeline\Selector.java"
 ) | ForEach-Object { Join-Path $repoRoot $_ }
 
 & $javac -cp $duckdbJar -d $classesDir $sources
@@ -67,8 +76,8 @@ if ($LASTEXITCODE -ne 0) {
 
 @(
     "Manifest-Version: 1.0"
-    "Automatic-Module-Name: array.binary.shard"
-    "Implementation-Title: array-binary-shard-java"
+    "Automatic-Module-Name: scalar.feature.shard"
+    "Implementation-Title: scalar-feature-shard-java"
     "Implementation-Version: $version"
     ""
 ) | Set-Content -Path $manifestFile -Encoding Ascii

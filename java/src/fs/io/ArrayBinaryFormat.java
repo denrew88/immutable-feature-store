@@ -15,7 +15,8 @@ final class ArrayBinaryFormat {
     static final int CODEC_NONE = 0;
     static final int CODEC_ZSTD = 1;
 
-    static final int FILE_VERSION = 2;
+    static final int FILE_VERSION = 3;
+    static final int LEGACY_FILE_VERSION = 2;
     static final String FILE_ENDIANNESS = "little";
     static final String DEFAULT_CODEC_NAME = "none";
     static final String DEFAULT_SAMPLE_KEY_COL = "sample_key";
@@ -54,9 +55,14 @@ final class ArrayBinaryFormat {
 
     static void writeFileHeader(RandomAccessFile raf, byte[] magic, int recordBytes, long entryCount, long auxCount, int shardId)
             throws IOException {
+        writeFileHeader(raf, magic, FILE_VERSION, recordBytes, entryCount, auxCount, shardId);
+    }
+
+    static void writeFileHeader(RandomAccessFile raf, byte[] magic, int version, int recordBytes, long entryCount, long auxCount, int shardId)
+            throws IOException {
         ByteBuffer bb = ByteBuffer.allocate(FILE_HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
         bb.put(fixedMagic(magic));
-        bb.putShort((short) FILE_VERSION);
+        bb.putShort((short) version);
         bb.putShort((short) FILE_HEADER_BYTES);
         bb.putShort((short) recordBytes);
         bb.putShort((short) 0);
@@ -85,13 +91,13 @@ final class ArrayBinaryFormat {
             long entryCount = bb.getLong();
             long auxCount = bb.getLong();
             int shardId = bb.getInt();
-            if (version != FILE_VERSION) {
+            if (version != FILE_VERSION && version != LEGACY_FILE_VERSION) {
                 throw new IOException("unsupported version=" + version + " for " + file.getAbsolutePath());
             }
             if (headerBytes != FILE_HEADER_BYTES) {
                 throw new IOException("unexpected header size=" + headerBytes + " for " + file.getAbsolutePath());
             }
-            return new FileHeader(recordBytes, flags, entryCount, auxCount, shardId);
+            return new FileHeader(version, recordBytes, flags, entryCount, auxCount, shardId);
         }
     }
 
@@ -121,13 +127,12 @@ final class ArrayBinaryFormat {
             long pointCount,
             byte[] sampleFlags,
             byte[] sampleOffsetsBlob,
-            byte[] timeBlob,
-            byte[] valueBlob,
+            byte[] encodedColumnsBlob,
+            int schemaColumnCount,
             int codecId) throws IOException {
         byte[] flags = (sampleFlags == null) ? new byte[0] : sampleFlags;
         byte[] offsets = (sampleOffsetsBlob == null) ? new byte[0] : sampleOffsetsBlob;
-        byte[] time = (timeBlob == null) ? new byte[0] : timeBlob;
-        byte[] value = (valueBlob == null) ? new byte[0] : valueBlob;
+        byte[] encodedColumns = (encodedColumnsBlob == null) ? new byte[0] : encodedColumnsBlob;
         long start = raf.getFilePointer();
         ByteBuffer bb = ByteBuffer.allocate(BLOCK_PAYLOAD_HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
         bb.putInt(featureId);
@@ -136,17 +141,16 @@ final class ArrayBinaryFormat {
         bb.putInt(sampleCount);
         bb.put((byte) codecId);
         bb.put((byte) 0);
-        bb.putShort((short) 0);
+        bb.putShort((short) schemaColumnCount);
         bb.putLong(pointCount);
         bb.putInt(flags.length);
         bb.putInt(offsets.length);
-        bb.putInt(time.length);
-        bb.putInt(value.length);
+        bb.putInt(encodedColumns.length);
+        bb.putInt(0);
         raf.write(bb.array());
         raf.write(flags);
         raf.write(offsets);
-        raf.write(time);
-        raf.write(value);
+        raf.write(encodedColumns);
         return raf.getFilePointer() - start;
     }
 
@@ -202,13 +206,15 @@ final class ArrayBinaryFormat {
     }
 
     static final class FileHeader {
+        final int version;
         final int recordBytes;
         final int flags;
         final long entryCount;
         final long auxCount;
         final int shardId;
 
-        FileHeader(int recordBytes, int flags, long entryCount, long auxCount, int shardId) {
+        FileHeader(int version, int recordBytes, int flags, long entryCount, long auxCount, int shardId) {
+            this.version = version;
             this.recordBytes = recordBytes;
             this.flags = flags;
             this.entryCount = entryCount;

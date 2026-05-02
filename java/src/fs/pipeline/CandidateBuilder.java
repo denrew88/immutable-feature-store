@@ -24,11 +24,15 @@ public class CandidateBuilder {
             SelectionConfig config,
             String requestedYCol,
             fs.config.BuildShardConfig metaConfig) throws SQLException {
+        String selectionStatsPath = manifest.selectionStatsPath(requestedYCol);
+        if (selectionStatsPath != null && !selectionStatsPath.isEmpty()) {
+            return buildCandidatesFromStats(selectionStatsPath, config);
+        }
         if (manifest.statsYCol != null && manifest.statsYCol.equals(requestedYCol) && locatorHasCandidateStats(manifest.featureLocatorPath)) {
-            return buildCandidatesFromLocatorStats(manifest, config);
+            return buildCandidatesFromStats(manifest.featureLocatorPath, config);
         }
 
-        SampleMeta meta = SampleMetaLoader.load(manifest.sampleMetaPath, metaConfig, true);
+        SampleMeta meta = SampleMetaLoader.loadTargets(manifest.sampleMetaPath, requestedYCol, metaConfig.sampleIdCol);
         List<Candidate> candidates = new ArrayList<>();
         try (Connection conn = DuckDBUtils.connect(null)) {
             for (int shardId = 0; shardId < manifest.nShards; shardId++) {
@@ -62,11 +66,11 @@ public class CandidateBuilder {
         return candidates;
     }
 
-    private static List<Candidate> buildCandidatesFromLocatorStats(ShardManifest manifest, SelectionConfig config) throws SQLException {
+    private static List<Candidate> buildCandidatesFromStats(String path, SelectionConfig config) throws SQLException {
         List<Candidate> candidates = new ArrayList<Candidate>();
         try (Connection conn = DuckDBUtils.connect(null)) {
             String sql = "SELECT feature_id, shard_id, offset_in_shard, r2y, n_y_overlap"
-                    + " FROM read_parquet(" + DuckDBUtils.quotePath(manifest.featureLocatorPath) + ")"
+                    + " FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")"
                     + " WHERE n_y_overlap >= " + config.minNonNullY
                     + " AND r2y >= " + config.yR2Threshold
                     + " ORDER BY r2y DESC, feature_id ASC";

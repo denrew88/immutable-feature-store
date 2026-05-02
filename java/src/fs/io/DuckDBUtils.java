@@ -21,4 +21,11 @@ public class DuckDBUtils {
         }
         return "'" + path.replace("'", "''") + "'";
     }
+
+    public static String quoteIdentifier(String name) {
+        if (name == null || name.isEmpty()) {
+            throw new IllegalArgumentException("identifier must not be empty");
+        }
+        return "\"" + name.replace("\"", "\"\"") + "\"";
+    }
 }

@@ -1,6 +1,7 @@
 package fs.model;
 
 import java.io.File;
+import java.util.List;
 
 public class ArrayBundleManifest {
     public final String sampleMetaPath;
@@ -12,6 +13,7 @@ public class ArrayBundleManifest {
     public final String flagsType;
     public final String timeType;
     public final String valueType;
+    public final List<PointColumnSpec> pointSchema;
 
     public ArrayBundleManifest(
             String sampleMetaPath,
@@ -22,7 +24,8 @@ public class ArrayBundleManifest {
             String featureIdType,
             String flagsType,
             String timeType,
-            String valueType) {
+            String valueType,
+            List<PointColumnSpec> pointSchema) {
         this.sampleMetaPath = sampleMetaPath;
         this.featureMetaPath = featureMetaPath;
         this.nSamples = nSamples;
@@ -32,6 +35,7 @@ public class ArrayBundleManifest {
         this.flagsType = flagsType;
         this.timeType = timeType;
         this.valueType = valueType;
+        this.pointSchema = PointColumnSpec.normalizeList(pointSchema);
     }
 
     public String bundleFilePath(int bundleId) {

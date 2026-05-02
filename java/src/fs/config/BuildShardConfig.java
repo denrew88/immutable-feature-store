@@ -1,12 +1,17 @@
 package fs.config;
 
 public class BuildShardConfig {
-    public int nShards = 16;
+    public int nShards = 0;
+    public long targetShardBytes = 32L * 1024L * 1024L;
     public String featureIdCol = "feature_id";
     public String valueCol = "value";
     public String sampleIdCol = "sample_id";
+    public String sampleKeyCol = "sample_key";
+    public String featureKeyCol = "feature_key";
+    public String featureMetaPath = "";
     public String pathCol = "sample_path";
     public String yCol = "y";
-    public String valuesType = "FLOAT";
-    public String validType = "TINYINT";
+    public java.util.List<String> statsYCols = null;
+    public String valuesType = "FLOAT64";
+    public String validType = "UINT8";
 }

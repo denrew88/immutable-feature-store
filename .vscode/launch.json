@@ -216,7 +216,14 @@
             "request": "launch",
             "mainClass": "scripts.BuildShardsMain",
             "preLaunchTask": "Java: Compile (-g)",
-            "args": "--sample-meta \"${workspaceFolder}/data/synth/sample_meta.parquet\" --out-dir \"${workspaceFolder}/data/synth/shards_java\" --n-shards 16"
+            "args": "--sample-meta \"${workspaceFolder}/data/synth/sample_meta.parquet\" --feature-meta \"${workspaceFolder}/data/synth/feature_meta.parquet\" --out-dir \"${workspaceFolder}/data/synth/shards_java\" --target-shard-mb 32"
+        },
+        {
+            "type": "java",
+            "name": "Run Scalar Builder Tests (java)",
+            "request": "launch",
+            "mainClass": "scripts.RunScalarBuilderTestsMain",
+            "preLaunchTask": "Java: Compile (-g)"
         },
         {
             "type": "java",
