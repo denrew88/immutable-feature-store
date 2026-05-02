@@ -1,4 +1,5 @@
 import shutil
+import json
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +11,6 @@ from fs.scalar.parquet_storage import (
     ParquetShardReader,
     build_feature_locator_index,
     load_manifest,
-    load_sample_meta,
     resolve_selection_stats_path,
 )
 
@@ -60,9 +60,12 @@ def main():
     except ValueError as exc:
         assert "already been written" in str(exc)
 
-    known_stage_meta = known_builder.finish_sample_major()
-    assert Path(known_stage_meta).exists()
-    assert (known_out / "sample_major_stage" / "samples" / "sample_000003.parquet").exists()
+    known_stage_manifest = Path(known_builder.finish_sample_major())
+    assert known_stage_manifest.exists()
+    known_stage_payload = json.loads(known_stage_manifest.read_text(encoding="utf-8"))
+    assert known_stage_payload["format"] == "scalar-sample-bundles"
+    assert len(known_stage_payload["bundle_paths"]) >= 1
+    assert (known_out / "sample_major_stage" / "sample_bundles").exists()
 
     known_manifest_path = known_builder.build_shards()
     known_manifest = load_manifest(known_manifest_path)
@@ -120,8 +123,11 @@ def main():
     assert "group" in discovered_feature_meta_df.columns
     assert discovered_feature_meta_df["group"].to_list() == ["left", "right"]
     discovered_manifest = load_manifest(discovered_manifest_path)
-    _, _, _, discovered_sample_paths = load_sample_meta(discovered_manifest.sample_meta_path, y_col="y")
-    assert all(Path(path).exists() for path in discovered_sample_paths)
+    discovered_stage_manifest = discovered_out / "sample_major_stage" / "sample_major_manifest.json"
+    assert discovered_stage_manifest.exists()
+    discovered_stage_payload = json.loads(discovered_stage_manifest.read_text(encoding="utf-8"))
+    assert discovered_stage_payload["format"] == "scalar-sample-bundles"
+    assert len(discovered_stage_payload["bundle_paths"]) >= 1
     discovered_reader = ParquetShardReader(discovered_manifest)
     discovered_locator = build_feature_locator_index(discovered_manifest.feature_locator_path)
     values_x, valid_x = discovered_reader.load_feature_by_id(0, locator_index=discovered_locator)

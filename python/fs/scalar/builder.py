@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from collections import OrderedDict
@@ -13,7 +14,7 @@ import numpy as np
 import polars as pl
 
 from ..config import ScalarShardBuildOptions
-from .parquet_storage import build_shards_from_sample_major
+from .parquet_storage import build_shards_from_sample_bundles
 
 
 def _load_dense_metadata(
@@ -92,17 +93,19 @@ class ScalarSampleContext:
 
 
 class ScalarDatasetBuilder:
-    """High-level builder that writes sample-major inputs and final scalar shards.
+    """High-level builder that writes sample-bundle inputs and final scalar shards.
 
     The primary public API is sample-scoped on purpose:
 
     - `write_sample(sample_id, values=...)`
     - `with builder.open_sample(sample_id) as sample: ...`
 
-    This prevents unbounded in-memory buffering and makes accidental sample
-    revisits explicit. Each sample is flushed to its own parquet file as soon as
-    it is completed.
+    This keeps memory bounded and makes sample revisits impossible. Internally,
+    completed samples are appended to bundle parquet files instead of creating
+    one parquet file per sample.
     """
+
+    _DEFAULT_BUNDLE_FLUSH_ROWS = 1_000_000
 
     def __init__(
         self,
@@ -139,9 +142,10 @@ class ScalarDatasetBuilder:
         default_sample_major_root = os.path.join(self.out_dir, "sample_major_stage")
         self.sample_major_out_dir = str(Path(sample_major_out_dir or default_sample_major_root).expanduser().resolve())
         _prepare_empty_dir(self.sample_major_out_dir)
-        self._sample_files_dir = os.path.join(self.sample_major_out_dir, "samples")
-        os.makedirs(self._sample_files_dir, exist_ok=True)
+        self._bundle_files_dir = os.path.join(self.sample_major_out_dir, "sample_bundles")
+        os.makedirs(self._bundle_files_dir, exist_ok=True)
 
+        self.sample_major_manifest_path = os.path.join(self.sample_major_out_dir, "sample_major_manifest.json")
         self.sample_major_sample_meta_path = os.path.join(self.sample_major_out_dir, "sample_meta.parquet")
         self.sample_major_feature_meta_path = os.path.join(self.sample_major_out_dir, "feature_meta.parquet")
 
@@ -184,13 +188,17 @@ class ScalarDatasetBuilder:
         else:
             self._writes_feature_meta = True
 
-        self._sample_file_paths = [
-            os.path.join(self._sample_files_dir, f"sample_{sample_id:06d}.parquet")
-            for sample_id in range(self.n_samples)
-        ]
         self._sample_written = np.zeros(self.n_samples, dtype=bool)
         self._open_sample_id: Optional[int] = None
         self._open_sample_values: Optional[dict[int, float]] = None
+
+        self._bundle_paths: list[str] = []
+        self._bundle_index = 0
+        self._bundle_sample_id_chunks: list[np.ndarray] = []
+        self._bundle_feature_id_chunks: list[np.ndarray] = []
+        self._bundle_value_chunks: list[np.ndarray] = []
+        self._bundle_row_count = 0
+        self._bundle_flush_rows_target = int(self._DEFAULT_BUNDLE_FLUSH_ROWS)
 
     def _stats_y_cols(self) -> list[str]:
         """Return the unique ordered list of target columns to precompute."""
@@ -256,75 +264,58 @@ class ScalarDatasetBuilder:
         self._feature_keys_in_order.append(key)
         return int(resolved)
 
-    def _write_sample_file(self, sample_id: int, feature_values: Mapping[int, float]):
-        """Write one per-sample long-format parquet file."""
+    def _flush_bundle(self):
+        """Write the currently buffered scalar rows into one bundle parquet file."""
 
-        feature_ids = np.asarray(sorted(feature_values.keys()), dtype=np.int32)
-        values = np.asarray([float(feature_values[int(fid)]) for fid in feature_ids], dtype=np.float64)
+        if self._bundle_row_count <= 0:
+            return
+        bundle_path = os.path.join(self._bundle_files_dir, f"bundle_{self._bundle_index:06d}.parquet")
+        sample_ids = np.concatenate(self._bundle_sample_id_chunks).astype(np.int64, copy=False)
+        feature_ids = np.concatenate(self._bundle_feature_id_chunks).astype(np.int32, copy=False)
+        values = np.concatenate(self._bundle_value_chunks).astype(np.float64, copy=False)
         df = pl.DataFrame(
             {
+                str(self.build_options.sample_id_col): pl.Series(
+                    str(self.build_options.sample_id_col), sample_ids, dtype=pl.Int64
+                ),
                 str(self.build_options.feature_id_col): pl.Series(
-                    str(self.build_options.feature_id_col),
-                    feature_ids,
-                    dtype=pl.Int32,
+                    str(self.build_options.feature_id_col), feature_ids, dtype=pl.Int32
                 ),
                 str(self.build_options.value_col): pl.Series(
-                    str(self.build_options.value_col),
-                    values,
-                    dtype=pl.Float64,
+                    str(self.build_options.value_col), values, dtype=pl.Float64
                 ),
             }
         )
-        df.write_parquet(self._sample_file_paths[int(sample_id)])
+        df.write_parquet(bundle_path)
+        self._bundle_paths.append(bundle_path)
+        self._bundle_index += 1
+        self._bundle_sample_id_chunks.clear()
+        self._bundle_feature_id_chunks.clear()
+        self._bundle_value_chunks.clear()
+        self._bundle_row_count = 0
+
+    def _append_sample_rows(self, sample_id: int, feature_values: Mapping[int, float]):
+        """Append one finished sample into the current bundle buffer."""
+
+        if feature_values:
+            feature_ids = np.asarray(sorted(feature_values.keys()), dtype=np.int32)
+            values = np.asarray([float(feature_values[int(fid)]) for fid in feature_ids], dtype=np.float64)
+            sample_ids = np.full(feature_ids.shape[0], int(sample_id), dtype=np.int64)
+            self._bundle_sample_id_chunks.append(sample_ids)
+            self._bundle_feature_id_chunks.append(feature_ids)
+            self._bundle_value_chunks.append(values)
+            self._bundle_row_count += int(feature_ids.shape[0])
+            if self._bundle_row_count >= int(self._bundle_flush_rows_target):
+                self._flush_bundle()
         self._sample_written[int(sample_id)] = True
 
-    def _write_empty_sample_file(self, sample_id: int):
-        """Materialize one empty per-sample parquet file."""
+    def _copy_sample_meta(self):
+        """Copy the source sample metadata into the visible stage unchanged."""
 
-        df = pl.DataFrame(
-            {
-                str(self.build_options.feature_id_col): pl.Series(
-                    str(self.build_options.feature_id_col), [], dtype=pl.Int32
-                ),
-                str(self.build_options.value_col): pl.Series(
-                    str(self.build_options.value_col), [], dtype=pl.Float64
-                ),
-            }
-        )
-        df.write_parquet(self._sample_file_paths[int(sample_id)])
-        self._sample_written[int(sample_id)] = True
-
-    def _materialize_sample_major_sample_meta(self):
-        """Write stage-local sample metadata with concrete sample parquet paths."""
-
-        relative_paths = [os.path.join("sample_major_stage", "samples", os.path.basename(path)) for path in self._sample_file_paths]
-        stage_paths = list(self._sample_file_paths)
-        df = self._source_sample_meta_df.with_columns(
-            pl.Series(str(self.build_options.path_col), stage_paths, dtype=pl.String)
-        )
-        df.write_parquet(self.sample_major_sample_meta_path)
-        return relative_paths
-
-    def _materialize_final_sample_meta(self):
-        """Rewrite the final copied sample metadata to use artifact-relative paths."""
-
-        final_sample_meta_path = os.path.join(self.out_dir, "sample_meta.parquet")
-        if not os.path.exists(final_sample_meta_path):
-            return
-        try:
-            stage_inside_out_dir = os.path.commonpath([self.out_dir, self.sample_major_out_dir]) == self.out_dir
-        except ValueError:
-            stage_inside_out_dir = False
-        if not stage_inside_out_dir:
-            return
-        relative_paths = [
-            os.path.relpath(path, self.out_dir)
-            for path in self._sample_file_paths
-        ]
-        df = pl.read_parquet(final_sample_meta_path).with_columns(
-            pl.Series(str(self.build_options.path_col), relative_paths, dtype=pl.String)
-        )
-        df.write_parquet(final_sample_meta_path)
+        if os.path.normcase(os.path.abspath(self.sample_major_sample_meta_path)) != os.path.normcase(
+            os.path.abspath(self.source_sample_meta_path)
+        ):
+            shutil.copy2(self.source_sample_meta_path, self.sample_major_sample_meta_path)
 
     def _write_feature_meta(self):
         """Write or copy feature metadata for the sample-major stage."""
@@ -346,6 +337,25 @@ class ScalarDatasetBuilder:
         if key_col:
             data[key_col] = pl.Series(key_col, list(self._feature_keys_in_order), dtype=pl.String)
         pl.DataFrame(data).write_parquet(self.sample_major_feature_meta_path)
+
+    def _write_sample_major_manifest(self):
+        """Write the visible sample-bundle manifest for the intermediate stage."""
+
+        data = {
+            "format": "scalar-sample-bundles",
+            "version": 1,
+            "sample_meta_path": "sample_meta.parquet",
+            "feature_meta_path": "feature_meta.parquet",
+            "bundle_paths": [
+                os.path.join("sample_bundles", os.path.basename(path))
+                for path in self._bundle_paths
+            ],
+            "sample_id_col": str(self.build_options.sample_id_col),
+            "feature_id_col": str(self.build_options.feature_id_col),
+            "value_col": str(self.build_options.value_col),
+        }
+        with open(self.sample_major_manifest_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
 
     def _begin_sample(self, sample_id: int):
         """Open one sample-scoped buffer."""
@@ -386,7 +396,7 @@ class ScalarDatasetBuilder:
         self._open_sample_values = None
         if abort:
             return
-        self._write_sample_file(sample_id, values)
+        self._append_sample_rows(sample_id, values)
 
     def write_sample(self, sample_id: int, values: Mapping):
         """Write one complete sample and flush it immediately.
@@ -463,36 +473,32 @@ class ScalarDatasetBuilder:
         """Finalize the visible sample-major stage."""
 
         if self._sample_major_finalized:
-            return self.sample_major_sample_meta_path
+            return self.sample_major_manifest_path
         self._ensure_open()
         if self._open_sample_id is not None:
             self._end_sample(abort=False)
 
-        for sample_id in range(self.n_samples):
-            if not self._sample_written[sample_id]:
-                self._write_empty_sample_file(sample_id)
-
+        self._flush_bundle()
         self._write_feature_meta()
-        self._materialize_sample_major_sample_meta()
+        self._copy_sample_meta()
+        self._write_sample_major_manifest()
         self._sample_major_finalized = True
-        return self.sample_major_sample_meta_path
+        return self.sample_major_manifest_path
 
-    def build_shards(self, *, keep_sample_major: bool = False):
+    def build_shards(self, *, keep_sample_major: bool = False, return_stats: bool = False):
         """Build the final scalar shard artifact from the sample-major stage.
 
         Notes:
-            When `keep_sample_major=False`, the sample-major files are deleted
-            after shard construction. This also removes the data required for
-            fallback selection on target columns that were not precomputed into
-            `selection_stats/`.
+            When `keep_sample_major=False`, the visible stage directory is
+            deleted after shard construction.
         """
 
         if self._shards_built:
-            return self._manifest_path
+            return (self._manifest_path, None) if return_stats else self._manifest_path
         self._ensure_open()
-        sample_meta_path = self.finish_sample_major()
-        manifest_path = build_shards_from_sample_major(
-            sample_meta_path,
+        sample_major_manifest_path = self.finish_sample_major()
+        build_result = build_shards_from_sample_bundles(
+            sample_major_manifest_path,
             self.out_dir,
             feature_meta_path=self.sample_major_feature_meta_path,
             n_shards=None if self.build_options.n_shards is None else int(self.build_options.n_shards),
@@ -507,13 +513,20 @@ class ScalarDatasetBuilder:
             stats_y_cols=self._stats_y_cols(),
             values_dtype=str(self.build_options.values_dtype),
             valid_dtype=str(self.build_options.valid_dtype),
+            return_stats=bool(return_stats),
         )
-        self._materialize_final_sample_meta()
+        if return_stats:
+            manifest_path, build_stats = build_result
+        else:
+            manifest_path = build_result
+            build_stats = None
         if (not keep_sample_major) and os.path.exists(self.sample_major_out_dir):
             shutil.rmtree(self.sample_major_out_dir)
         self._manifest_path = str(manifest_path)
         self._shards_built = True
         self._closed = True
+        if return_stats:
+            return self._manifest_path, build_stats
         return self._manifest_path
 
     def close(self):

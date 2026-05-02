@@ -1,6 +1,9 @@
 """Thin public writer facade for scalar feature shards."""
 
-from ._impl.parquet_storage import build_shards_from_sample_major
+import json
+from pathlib import Path
+
+from ._impl.parquet_storage import build_shards_from_sample_bundles, build_shards_from_sample_major
 from .config import ScalarShardBuildOptions
 from .models import BuildOptions
 
@@ -113,8 +116,16 @@ def build_shard(
         values_dtype=values_dtype,
         valid_dtype=valid_dtype,
     )
-    return build_shards_from_sample_major(
-        str(source),
+    source_path = str(source)
+    build_fn = build_shards_from_sample_major
+    if Path(source_path).suffix.lower() == ".json":
+        with open(source_path, "r", encoding="utf-8") as f:
+            source_json = json.load(f)
+        if str(source_json.get("format", "")) == "scalar-sample-bundles":
+            build_fn = build_shards_from_sample_bundles
+
+    return build_fn(
+        source_path,
         str(out_dir),
         feature_meta_path=None if feature_meta_path is None else str(feature_meta_path),
         n_shards=None if resolved.n_shards is None else int(resolved.n_shards),

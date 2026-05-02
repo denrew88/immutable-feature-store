@@ -1,5 +1,6 @@
 import shutil
 import sys
+import json
 from pathlib import Path
 
 import numpy as np
@@ -76,12 +77,15 @@ def main():
     else:  # pragma: no cover - sanity guard
         raise AssertionError("expected duplicate sample write to fail")
 
-    known_stage_meta = Path(known_builder.finish_sample_major())
-    assert known_stage_meta.exists()
-    assert (known_out / "sample_major_stage" / "samples" / "sample_000003.parquet").exists()
+    known_stage_manifest = Path(known_builder.finish_sample_major())
+    assert known_stage_manifest.exists()
+    known_stage_payload = json.loads(known_stage_manifest.read_text(encoding="utf-8"))
+    assert known_stage_payload["format"] == "scalar-sample-bundles"
+    assert len(known_stage_payload["bundle_paths"]) >= 1
+    assert (known_out / "sample_major_stage" / "sample_bundles").exists()
 
     wrapper_manifest_path = build_shard(
-        str(known_stage_meta),
+        str(known_stage_manifest),
         str(root / "wrapper_shards"),
         feature_meta_path=str(known_builder.sample_major_feature_meta_path),
         options=BuildOptions(target_shard_mb=1, stats_y_cols=("y", "y_alt")),

@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -33,16 +34,14 @@ def load_sample_meta(
         A tuple `(sample_ids, y, y_mask, sample_paths)` where `sample_ids`
         always equals `range(n_samples)`.
     """
+    sample_ids, y, y_mask = load_sample_targets(
+        sample_meta_path,
+        y_col=y_col,
+        sample_id_col=sample_id_col,
+    )
     df = pl.read_parquet(sample_meta_path)
-    if y_col not in df.columns or path_col not in df.columns:
+    if path_col not in df.columns:
         raise ValueError("sample_meta parquet must have y and sample_path columns")
-    sample_ids = np.arange(df.height, dtype=np.int64)
-    if sample_id_col in df.columns:
-        stored_ids = df[sample_id_col].to_numpy().astype(np.int64, copy=False)
-        if not np.array_equal(stored_ids, sample_ids):
-            raise ValueError(f"sample_meta {sample_id_col} must equal dense row order 0..n-1")
-    y = df[y_col].to_numpy().astype(np.float64, copy=False)
-    y_mask = ~np.isnan(y)
     sample_paths = []
     meta_dir = os.path.dirname(os.path.abspath(sample_meta_path))
     for raw_path in df[path_col].to_list():
@@ -51,7 +50,36 @@ def load_sample_meta(
             sample_paths.append(path_value)
         else:
             sample_paths.append(os.path.normpath(os.path.join(meta_dir, path_value)))
-    return sample_ids.tolist(), y, y_mask, sample_paths
+    return sample_ids, y, y_mask, sample_paths
+
+
+def load_sample_targets(
+    sample_meta_path: str,
+    y_col: str = "y",
+    sample_id_col: str = "sample_id",
+):
+    """Load dense sample ids, target values, and validity mask without paths.
+
+    Args:
+        sample_meta_path: Path to `sample_meta.parquet`.
+        y_col: Target-value column name.
+        sample_id_col: Optional dense id column to validate.
+
+    Returns:
+        A tuple `(sample_ids, y, y_mask)` where `sample_ids` always equals
+        `range(n_samples)`.
+    """
+    df = pl.read_parquet(sample_meta_path)
+    if y_col not in df.columns:
+        raise ValueError(f"sample_meta parquet must have target column: {y_col}")
+    sample_ids = np.arange(df.height, dtype=np.int64)
+    if sample_id_col in df.columns:
+        stored_ids = df[sample_id_col].to_numpy().astype(np.int64, copy=False)
+        if not np.array_equal(stored_ids, sample_ids):
+            raise ValueError(f"sample_meta {sample_id_col} must equal dense row order 0..n-1")
+    y = df[y_col].to_numpy().astype(np.float64, copy=False)
+    y_mask = ~np.isnan(y)
+    return sample_ids.tolist(), y, y_mask
 
 
 def load_feature_meta(
@@ -416,6 +444,36 @@ def resolve_selection_stats_path(manifest: ShardManifest, y_col: str) -> Optiona
     return str(value)
 
 
+def _load_sample_bundle_manifest(manifest_path: str):
+    """Load one sample-bundle stage manifest and resolve relative paths.
+
+    Args:
+        manifest_path: Path to `sample_major_manifest.json`.
+
+    Returns:
+        A dictionary with resolved absolute paths.
+    """
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if str(data.get("format", "")) != "scalar-sample-bundles":
+        raise ValueError(f"unsupported sample-major manifest format: {data.get('format')}")
+    manifest_dir = os.path.dirname(os.path.abspath(manifest_path))
+
+    def _resolve(value: str) -> str:
+        if os.path.isabs(value):
+            return value
+        return os.path.normpath(os.path.join(manifest_dir, value))
+
+    return {
+        "sample_meta_path": _resolve(str(data["sample_meta_path"])),
+        "feature_meta_path": _resolve(str(data["feature_meta_path"])),
+        "bundle_paths": [_resolve(str(value)) for value in list(data.get("bundle_paths", []))],
+        "sample_id_col": str(data.get("sample_id_col", "sample_id")),
+        "feature_id_col": str(data.get("feature_id_col", "feature_id")),
+        "value_col": str(data.get("value_col", "value")),
+    }
+
+
 def build_shards_from_sample_major(
     sample_meta_path: str,
     out_dir: str,
@@ -433,6 +491,7 @@ def build_shards_from_sample_major(
     values_dtype: str = "float64",
     valid_dtype: str = "uint8",
     tmp_dir: str = None,
+    return_stats: bool = False,
 ):
     """Build feature-major scalar shards from sample-major parquet inputs.
 
@@ -460,8 +519,23 @@ def build_shards_from_sample_major(
         tmp_dir: Optional directory for temporary memmap backing files.
 
     Returns:
-        Path to the generated scalar shard manifest JSON file.
+        Path to the generated scalar shard manifest JSON file, or
+        `(manifest_path, stats)` when `return_stats=True`.
     """
+    total_t0 = time.perf_counter()
+    stats = {
+        "load_metadata_s": 0.0,
+        "allocate_memmaps_s": 0.0,
+        "fill_memmaps_s": 0.0,
+        "compute_selection_stats_s": 0.0,
+        "write_shards_s": 0.0,
+        "cleanup_backing_files_s": 0.0,
+        "copy_metadata_s": 0.0,
+        "write_locator_s": 0.0,
+        "write_selection_stats_s": 0.0,
+        "write_manifest_s": 0.0,
+        "total_s": 0.0,
+    }
     if values_dtype not in ("float64", "double"):
         raise ValueError("values_dtype must be float64/double for BLOB shard format")
     if valid_dtype != "uint8":
@@ -488,6 +562,7 @@ def build_shards_from_sample_major(
     if feature_meta_path is None:
         feature_meta_path = os.path.join(os.path.dirname(sample_meta_path), "feature_meta.parquet")
 
+    phase_t0 = time.perf_counter()
     sample_ids, _, _, sample_paths = load_sample_meta(
         sample_meta_path,
         y_col=resolved_stats_y_cols[0],
@@ -519,6 +594,7 @@ def build_shards_from_sample_major(
         target_shard_bytes=int(target_shard_bytes),
         n_shards_override=None if n_shards is None else int(n_shards),
     )
+    stats["load_metadata_s"] = time.perf_counter() - phase_t0
 
     # allocate memmaps (values are always float64, valid mask is uint8)
     values_maps = []
@@ -526,6 +602,7 @@ def build_shards_from_sample_major(
     values_paths = []
     valid_paths = []
     try:
+        phase_t0 = time.perf_counter()
         for shard_id in range(n_shards):
             start = shard_starts[shard_id]
             end = shard_ends[shard_id]
@@ -540,8 +617,10 @@ def build_shards_from_sample_major(
             valid_maps.append(valid_mm)
             values_paths.append(values_path)
             valid_paths.append(valid_path)
+        stats["allocate_memmaps_s"] = time.perf_counter() - phase_t0
 
         # fill memmaps
+        phase_t0 = time.perf_counter()
         for s_idx, path in enumerate(sample_paths):
             df = pl.read_parquet(path, columns=[feature_id_col, value_col])
             fids = df[feature_id_col].to_numpy().astype(np.int32, copy=False)
@@ -575,6 +654,7 @@ def build_shards_from_sample_major(
             mm.flush()
         for mm in valid_maps:
             mm.flush()
+        stats["fill_memmaps_s"] = time.perf_counter() - phase_t0
 
         selection_stats_arrays = {
             stats_col: {
@@ -597,6 +677,9 @@ def build_shards_from_sample_major(
             )
 
         # compute stats, materialize parquet, then delete each shard backing file eagerly
+        compute_stats_s = 0.0
+        write_shards_s = 0.0
+        cleanup_backing_files_s = 0.0
         for shard_id in range(n_shards):
             start = shard_starts[shard_id]
             end = shard_ends[shard_id]
@@ -606,6 +689,7 @@ def build_shards_from_sample_major(
             valid_mm = valid_maps[shard_id]
 
             if n_rows == 0:
+                write_t0 = time.perf_counter()
                 df = pl.DataFrame(
                     {
                         "feature_id": pl.Series("feature_id", [], dtype=pl.Int32),
@@ -615,14 +699,18 @@ def build_shards_from_sample_major(
                     }
                 )
                 df.write_parquet(shard_file)
+                write_shards_s += time.perf_counter() - write_t0
+                cleanup_t0 = time.perf_counter()
                 _close_memmap(values_mm)
                 _close_memmap(valid_mm)
                 values_maps[shard_id] = None
                 valid_maps[shard_id] = None
                 _cleanup_backing_file(values_paths[shard_id])
                 _cleanup_backing_file(valid_paths[shard_id])
+                cleanup_backing_files_s += time.perf_counter() - cleanup_t0
                 continue
 
+            compute_t0 = time.perf_counter()
             for stats_col, (stats_y, stats_y_mask) in stats_targets.items():
                 shard_r2, shard_n = batch_r2_one_vs_many(
                     stats_y,
@@ -634,11 +722,13 @@ def build_shards_from_sample_major(
                 )
                 selection_stats_arrays[stats_col]["r2y"][start:end] = shard_r2.astype(np.float64, copy=False)
                 selection_stats_arrays[stats_col]["n_y_overlap"][start:end] = shard_n.astype(np.int32, copy=False)
+            compute_stats_s += time.perf_counter() - compute_t0
 
             shard_feature_ids = feature_ids[start:end]
             value_len = np.full(n_rows, n_samples, dtype=np.int32)
             values_blob = [np.asarray(values_mm[row], dtype="<f8").tobytes() for row in range(n_rows)]
             valid_blob = [np.asarray(valid_mm[row], dtype=np.uint8).tobytes() for row in range(n_rows)]
+            write_t0 = time.perf_counter()
             df = pl.DataFrame(
                 {
                     "feature_id": pl.Series("feature_id", shard_feature_ids, dtype=pl.Int32),
@@ -648,13 +738,19 @@ def build_shards_from_sample_major(
                 }
             )
             df.write_parquet(shard_file)
+            write_shards_s += time.perf_counter() - write_t0
 
+            cleanup_t0 = time.perf_counter()
             _close_memmap(values_mm)
             _close_memmap(valid_mm)
             values_maps[shard_id] = None
             valid_maps[shard_id] = None
             _cleanup_backing_file(values_paths[shard_id])
             _cleanup_backing_file(valid_paths[shard_id])
+            cleanup_backing_files_s += time.perf_counter() - cleanup_t0
+        stats["compute_selection_stats_s"] = compute_stats_s
+        stats["write_shards_s"] = write_shards_s
+        stats["cleanup_backing_files_s"] = cleanup_backing_files_s
     finally:
         for mm in values_maps:
             _close_memmap(mm)
@@ -667,14 +763,17 @@ def build_shards_from_sample_major(
         _cleanup_empty_dir(tmp_dir)
 
     # copy metadata into the output artifact so the shard set is self-contained
+    phase_t0 = time.perf_counter()
     sample_meta_out = os.path.join(out_dir, "sample_meta.parquet")
     feature_meta_out = os.path.join(out_dir, "feature_meta.parquet")
     if os.path.normcase(os.path.abspath(sample_meta_out)) != os.path.normcase(os.path.abspath(sample_meta_path)):
         shutil.copy2(sample_meta_path, sample_meta_out)
     if os.path.normcase(os.path.abspath(feature_meta_out)) != os.path.normcase(os.path.abspath(feature_meta_path)):
         shutil.copy2(feature_meta_path, feature_meta_out)
+    stats["copy_metadata_s"] = time.perf_counter() - phase_t0
 
     # write feature locator
+    phase_t0 = time.perf_counter()
     locator_path = os.path.join(out_dir, "feature_locator.parquet")
     global_rank = np.arange(n_features, dtype=np.int32)
     if shard_size > 0:
@@ -692,7 +791,9 @@ def build_shards_from_sample_major(
         }
     )
     locator_df.write_parquet(locator_path)
+    stats["write_locator_s"] = time.perf_counter() - phase_t0
 
+    phase_t0 = time.perf_counter()
     selection_stats_dir = os.path.join(out_dir, "selection_stats")
     os.makedirs(selection_stats_dir, exist_ok=True)
     selection_stats = {}
@@ -715,6 +816,7 @@ def build_shards_from_sample_major(
         )
         stats_df.write_parquet(absolute_path)
         selection_stats[str(stats_col)] = relative_path
+    stats["write_selection_stats_s"] = time.perf_counter() - phase_t0
 
     manifest = ShardManifest(
         sample_meta_path="sample_meta.parquet",
@@ -734,10 +836,396 @@ def build_shards_from_sample_major(
         selection_stats=selection_stats,
     )
 
+    phase_t0 = time.perf_counter()
     manifest_path = os.path.join(out_dir, "shard_manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest.to_json(), f, indent=2)
+    stats["write_manifest_s"] = time.perf_counter() - phase_t0
+    stats["total_s"] = time.perf_counter() - total_t0
 
+    if return_stats:
+        return manifest_path, stats
+    return manifest_path
+
+
+def build_shards_from_sample_bundles(
+    sample_major_manifest_path: str,
+    out_dir: str,
+    feature_meta_path: str = None,
+    n_shards: Optional[int] = None,
+    target_shard_bytes: int = 256 * 1024 * 1024,
+    feature_id_col: str = "feature_id",
+    value_col: str = "value",
+    sample_id_col: str = "sample_id",
+    sample_key_col: str = "sample_key",
+    feature_key_col: str = "feature_key",
+    path_col: str = "sample_path",
+    y_col: str = "y",
+    stats_y_cols: Optional[List[str]] = None,
+    values_dtype: str = "float64",
+    valid_dtype: str = "uint8",
+    tmp_dir: str = None,
+    return_stats: bool = False,
+):
+    """Build feature-major scalar shards from sample-bundle parquet inputs.
+
+    Args:
+        sample_major_manifest_path: Path to the visible sample-bundle stage
+            manifest written by `ScalarDatasetBuilder.finish_sample_major()`.
+        out_dir: Output directory where shards, locator, and manifest are written.
+        feature_meta_path: Optional override for dense feature metadata.
+        n_shards: Optional explicit shard-count override kept for legacy use.
+        target_shard_bytes: Target parquet shard size in bytes. Used when
+            `n_shards` is not provided.
+        feature_id_col: Feature id column name in bundle parquet files.
+        value_col: Scalar value column name in bundle parquet files.
+        sample_id_col: Sample id column name in bundle parquet files and metadata.
+        sample_key_col: External sample-key column name stored in sample metadata.
+        feature_key_col: External feature-key column name stored in feature metadata.
+        path_col: Legacy unused parameter kept for API symmetry.
+        y_col: Legacy default target column name used when `stats_y_cols` is
+            not provided.
+        stats_y_cols: Target columns for precomputing feature-vs-y candidate
+            stats. Each column is written as its own sidecar parquet file under
+            `selection_stats/`.
+        values_dtype: Expected encoded values dtype. Only float64 is supported.
+        valid_dtype: Expected encoded validity dtype. Only uint8 is supported.
+        tmp_dir: Optional directory for temporary memmap backing files.
+
+    Returns:
+        Path to the generated scalar shard manifest JSON file, or
+        `(manifest_path, stats)` when `return_stats=True`.
+    """
+    del path_col
+    total_t0 = time.perf_counter()
+    stats = {
+        "load_metadata_s": 0.0,
+        "allocate_memmaps_s": 0.0,
+        "fill_memmaps_s": 0.0,
+        "compute_selection_stats_s": 0.0,
+        "write_shards_s": 0.0,
+        "cleanup_backing_files_s": 0.0,
+        "copy_metadata_s": 0.0,
+        "write_locator_s": 0.0,
+        "write_selection_stats_s": 0.0,
+        "write_manifest_s": 0.0,
+        "total_s": 0.0,
+    }
+    if values_dtype not in ("float64", "double"):
+        raise ValueError("values_dtype must be float64/double for BLOB shard format")
+    if valid_dtype != "uint8":
+        raise ValueError("valid_dtype must be uint8 for BLOB shard format")
+    if n_shards is not None and int(n_shards) <= 0:
+        raise ValueError("n_shards must be > 0")
+    if int(target_shard_bytes) <= 0:
+        raise ValueError("target_shard_bytes must be > 0")
+
+    resolved_stats_y_cols: List[str] = []
+    for value in (stats_y_cols or [y_col]):
+        name = str(value)
+        if name and name not in resolved_stats_y_cols:
+            resolved_stats_y_cols.append(name)
+    if not resolved_stats_y_cols:
+        raise ValueError("at least one stats y column is required")
+
+    os.makedirs(out_dir, exist_ok=True)
+    shard_path = os.path.join(out_dir, "feature_shards")
+    os.makedirs(shard_path, exist_ok=True)
+    if tmp_dir is None:
+        tmp_dir = os.path.join(out_dir, "_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    phase_t0 = time.perf_counter()
+    stage_manifest = _load_sample_bundle_manifest(sample_major_manifest_path)
+    sample_meta_path = str(stage_manifest["sample_meta_path"])
+    if feature_meta_path is None:
+        feature_meta_path = str(stage_manifest["feature_meta_path"])
+    bundle_paths = list(stage_manifest["bundle_paths"])
+
+    sample_ids, _, _ = load_sample_targets(
+        sample_meta_path,
+        y_col=resolved_stats_y_cols[0],
+        sample_id_col=sample_id_col,
+    )
+    n_samples = len(sample_ids)
+    sample_meta_df = pl.read_parquet(sample_meta_path, columns=[sample_key_col] if sample_key_col else None)
+    if sample_key_col not in sample_meta_df.columns:
+        raise ValueError(f"sample_meta parquet must have key column: {sample_key_col}")
+    sample_keys = sample_meta_df[sample_key_col]
+    if sample_keys.null_count() != 0:
+        raise ValueError(f"sample_meta {sample_key_col} must not contain nulls")
+    if int(sample_keys.n_unique()) != int(sample_meta_df.height):
+        raise ValueError(f"sample_meta {sample_key_col} must be unique")
+
+    feature_ids, feature_meta_df = load_feature_meta(feature_meta_path, feature_id_col=feature_id_col)
+    if feature_key_col not in feature_meta_df.columns:
+        raise ValueError(f"feature_meta parquet must have key column: {feature_key_col}")
+    feature_keys = feature_meta_df[feature_key_col]
+    if feature_keys.null_count() != 0:
+        raise ValueError(f"feature_meta {feature_key_col} must not contain nulls")
+    if int(feature_keys.n_unique()) != int(feature_meta_df.height):
+        raise ValueError(f"feature_meta {feature_key_col} must be unique")
+    n_features = int(feature_ids.shape[0])
+    n_shards, shard_size, shard_starts, shard_ends = _assign_shards_by_target_bytes(
+        n_features,
+        n_samples,
+        target_shard_bytes=int(target_shard_bytes),
+        n_shards_override=None if n_shards is None else int(n_shards),
+    )
+    stats["load_metadata_s"] = time.perf_counter() - phase_t0
+
+    values_maps = []
+    valid_maps = []
+    values_paths = []
+    valid_paths = []
+    try:
+        phase_t0 = time.perf_counter()
+        for shard_id in range(n_shards):
+            start = shard_starts[shard_id]
+            end = shard_ends[shard_id]
+            n_rows = max(0, end - start)
+            values_path = os.path.join(tmp_dir, f"shard_{shard_id:04d}_values.dat")
+            valid_path = os.path.join(tmp_dir, f"shard_{shard_id:04d}_valid.dat")
+            values_mm = np.memmap(values_path, dtype=np.float64, mode="w+", shape=(n_rows, n_samples))
+            valid_mm = np.memmap(valid_path, dtype=np.uint8, mode="w+", shape=(n_rows, n_samples))
+            values_mm[:] = 0.0
+            valid_mm[:] = 0
+            values_maps.append(values_mm)
+            valid_maps.append(valid_mm)
+            values_paths.append(values_path)
+            valid_paths.append(valid_path)
+        stats["allocate_memmaps_s"] = time.perf_counter() - phase_t0
+
+        phase_t0 = time.perf_counter()
+        for path in bundle_paths:
+            df = pl.read_parquet(path, columns=[sample_id_col, feature_id_col, value_col])
+            if df.height <= 0:
+                continue
+            sids = df[sample_id_col].to_numpy().astype(np.int64, copy=False)
+            fids = df[feature_id_col].to_numpy().astype(np.int32, copy=False)
+            vals = df[value_col].to_numpy().astype(np.float64, copy=False)
+
+            valid_val = ~np.isnan(vals)
+            if not np.all(valid_val):
+                sids = sids[valid_val]
+                fids = fids[valid_val]
+                vals = vals[valid_val]
+            if fids.size == 0:
+                continue
+            if int(np.min(sids)) < 0 or int(np.max(sids)) >= n_samples:
+                raise ValueError(
+                    f"bundle sample ids must be dense 0..{n_samples - 1}; "
+                    f"found range [{int(sids.min())}, {int(sids.max())}]"
+                )
+            if int(np.min(fids)) < 0 or int(np.max(fids)) >= n_features:
+                raise ValueError(
+                    f"bundle feature ids must be dense 0..{n_features - 1}; "
+                    f"found range [{int(fids.min())}, {int(fids.max())}]"
+                )
+            idx = fids.astype(np.int64, copy=False)
+            if shard_size <= 0:
+                continue
+            shard_ids = idx // shard_size
+            offsets = idx - shard_ids * shard_size
+            for shard_id in np.unique(shard_ids):
+                mask = shard_ids == shard_id
+                off = offsets[mask]
+                sid = sids[mask]
+                val = vals[mask]
+                values_maps[int(shard_id)][off, sid] = val
+                valid_maps[int(shard_id)][off, sid] = 1
+
+        for mm in values_maps:
+            mm.flush()
+        for mm in valid_maps:
+            mm.flush()
+        stats["fill_memmaps_s"] = time.perf_counter() - phase_t0
+
+        selection_stats_arrays = {
+            stats_col: {
+                "r2y": np.full(n_features, np.nan, dtype=np.float64),
+                "n_y_overlap": np.full(n_features, -1, dtype=np.int32),
+            }
+            for stats_col in resolved_stats_y_cols
+        }
+        stats_targets = {}
+        for stats_col in resolved_stats_y_cols:
+            _, stats_y, stats_y_mask = load_sample_targets(
+                sample_meta_path,
+                y_col=stats_col,
+                sample_id_col=sample_id_col,
+            )
+            stats_targets[stats_col] = (
+                np.asarray(stats_y, dtype=np.float64),
+                np.asarray(stats_y_mask, dtype=np.uint8),
+            )
+
+        compute_stats_s = 0.0
+        write_shards_s = 0.0
+        cleanup_backing_files_s = 0.0
+        for shard_id in range(n_shards):
+            start = shard_starts[shard_id]
+            end = shard_ends[shard_id]
+            n_rows = max(0, end - start)
+            shard_file = shard_file_path(shard_path, shard_id)
+            values_mm = values_maps[shard_id]
+            valid_mm = valid_maps[shard_id]
+
+            if n_rows == 0:
+                write_t0 = time.perf_counter()
+                df = pl.DataFrame(
+                    {
+                        "feature_id": pl.Series("feature_id", [], dtype=pl.Int32),
+                        "value_len": pl.Series("value_len", [], dtype=pl.Int32),
+                        "values_blob": pl.Series("values_blob", [], dtype=pl.Binary),
+                        "valid_blob": pl.Series("valid_blob", [], dtype=pl.Binary),
+                    }
+                )
+                df.write_parquet(shard_file)
+                write_shards_s += time.perf_counter() - write_t0
+                cleanup_t0 = time.perf_counter()
+                _close_memmap(values_mm)
+                _close_memmap(valid_mm)
+                values_maps[shard_id] = None
+                valid_maps[shard_id] = None
+                _cleanup_backing_file(values_paths[shard_id])
+                _cleanup_backing_file(valid_paths[shard_id])
+                cleanup_backing_files_s += time.perf_counter() - cleanup_t0
+                continue
+
+            compute_t0 = time.perf_counter()
+            for stats_col, (stats_y, stats_y_mask) in stats_targets.items():
+                shard_r2, shard_n = batch_r2_one_vs_many(
+                    stats_y,
+                    stats_y_mask.astype(np.uint8, copy=False),
+                    values_mm,
+                    valid_mm,
+                    min_non_null=0,
+                    sanitize=True,
+                )
+                selection_stats_arrays[stats_col]["r2y"][start:end] = shard_r2.astype(np.float64, copy=False)
+                selection_stats_arrays[stats_col]["n_y_overlap"][start:end] = shard_n.astype(np.int32, copy=False)
+            compute_stats_s += time.perf_counter() - compute_t0
+
+            shard_feature_ids = feature_ids[start:end]
+            value_len = np.full(n_rows, n_samples, dtype=np.int32)
+            values_blob = [np.asarray(values_mm[row], dtype="<f8").tobytes() for row in range(n_rows)]
+            valid_blob = [np.asarray(valid_mm[row], dtype=np.uint8).tobytes() for row in range(n_rows)]
+            write_t0 = time.perf_counter()
+            df = pl.DataFrame(
+                {
+                    "feature_id": pl.Series("feature_id", shard_feature_ids, dtype=pl.Int32),
+                    "value_len": pl.Series("value_len", value_len, dtype=pl.Int32),
+                    "values_blob": pl.Series("values_blob", values_blob, dtype=pl.Binary),
+                    "valid_blob": pl.Series("valid_blob", valid_blob, dtype=pl.Binary),
+                }
+            )
+            df.write_parquet(shard_file)
+            write_shards_s += time.perf_counter() - write_t0
+
+            cleanup_t0 = time.perf_counter()
+            _close_memmap(values_mm)
+            _close_memmap(valid_mm)
+            values_maps[shard_id] = None
+            valid_maps[shard_id] = None
+            _cleanup_backing_file(values_paths[shard_id])
+            _cleanup_backing_file(valid_paths[shard_id])
+            cleanup_backing_files_s += time.perf_counter() - cleanup_t0
+        stats["compute_selection_stats_s"] = compute_stats_s
+        stats["write_shards_s"] = write_shards_s
+        stats["cleanup_backing_files_s"] = cleanup_backing_files_s
+    finally:
+        for mm in values_maps:
+            _close_memmap(mm)
+        for mm in valid_maps:
+            _close_memmap(mm)
+        for path in values_paths:
+            _cleanup_backing_file(path)
+        for path in valid_paths:
+            _cleanup_backing_file(path)
+        _cleanup_empty_dir(tmp_dir)
+
+    phase_t0 = time.perf_counter()
+    sample_meta_out = os.path.join(out_dir, "sample_meta.parquet")
+    feature_meta_out = os.path.join(out_dir, "feature_meta.parquet")
+    if os.path.normcase(os.path.abspath(sample_meta_out)) != os.path.normcase(os.path.abspath(sample_meta_path)):
+        shutil.copy2(sample_meta_path, sample_meta_out)
+    if os.path.normcase(os.path.abspath(feature_meta_out)) != os.path.normcase(os.path.abspath(feature_meta_path)):
+        shutil.copy2(feature_meta_path, feature_meta_out)
+    stats["copy_metadata_s"] = time.perf_counter() - phase_t0
+
+    phase_t0 = time.perf_counter()
+    locator_path = os.path.join(out_dir, "feature_locator.parquet")
+    global_rank = np.arange(n_features, dtype=np.int32)
+    if shard_size > 0:
+        shard_id = (global_rank // shard_size).astype(np.int32, copy=False)
+        offset_in_shard = (global_rank - shard_id * shard_size).astype(np.int32, copy=False)
+    else:
+        shard_id = np.zeros(n_features, dtype=np.int32)
+        offset_in_shard = np.zeros(n_features, dtype=np.int32)
+    locator_df = pl.DataFrame(
+        {
+            "feature_id": pl.Series("feature_id", feature_ids, dtype=pl.Int32),
+            "global_rank": pl.Series("global_rank", global_rank, dtype=pl.Int32),
+            "shard_id": pl.Series("shard_id", shard_id, dtype=pl.Int32),
+            "offset_in_shard": pl.Series("offset_in_shard", offset_in_shard, dtype=pl.Int32),
+        }
+    )
+    locator_df.write_parquet(locator_path)
+    stats["write_locator_s"] = time.perf_counter() - phase_t0
+
+    phase_t0 = time.perf_counter()
+    selection_stats_dir = os.path.join(out_dir, "selection_stats")
+    os.makedirs(selection_stats_dir, exist_ok=True)
+    selection_stats = {}
+    for stats_col in resolved_stats_y_cols:
+        filename = _selection_stats_filename(stats_col)
+        relative_path = os.path.join("selection_stats", filename)
+        absolute_path = os.path.join(out_dir, relative_path)
+        stats_df = pl.DataFrame(
+            {
+                "feature_id": pl.Series("feature_id", feature_ids, dtype=pl.Int32),
+                "shard_id": pl.Series("shard_id", shard_id, dtype=pl.Int32),
+                "offset_in_shard": pl.Series("offset_in_shard", offset_in_shard, dtype=pl.Int32),
+                "r2y": pl.Series("r2y", selection_stats_arrays[stats_col]["r2y"], dtype=pl.Float64),
+                "n_y_overlap": pl.Series(
+                    "n_y_overlap",
+                    selection_stats_arrays[stats_col]["n_y_overlap"],
+                    dtype=pl.Int32,
+                ),
+            }
+        )
+        stats_df.write_parquet(absolute_path)
+        selection_stats[str(stats_col)] = relative_path
+    stats["write_selection_stats_s"] = time.perf_counter() - phase_t0
+
+    manifest = ShardManifest(
+        sample_meta_path="sample_meta.parquet",
+        feature_meta_path="feature_meta.parquet",
+        n_samples=n_samples,
+        n_features=n_features,
+        shard_path="feature_shards",
+        n_shards=n_shards,
+        feature_locator_path="feature_locator.parquet",
+        feature_locator_format="parquet_v1",
+        feature_id_dtype="INT32",
+        values_dtype="blob_float64_le_len",
+        valid_dtype="blob_uint8_len",
+        sample_key_col=sample_key_col,
+        feature_key_col=feature_key_col,
+        target_shard_bytes=None if n_shards is not None else int(target_shard_bytes),
+        selection_stats=selection_stats,
+    )
+
+    phase_t0 = time.perf_counter()
+    manifest_path = os.path.join(out_dir, "shard_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest.to_json(), f, indent=2)
+    stats["write_manifest_s"] = time.perf_counter() - phase_t0
+    stats["total_s"] = time.perf_counter() - total_t0
+
+    if return_stats:
+        return manifest_path, stats
     return manifest_path
 
 

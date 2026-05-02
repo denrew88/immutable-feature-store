@@ -33,7 +33,7 @@ from fs.scalar.parquet_storage import (
     ParquetShardReader,
     build_feature_locator_index,
     list_shard_paths,
-    load_sample_meta,
+    load_sample_targets,
     load_manifest,
     locator_has_candidate_stats,
     resolve_selection_stats_path,
@@ -1009,7 +1009,7 @@ def run_selection(req: SelectionRequest):
             max_candidates=req.max_candidates,
         )
     else:
-        _, y, y_mask, _ = load_sample_meta(entry.manifest.sample_meta_path, y_col=req.y_col)
+        _, y, y_mask = load_sample_targets(entry.manifest.sample_meta_path, y_col=req.y_col)
         candidates = build_candidates_from_shards(
             list_shard_paths(entry.manifest),
             y,

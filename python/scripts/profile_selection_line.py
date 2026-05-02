@@ -11,7 +11,7 @@ from fs.scalar.parquet_storage import (
     ParquetShardReader,
     list_shard_paths,
     load_manifest,
-    load_sample_meta,
+    load_sample_targets,
     locator_has_candidate_stats,
     resolve_selection_stats_path,
 )
@@ -35,7 +35,7 @@ def _build_candidates(manifest, args):
             max_candidates=args.max_candidates,
         )
 
-    _, y, y_mask, _ = load_sample_meta(manifest.sample_meta_path, y_col=args.y_col)
+    _, y, y_mask = load_sample_targets(manifest.sample_meta_path, y_col=args.y_col)
     return build_candidates_from_shards(
         list_shard_paths(manifest),
         y,
