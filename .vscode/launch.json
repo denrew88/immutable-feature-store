@@ -1,0 +1,228 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "python",
+            "name": "Generate Synth (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/generate_synth.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            },
+            "args": [
+                "--out-dir",
+                "${workspaceFolder}/data/synth_160k/samples",
+                "--sample-meta",
+                "${workspaceFolder}/data/synth_160k/sample_meta.parquet",
+                "--feature-meta",
+                "${workspaceFolder}/data/synth_160k/feature_meta.parquet",
+                "--n-samples",
+                "5000",
+                "--n-features",
+                "160000",
+                "--seed",
+                "42"
+            ]
+        },
+        {
+            "type": "python",
+            "name": "Build Scalar Shards (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/build_shards.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            },
+            "args": [
+                "--sample-meta",
+                "${workspaceFolder}/data/synth_160k/sample_meta.parquet",
+                "--feature-meta",
+                "${workspaceFolder}/data/synth_160k/feature_meta.parquet",
+                "--out-dir",
+                "${workspaceFolder}/data/synth_160k/shards",
+                "--target-shard-mb",
+                "32"
+            ]
+        },
+        {
+            "type": "python",
+            "name": "Run Selection (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/run_selection.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            },
+            "args": [
+                "--manifest",
+                "${workspaceFolder}/data/synth/shards/shard_manifest.json",
+                "--top-m",
+                "100"
+            ]
+        },
+        {
+            "type": "python",
+            "name": "Serve Feature API (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/serve_array_api.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            }
+        },
+        {
+            "type": "python",
+            "name": "Generate Array Synth (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/generate_array_synth.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            },
+            "args": [
+                "--bundle-out-dir",
+                "${workspaceFolder}/data/array_synth_py/bundles",
+                "--sample-meta",
+                "${workspaceFolder}/data/array_synth_py/sample_meta.parquet",
+                "--n-samples",
+                "5000",
+                "--n-features",
+                "1000",
+                "--seed",
+                "100"
+            ]
+        },
+        {
+            "type": "python",
+            "name": "Build Array Parquet Shards (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/build_array_shards.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            },
+            "args": [
+                "--bundle-manifest",
+                "${workspaceFolder}/data/array_synth_py/bundles/array_bundle_manifest.json",
+                "--out-dir",
+                "${workspaceFolder}/data/array_synth_py/shards",
+                "--target-shard-mb",
+                "256",
+                "--samples-per-block",
+                "8",
+                "--row-group-size",
+                "64"
+            ]
+        },
+        {
+            "type": "python",
+            "name": "Build Array Binary Shards (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/build_array_binary_shards.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            },
+            "args": [
+                "--bundle-manifest",
+                "${workspaceFolder}/data/array_synth_py/bundles/array_bundle_manifest.json",
+                "--out-dir",
+                "${workspaceFolder}/data/array_synth_py_binary",
+                "--target-shard-mb",
+                "32",
+                "--samples-per-block",
+                "16",
+                "--codec",
+                "none",
+                "--sample-key-col",
+                "sample_key",
+                "--feature-key-col",
+                "feature_key"
+            ]
+        },
+        {
+            "type": "python",
+            "name": "Build Array Binary Bench (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/build_array_binary_shards.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            },
+            "args": [
+                "--bundle-manifest",
+                "${workspaceFolder}/data/tmp_array_shard_bench_2000x1024/bundles/array_bundle_manifest.json",
+                "--out-dir",
+                "${workspaceFolder}/data/tmp_array_shard_bench_2000x1024/build_binary_from_bundles_b16_v2",
+                "--target-shard-mb",
+                "32",
+                "--samples-per-block",
+                "16",
+                "--codec",
+                "none",
+                "--sample-key-col",
+                "sample_key",
+                "--feature-key-col",
+                "feature_key"
+            ]
+        },
+        {
+            "type": "java",
+            "name": "Run Tests",
+            "request": "launch",
+            "mainClass": "scripts.RunTestsMain",
+            "preLaunchTask": "Java: Compile (-g)",
+            "args": "--seed 0"
+        },
+        {
+            "type": "java",
+            "name": "Build Shards (java)",
+            "request": "launch",
+            "mainClass": "scripts.BuildShardsMain",
+            "preLaunchTask": "Java: Compile (-g)",
+            "args": "--sample-meta \"${workspaceFolder}/data/synth/sample_meta.parquet\" --out-dir \"${workspaceFolder}/data/synth/shards_java\" --n-shards 16"
+        },
+        {
+            "type": "java",
+            "name": "Run Selection (java)",
+            "request": "launch",
+            "mainClass": "scripts.RunSelectionMain",
+            "preLaunchTask": "Java: Compile (-g)",
+            "args": "--manifest \"${workspaceFolder}/data/synth/shards_java/shard_manifest.json\" --top-m 100"
+        },
+        {
+            "type": "java",
+            "name": "Locate Feature (Java)",
+            "request": "launch",
+            "mainClass": "scripts.LocateFeatureMain",
+            "preLaunchTask": "Java: Compile (-g)",
+            "args": "--manifest \"${workspaceFolder}/data/synth/shards_java/shard_manifest.json\" --feature-id 0"
+        },
+        {
+            "type": "python",
+            "name": "Locate Feature (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/locate_feature.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            },
+            "args": [
+                "--manifest",
+                "${workspaceFolder}/data/synth/shards/shard_manifest.json",
+                "--feature-id",
+                "0"
+            ]
+        }
+    ]
+}

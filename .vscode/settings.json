@@ -1,0 +1,11 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "java.project.sourcePaths": [
+        "java/src"
+    ],
+    "java.project.outputPath": "java/out",
+    "java.project.referencedLibraries": [
+        "java/lib/**/*.jar"
+    ]
+}

@@ -1,0 +1,40 @@
+# Dataset and generated artifacts
+data/
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Python build outputs
+dist/
+build/
+*.egg-info/
+wheelhouse/
+
+# Java build outputs
+java/out/
+java/lib/*.jar
+!java/lib/.gitkeep
+*.class
+
+# Package-local build outputs
+packages/**/dist/
+packages/**/build/
+packages/**/wheelhouse/
+packages/**/*.egg-info/
+
+# IDE / editor
+.idea/
+*.iml
+.DS_Store
+Thumbs.db

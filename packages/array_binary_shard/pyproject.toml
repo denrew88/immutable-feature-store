@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "array-binary-shard"
+version = "0.4.0"
+description = "Standalone dense-id reader and writer for custom array binary shards."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "polars>=1.0",
+  "pyarrow>=14.0",
+]
+
+[project.optional-dependencies]
+zstd = [
+  "zstandard>=0.22",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["array_binary_shard*"]

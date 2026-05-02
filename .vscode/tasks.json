@@ -1,0 +1,22 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Java: Compile (-g)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-Command",
+                "Get-ChildItem java\\src -Recurse -Filter *.java | ForEach-Object { $_.FullName } | Set-Content java\\sources.txt; & 'C:\\Program Files\\Java\\jdk-1.8\\bin\\javac.exe' -g -cp 'java\\lib\\*' -d java\\out @java\\sources.txt"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": "$javac",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
