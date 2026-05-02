@@ -66,6 +66,33 @@
         },
         {
             "type": "python",
+            "name": "Run Scalar Package Tests (Python)",
+            "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/run_scalar_package_tests.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            }
+        },
+        {
+            "type": "python",
+            "name": "Build Scalar Feature Shard Wheel (Python)",
+            "request": "launch",
+            "module": "pip",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/packages/scalar_feature_shard",
+            "args": [
+                "wheel",
+                ".",
+                "-w",
+                "wheelhouse",
+                "--no-deps",
+                "--no-build-isolation"
+            ]
+        },
+        {
+            "type": "python",
             "name": "Serve Feature API (Python)",
             "request": "launch",
             "program": "${workspaceFolder}/python/scripts/serve_array_api.py",
