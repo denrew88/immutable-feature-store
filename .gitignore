@@ -32,6 +32,10 @@ packages/**/dist/
 packages/**/build/
 packages/**/wheelhouse/
 packages/**/*.egg-info/
+!packages/array_binary_shard_java/dist/
+!packages/array_binary_shard_java/dist/*.jar
+!packages/scalar_feature_shard_java/dist/
+!packages/scalar_feature_shard_java/dist/*.jar
 
 # IDE / editor
 .idea/
