@@ -43,7 +43,14 @@ def load_sample_meta(
             raise ValueError(f"sample_meta {sample_id_col} must equal dense row order 0..n-1")
     y = df[y_col].to_numpy().astype(np.float64, copy=False)
     y_mask = ~np.isnan(y)
-    sample_paths = df[path_col].to_list()
+    sample_paths = []
+    meta_dir = os.path.dirname(os.path.abspath(sample_meta_path))
+    for raw_path in df[path_col].to_list():
+        path_value = str(raw_path)
+        if os.path.isabs(path_value):
+            sample_paths.append(path_value)
+        else:
+            sample_paths.append(os.path.normpath(os.path.join(meta_dir, path_value)))
     return sample_ids.tolist(), y, y_mask, sample_paths
 
 

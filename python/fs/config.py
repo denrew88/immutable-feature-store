@@ -57,6 +57,22 @@ class ArrayBinaryBuildOptions:
 
 
 @dataclass
+class ScalarShardBuildOptions:
+    target_shard_mb: int = 32
+    n_shards: int | None = None
+    feature_id_col: str = "feature_id"
+    value_col: str = "value"
+    sample_id_col: str = "sample_id"
+    sample_key_col: str = "sample_key"
+    feature_key_col: str = "feature_key"
+    path_col: str = "sample_path"
+    y_col: str = "y"
+    stats_y_cols: tuple[str, ...] | None = None
+    values_dtype: str = "float64"
+    valid_dtype: str = "uint8"
+
+
+@dataclass
 class ArraySyntheticConfig:
     n_samples: int = 1000
     n_features: int = 256

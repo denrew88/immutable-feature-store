@@ -65,6 +65,76 @@ python -m scripts.run_scalar_api_tests
 python -m scripts.run_selection_api_tests
 ```
 
+Direct scalar ingestion example:
+```python
+from fs.config import ScalarShardBuildOptions
+from fs.scalar import ScalarDatasetBuilder, write_feature_meta, write_sample_meta
+
+sample_meta_path = write_sample_meta(
+    [
+        {"sample_key": "sample_000000", "y": 1.0, "y_alt": 1.5},
+        {"sample_key": "sample_000001", "y": 2.0, "y_alt": 2.5},
+    ],
+    "..\\data\\scalar_sample_meta.parquet",
+)
+feature_meta_path = write_feature_meta(
+    [
+        {"feature_key": "feature_a", "group": "alpha"},
+        {"feature_key": "feature_b", "group": "beta"},
+    ],
+    "..\\data\\scalar_feature_meta.parquet",
+)
+
+builder = ScalarDatasetBuilder(
+    out_dir="..\\data\\scalar_shards",
+    sample_meta_path=sample_meta_path,
+    feature_meta_path=feature_meta_path,
+    build_options=ScalarShardBuildOptions(
+        target_shard_mb=32,
+        stats_y_cols=("y", "y_alt"),
+    ),
+)
+
+builder.write_sample(0, {"feature_a": 1.23, "feature_b": 4.56})
+builder.write_sample(1, {"feature_a": 7.89})
+manifest_path = builder.build_shards()
+```
+
+Discovered-feature mode is also supported:
+```python
+from fs.config import ScalarShardBuildOptions
+from fs.scalar import ScalarDatasetBuilder
+
+with ScalarDatasetBuilder(
+    out_dir="..\\data\\scalar_shards",
+    sample_meta_path="..\\data\\scalar_sample_meta.parquet",
+    build_options=ScalarShardBuildOptions(target_shard_mb=32, stats_y_cols=("y",)),
+) as builder:
+    with builder.open_sample(0) as sample:
+        sample.write_value("feature_x", 1.23)
+        sample.write_value("feature_y", 4.56)
+
+    with builder.open_sample(1) as sample:
+        sample.write_values({"feature_y": 7.89, "feature_z": 0.12})
+
+    builder.finish_sample_major()
+    builder.update_feature_meta(
+        [
+            {"feature_key": "feature_x", "group": "alpha"},
+            {"feature_key": "feature_y", "group": "beta"},
+            {"feature_key": "feature_z", "group": "gamma"},
+        ],
+        require_all=True,
+    )
+    manifest_path = builder.build_shards(keep_sample_major=True)
+```
+
+Scalar builder notes:
+- The primary safe API is sample-scoped. Each sample is flushed immediately, so memory use is bounded by one sample's feature map.
+- Samples may be written in any order, but the same `sample_id` cannot be written twice.
+- `finish_sample_major()` makes the visible intermediate sample-major stage explicit.
+- `keep_sample_major=True` keeps the visible sample-major stage after shard build. The default is to remove it.
+
 Structured-missing synthetic example:
 ```
 python -m scripts.generate_synth --out-dir ..\data\synth_py\samples --sample-meta ..\data\synth_py\sample_meta.parquet --n-sample-cohorts 16 --n-missing-patterns 32 --shared-missing-feature-ratio 0.9 --residual-missing-rate 0.01
