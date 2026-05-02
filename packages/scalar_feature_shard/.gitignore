@@ -1,0 +1,5 @@
+build/
+wheelhouse/
+src/*.egg-info/
+src/scalar_feature_shard/__pycache__/
+src/scalar_feature_shard/_impl/__pycache__/
