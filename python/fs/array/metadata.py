@@ -1,4 +1,4 @@
-"""Helpers for writing dense array sample/feature metadata parquet files."""
+"""dense array sample/feature metadata parquet를 쓰는 helper."""
 
 from __future__ import annotations
 
@@ -16,18 +16,17 @@ def _build_dense_meta_frame(
     entity_name: str,
     key_col: str,
 ) -> pl.DataFrame:
-    """Convert list-of-dict metadata records into one dense metadata dataframe.
+    """list-of-dict metadata를 dense metadata dataframe 하나로 변환한다.
 
     Args:
-        records: Metadata records in row order.
-        id_col: Dense id column name.
-        id_dtype: Target Polars dtype for the dense id column.
-        entity_name: Human-readable entity label for error messages.
-        key_col: Optional external key column name to validate when present.
+        records: row 순서대로 들어온 metadata 레코드.
+        id_col: dense id 컬럼 이름.
+        id_dtype: dense id 컬럼에 사용할 Polars dtype.
+        entity_name: 오류 메시지에 넣을 사람 친화적 엔티티 이름.
+        key_col: 존재할 때 검증할 외부 key 컬럼 이름.
 
     Returns:
-        A dataframe whose row order defines dense ids and whose `id_col` values
-        exactly match `0..N-1`.
+        row 순서가 dense id를 정의하고, `id_col` 값이 정확히 `0..N-1`인 dataframe.
     """
     rows = [dict(record) for record in records]
     column_order = []
@@ -79,19 +78,19 @@ def write_sample_meta(
     sample_id_col: str = "sample_id",
     sample_key_col: str = "sample_key",
 ) -> str:
-    """Write dense sample metadata parquet from list-of-dict records.
+    """list-of-dict 레코드로부터 dense sample metadata parquet를 기록한다.
 
     Args:
-        records: Sample metadata rows in dense id order. Each record may contain
-            arbitrary extra columns. When `sample_id_col` is omitted, this helper
-            inserts `0..N-1`. When present, values must already equal row order.
-        out_path: Output parquet path.
-        sample_id_col: Dense sample id column name.
-        sample_key_col: Optional external sample key column name. When present in
-            the records, values must be non-null and unique.
+        records: dense id 순서의 sample metadata 행. 각 행은 임의의 추가 컬럼을
+            포함할 수 있다. `sample_id_col`이 없으면 이 helper가 `0..N-1`을
+            자동으로 넣고, 있으면 값이 이미 row 순서와 같아야 한다.
+        out_path: 출력 parquet 경로.
+        sample_id_col: dense sample id 컬럼 이름.
+        sample_key_col: 선택적 외부 sample key 컬럼 이름. 레코드에 존재하면 값은
+            null이 아니고 unique해야 한다.
 
     Returns:
-        Absolute path to the written parquet file.
+        기록한 parquet 파일의 절대 경로.
     """
     out_path = Path(out_path).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,19 +112,19 @@ def write_feature_meta(
     feature_id_col: str = "feature_id",
     feature_key_col: str = "feature_key",
 ) -> str:
-    """Write dense feature metadata parquet from list-of-dict records.
+    """list-of-dict 레코드로부터 dense feature metadata parquet를 기록한다.
 
     Args:
-        records: Feature metadata rows in dense id order. Each record may contain
-            arbitrary extra columns. When `feature_id_col` is omitted, this helper
-            inserts `0..N-1`. When present, values must already equal row order.
-        out_path: Output parquet path.
-        feature_id_col: Dense feature id column name.
-        feature_key_col: Optional external feature key column name. When present
-            in the records, values must be non-null and unique.
+        records: dense id 순서의 feature metadata 행. 각 행은 임의의 추가 컬럼을
+            포함할 수 있다. `feature_id_col`이 없으면 이 helper가 `0..N-1`을
+            자동으로 넣고, 있으면 값이 이미 row 순서와 같아야 한다.
+        out_path: 출력 parquet 경로.
+        feature_id_col: dense feature id 컬럼 이름.
+        feature_key_col: 선택적 외부 feature key 컬럼 이름. 레코드에 존재하면 값은
+            null이 아니고 unique해야 한다.
 
     Returns:
-        Absolute path to the written parquet file.
+        기록한 parquet 파일의 절대 경로.
     """
     out_path = Path(out_path).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)

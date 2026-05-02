@@ -1,4 +1,4 @@
-"""Helpers for writing dense scalar sample/feature metadata parquet files."""
+"""dense scalar sample/feature metadata parquet를 쓰는 helper."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def _build_dense_meta_frame(
     entity_name: str,
     key_col: str,
 ) -> pl.DataFrame:
-    """Convert list-of-dict metadata records into one dense metadata dataframe."""
+    """list-of-dict metadata를 dense metadata dataframe 하나로 변환한다."""
 
     rows = [dict(record) for record in records]
     column_order = []
@@ -68,7 +68,7 @@ def write_sample_meta(
     sample_id_col: str = "sample_id",
     sample_key_col: str = "sample_key",
 ) -> str:
-    """Write dense sample metadata parquet from list-of-dict records."""
+    """list-of-dict 레코드로부터 dense sample metadata parquet를 기록한다."""
 
     out_path = Path(out_path).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +90,7 @@ def write_feature_meta(
     feature_id_col: str = "feature_id",
     feature_key_col: str = "feature_key",
 ) -> str:
-    """Write dense feature metadata parquet from list-of-dict records."""
+    """list-of-dict 레코드로부터 dense feature metadata parquet를 기록한다."""
 
     out_path = Path(out_path).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)

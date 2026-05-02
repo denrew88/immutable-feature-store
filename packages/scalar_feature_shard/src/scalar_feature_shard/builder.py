@@ -1,4 +1,4 @@
-"""Public direct-ingestion builder facade for scalar feature shards."""
+"""scalar feature shard용 public direct-ingestion builder facade."""
 
 from ._impl.builder import ScalarDatasetBuilder as _ImplScalarDatasetBuilder
 from ._impl.builder import ScalarSampleContext
@@ -7,7 +7,7 @@ from .models import BuildOptions
 
 
 def _resolve_build_options(build_options: BuildOptions | ScalarShardBuildOptions | None):
-    """Convert public build options into the internal builder config type."""
+    """public build 옵션을 내부 builder 설정 타입으로 변환한다."""
 
     if build_options is None:
         return ScalarShardBuildOptions()
@@ -30,9 +30,9 @@ def _resolve_build_options(build_options: BuildOptions | ScalarShardBuildOptions
 
 
 class ScalarDatasetBuilder(_ImplScalarDatasetBuilder):
-    """Public scalar dataset builder.
+    """public scalar dataset builder.
 
-    The primary safe public API is sample-scoped on purpose:
+    안전한 기본 public API는 의도적으로 sample 범위에 맞춰져 있다.
 
     - `write_sample(sample_id, values=...)`
     - `with builder.open_sample(sample_id) as sample: ...`
@@ -48,7 +48,7 @@ class ScalarDatasetBuilder(_ImplScalarDatasetBuilder):
         build_options: BuildOptions | ScalarShardBuildOptions | None = None,
         sample_major_out_dir=None,
     ):
-        """Create a new scalar dataset builder."""
+        """새 scalar dataset builder를 생성한다."""
 
         super().__init__(
             out_dir=out_dir,

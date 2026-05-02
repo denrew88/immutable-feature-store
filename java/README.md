@@ -1,19 +1,19 @@
-Java 8 (no Maven) build & run
+Java 8 기준 빌드/실행 안내입니다. Maven은 사용하지 않습니다.
 
-## Prereq
+## 준비물
 
 - Java 8
-- DuckDB JDBC jar for Java 8: `duckdb_jdbc-1.1.3.jar`
-  - this repository no longer tracks the jar itself
-  - download it into `java/lib/` with:
+- Java 8용 DuckDB JDBC jar: `duckdb_jdbc-1.1.3.jar`
+
+jar는 저장소에 포함하지 않는다. 먼저 받아야 한다.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File java\download_duckdb_jdbc.ps1
 ```
 
-Keep only one duckdb jar in `java/lib`.
+`java/lib` 아래에는 DuckDB jar를 하나만 두는 것이 좋습니다.
 
-## Compile
+## 컴파일
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File java\download_duckdb_jdbc.ps1
@@ -23,7 +23,7 @@ javac -cp "java\lib\duckdb_jdbc-1.1.3.jar" -d java\out @java\sources.txt
 
 ## Scalar CLI
 
-Build scalar shards:
+`sample_meta.parquet`와 `feature_meta.parquet`에서 바로 scalar shard 만들기:
 
 ```powershell
 java -cp "java\lib\*;java\out" scripts.BuildShardsMain ^
@@ -33,7 +33,7 @@ java -cp "java\lib\*;java\out" scripts.BuildShardsMain ^
   --target-shard-mb 32
 ```
 
-Build scalar shards from bundled sample-major stage:
+bundle 기반 sample-major stage에서 scalar shard 만들기:
 
 ```powershell
 java -cp "java\lib\*;java\out" scripts.BuildShardsMain ^
@@ -42,7 +42,7 @@ java -cp "java\lib\*;java\out" scripts.BuildShardsMain ^
   --target-shard-mb 32
 ```
 
-Run selection:
+selection 실행:
 
 ```powershell
 java -cp "java\lib\*;java\out" scripts.RunSelectionMain ^
@@ -50,7 +50,7 @@ java -cp "java\lib\*;java\out" scripts.RunSelectionMain ^
   --top-m 100
 ```
 
-Locate one scalar feature:
+scalar feature 하나 위치 확인:
 
 ```powershell
 java -cp "java\lib\*;java\out" scripts.LocateFeatureMain ^
@@ -60,9 +60,9 @@ java -cp "java\lib\*;java\out" scripts.LocateFeatureMain ^
 
 ## Java Scalar Public API
 
-Use `fs.io.ScalarFeatureShards`.
+진입점은 `fs.io.ScalarFeatureShards`입니다.
 
-It provides:
+포함 기능:
 
 - `loadManifest(...)`
 - `open(...)`
@@ -72,9 +72,9 @@ It provides:
 - `buildCandidates(...)`
 - `selectFeatures(...)`
 
-The direct-ingestion builder is `fs.io.ScalarDatasetBuilder`.
+direct-ingestion builder는 `fs.io.ScalarDatasetBuilder`입니다.
 
-Key builder methods:
+주요 메서드:
 
 - `writeSample(...)`
 - `openSample(...)`
@@ -84,7 +84,7 @@ Key builder methods:
 
 ## Array CLI
 
-Build array shards from an existing bundle manifest:
+기존 bundle manifest에서 array shard 만들기:
 
 ```powershell
 java -cp "java\lib\duckdb_jdbc-1.1.3.jar;java\out" scripts.BuildArrayShardsMain ^
@@ -94,7 +94,7 @@ java -cp "java\lib\duckdb_jdbc-1.1.3.jar;java\out" scripts.BuildArrayShardsMain 
   --samples-per-block 16
 ```
 
-Locate one array feature:
+array feature 하나 위치 확인:
 
 ```powershell
 java -cp "java\lib\duckdb_jdbc-1.1.3.jar;java\out" scripts.LocateArrayFeatureMain ^
@@ -102,7 +102,7 @@ java -cp "java\lib\duckdb_jdbc-1.1.3.jar;java\out" scripts.LocateArrayFeatureMai
   --feature-id 12345
 ```
 
-Generate synthetic array data and build shards:
+synthetic array 데이터 생성 후 shard 빌드:
 
 ```powershell
 java -cp "java\lib\duckdb_jdbc-1.1.3.jar;java\out" scripts.GenerateArraySynthMain ^
@@ -116,36 +116,11 @@ java -cp "java\lib\duckdb_jdbc-1.1.3.jar;java\out" scripts.GenerateArraySynthMai
   --seed 7
 ```
 
-## Array Binary Format Notes
-
-Java array shards now follow the Python binary shard **v3** format.
-
-Key points:
-
-- standalone artifact layout:
-  - `array_binary_shard_manifest.json`
-  - `sample_meta.parquet`
-  - `feature_meta.parquet`
-  - `categorical_dictionaries/*.parquet` when needed
-  - `array_binary_feature_shards/shard_XXXX.blocks.idx`
-  - `array_binary_feature_shards/shard_XXXX.blocks.bin`
-- dense ids:
-  - `sample_id == sample_meta.parquet` row index
-  - `feature_id == feature_meta.parquet` row index
-- `point_schema` is manifest-defined and may omit `time` / `value`
-- supported logical/storage types:
-  - `continuous + float64`
-  - `integer + int32/int64/uint32/uint64`
-  - `categorical + uint32`
-  - `timestamp_ns + int64`
-  - `timedelta_ns + int64`
-- categorical columns are stored as dense integer codes and can be decoded back to labels by the Java reader
-
 ## Java Array Public API
 
-Use `fs.io.ArrayBinaryShards`.
+진입점은 `fs.io.ArrayBinaryShards`입니다.
 
-It provides:
+포함 기능:
 
 - `buildFromBundles(...)`
 - `loadManifest(...)`
@@ -157,45 +132,65 @@ It provides:
 - `writeFeatureMeta(...)`
 - `newBuilder(...)`
 
-The direct-ingestion builder is `fs.io.ArrayDatasetBuilder`.
+direct-ingestion builder는 `fs.io.ArrayDatasetBuilder`입니다.
 
-## Tests
+## Array Binary v3 요약
 
-Run all Java tests:
+자바 array shard는 Python array binary shard **v3** 포맷을 따릅니다.
+
+핵심:
+
+- standalone artifact 구조
+  - `array_binary_shard_manifest.json`
+  - `sample_meta.parquet`
+  - `feature_meta.parquet`
+  - 필요 시 `categorical_dictionaries/*.parquet`
+  - `array_binary_feature_shards/shard_XXXX.blocks.idx`
+  - `array_binary_feature_shards/shard_XXXX.blocks.bin`
+- dense id
+  - `sample_id == sample_meta.parquet` row index
+  - `feature_id == feature_meta.parquet` row index
+- `point_schema`는 manifest가 정의
+- `time`, `value`는 필수 아님
+- categorical은 integer code로 저장하고 reader에서 label로 decode 가능
+
+## 테스트
+
+전체 Java 테스트:
 
 ```powershell
 java -cp "java\lib\*;java\out" scripts.RunTestsMain --seed 0
 ```
 
-Run array storage tests:
+array storage 테스트:
 
 ```powershell
 java -cp "java\lib\*;java\out" scripts.RunArrayStorageTestsMain
 ```
 
-Run array synthetic tests:
+array synthetic 테스트:
 
 ```powershell
 java -cp "java\lib\*;java\out" scripts.RunArraySyntheticTestsMain
 ```
 
-Run array v3 tests:
+array v3 테스트:
 
 ```powershell
 java -cp "java\lib\*;java\out" scripts.RunArrayV3TestsMain
 ```
 
-Run scalar builder tests:
+scalar builder 테스트:
 
 ```powershell
 java -cp "java\lib\*;java\out" scripts.RunScalarBuilderTestsMain
 ```
 
-## Notes
+## 참고
 
-- `java/lib/duckdb_jdbc-1.1.3.jar` is intentionally excluded from git.
-- current Java array binary codec is `none`
-- `blocks.idx` is a fixed-size offset table with one 32-byte record per `(feature_id, block_id)` slot
-- `blocks.bin` stores variable-length payloads
-- array blocks are sample micro-blocks; default `samples_per_block=16`
-- shard partitioning defaults to `target_shard_mb=32`
+- `java/lib/duckdb_jdbc-1.1.3.jar`는 git 추적 대상이 아닙니다.
+- 현재 Java array binary codec 기본값은 `none`입니다.
+- `blocks.idx`는 `(feature_id, block_id)` 슬롯마다 32바이트 고정 레코드를 가집니다.
+- `blocks.bin`은 가변 길이 payload를 저장한다.
+- array block 기본 크기는 `samples_per_block=16`입니다.
+- shard 분할 기본 기준은 `target_shard_mb=32`입니다.

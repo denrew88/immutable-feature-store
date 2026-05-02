@@ -1,4 +1,4 @@
-"""Helpers for writing dense scalar sample/feature metadata parquet files."""
+"""dense scalar sample/feature metadata parquet를 쓰는 helper."""
 
 from __future__ import annotations
 

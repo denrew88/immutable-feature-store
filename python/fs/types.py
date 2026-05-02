@@ -6,7 +6,7 @@ import numpy as np
 
 
 class StorageType(str, Enum):
-    """Physical on-disk dtype for one point column."""
+    """point column 하나의 물리 저장 dtype."""
 
     FLOAT64 = "float64"
     INT32 = "int32"
@@ -16,7 +16,7 @@ class StorageType(str, Enum):
 
 
 class LogicalType(str, Enum):
-    """Semantic interpretation for one point column."""
+    """point column 하나의 논리적 의미."""
 
     CONTINUOUS = "continuous"
     INTEGER = "integer"
@@ -48,7 +48,7 @@ ALLOWED_STORAGE_TYPES_BY_LOGICAL = {
 
 
 def normalize_storage_type(value: Union[StorageType, str]) -> StorageType:
-    """Normalize a user-provided storage type into the canonical enum value."""
+    """사용자가 넘긴 storage type을 표준 enum 값으로 정규화한다."""
     if isinstance(value, StorageType):
         return value
     if isinstance(value, Enum):
@@ -61,7 +61,7 @@ def normalize_storage_type(value: Union[StorageType, str]) -> StorageType:
 
 
 def normalize_logical_type(value: Union[LogicalType, str]) -> LogicalType:
-    """Normalize a user-provided logical type into the canonical enum value."""
+    """사용자가 넘긴 logical type을 표준 enum 값으로 정규화한다."""
     if isinstance(value, LogicalType):
         return value
     if isinstance(value, Enum):
@@ -74,7 +74,7 @@ def normalize_logical_type(value: Union[LogicalType, str]) -> LogicalType:
 
 
 def point_storage_dtype(value: Union[StorageType, str]) -> np.dtype:
-    """Return the canonical NumPy dtype for one physical point storage type."""
+    """물리 point storage type 하나에 대응하는 표준 NumPy dtype을 반환한다."""
     return POINT_STORAGE_DTYPES[normalize_storage_type(value)]
 
 
@@ -82,17 +82,17 @@ def validate_point_type_pair(
     storage_type: Union[StorageType, str],
     logical_type: Union[LogicalType, str],
 ):
-    """Validate one `(storage_type, logical_type)` combination.
+    """`(storage_type, logical_type)` 조합 하나를 검증한다.
 
     Args:
-        storage_type: Physical dtype declaration.
-        logical_type: Semantic type declaration.
+        storage_type: 물리 dtype 선언.
+        logical_type: 논리 타입 선언.
 
     Returns:
-        Tuple `(storage_enum, logical_enum)` in canonical enum form.
+        표준 enum 형태의 `(storage_enum, logical_enum)` 튜플.
 
     Raises:
-        ValueError: If the combination is not allowed by the format spec.
+        ValueError: 포맷 스펙이 허용하지 않는 조합일 때 발생한다.
     """
     storage_enum = normalize_storage_type(storage_type)
     logical_enum = normalize_logical_type(logical_type)
@@ -123,7 +123,7 @@ class PointColumnSpec:
     dictionary_path: str = ""
 
     def __post_init__(self):
-        """Normalize and validate one point-column specification."""
+        """point-column specification 하나를 정규화하고 검증한다."""
         self.name = str(self.name)
         storage_enum, logical_enum = validate_point_type_pair(self.storage_type, self.logical_type)
         self.storage_type = storage_enum
@@ -155,10 +155,10 @@ class ArrayBundleManifest:
     point_schema: list = field(default_factory=list)
 
     def to_json(self):
-        """Serialize the bundle manifest into a JSON-compatible dictionary.
+        """bundle manifest를 JSON-compatible dictionary로 직렬화한다.
 
         Returns:
-            A dictionary ready to be written as `array_bundle_manifest.json`.
+            `array_bundle_manifest.json`으로 바로 쓸 수 있는 dictionary.
         """
         return {
             "sample_meta_path": self.sample_meta_path,
@@ -194,10 +194,10 @@ class ArrayShardManifest:
     row_group_size: int = 0
 
     def to_json(self):
-        """Serialize the parquet array shard manifest into JSON form.
+        """parquet array shard manifest를 JSON 형태로 직렬화한다.
 
         Returns:
-            A dictionary ready to be written as `array_shard_manifest.json`.
+            `array_shard_manifest.json`으로 바로 쓸 수 있는 dictionary.
         """
         return {
             "sample_meta_path": self.sample_meta_path,
@@ -227,10 +227,10 @@ class ArrayBinaryShardInfo:
     blocks_data_name: str
 
     def to_json(self):
-        """Serialize one binary shard entry for the top-level manifest.
+        """top-level manifest의 binary shard 엔트리 하나를 직렬화한다.
 
         Returns:
-            A JSON-compatible dictionary describing one binary shard.
+            binary shard 하나를 설명하는 JSON-compatible dictionary.
         """
         return {
             "shard_id": self.shard_id,
@@ -268,10 +268,10 @@ class ArrayBinaryShardManifest:
     version: int = 3
 
     def to_json(self):
-        """Serialize the binary array shard manifest into JSON form.
+        """binary array shard manifest를 JSON 형태로 직렬화한다.
 
         Returns:
-            A dictionary ready to be written as `array_binary_shard_manifest.json`.
+            `array_binary_shard_manifest.json`으로 바로 쓸 수 있는 dictionary.
         """
         return {
             "format": "array-binary-shard",
@@ -315,13 +315,13 @@ class ArrayBlockLocation:
     sample_row_end: int
 
     def contains_sample_row(self, sample_row: int) -> bool:
-        """Return whether a sample row falls inside this block range.
+        """sample row가 이 block 범위 안에 들어가는지 반환한다.
 
         Args:
-            sample_row: Global sample row index to test.
+            sample_row: 검사할 전역 sample row index.
 
         Returns:
-            `True` when the sample row is covered by this block, otherwise `False`.
+            이 block이 해당 sample row를 포함하면 `True`, 아니면 `False`.
         """
         return self.sample_row_start <= sample_row <= self.sample_row_end
 
@@ -361,18 +361,16 @@ class ArrayFeatureBlock:
         return self.columns.get("value", np.empty(0, dtype=np.float64))
 
     def trace_for_sample_row(self, sample_row: int):
-        """Extract one sample trace from a decoded block.
+        """디코딩된 block에서 sample trace 하나를 추출한다.
 
         Args:
-            sample_row: Global sample row index to extract.
+            sample_row: 추출할 전역 sample row index.
 
         Returns:
-            An `ArrayTrace` when the sample row belongs to this block, otherwise
-            `None`.
+            sample row가 이 block에 속하면 `ArrayTrace`, 아니면 `None`.
 
         Raises:
-            ValueError: If the stored sample offsets are inconsistent with the
-                payload arrays.
+            ValueError: 저장된 sample offset이 payload 배열과 일치하지 않을 때 발생한다.
         """
         idx = int(sample_row - self.sample_row_start)
         if idx < 0 or idx >= self.sample_count:

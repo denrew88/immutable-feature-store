@@ -1,18 +1,17 @@
 # Scalar Parquet Shard Format
 
-This document describes the current scalar feature shard format used in this
-repository.
+이 문서는 현재 저장소에서 사용하는 scalar feature shard 형식을 설명한다.
 
-The format is intentionally simpler than the array binary v3 format:
+중요한 특징:
 
-- final serving artifacts are still Parquet-based
-- ids are dense row ids
-- the artifact is standalone and relocatable as one folder
-- feature selection uses sidecar stats files under `selection_stats/`
+- 최종 serving artifact는 Parquet 기반이다.
+- `sample_id`, `feature_id`는 dense row id다.
+- 전체 artifact는 standalone 폴더 하나로 이동할 수 있다.
+- feature selection fast path를 위해 `selection_stats/` sidecar를 둔다.
 
-## 1. Artifact Layout
+## 1. 전체 구조
 
-A scalar shard dataset normally looks like this:
+보통 scalar shard dataset은 아래처럼 생긴다.
 
 ```text
 scalar_shard_dataset/
@@ -30,100 +29,96 @@ scalar_shard_dataset/
     ...
 ```
 
-Meaning:
+각 파일 역할:
 
 - `shard_manifest.json`
-  - top-level metadata
-  - relative paths to every dataset component
+  - 전체 메타데이터
+  - 모든 경로를 relative path로 저장
 - `sample_meta.parquet`
-  - authoritative sample ordering
+  - sample 축 정의
 - `feature_meta.parquet`
-  - authoritative feature ordering
+  - feature 축 정의
 - `feature_locator.parquet`
-  - `feature_id -> (shard_id, offset_in_shard)` lookup table
+  - `feature_id -> (shard_id, offset_in_shard)` 매핑
 - `selection_stats/<y>.parquet`
-  - precomputed candidate stats for a specific target column
+  - 특정 target column에 대한 precomputed candidate stats
 - `feature_shards/shard_XXXX.parquet`
-  - actual scalar feature rows
+  - 실제 scalar feature row 저장
 
-All paths written into the manifest are relative to the manifest location.
-The whole folder can be moved as one unit.
+## 2. Dense id 규칙
 
-## 2. Dense Id Rules
+현재 scalar는 dense id를 사용한다.
 
-Scalar shards use dense ids throughout:
+- `sample_id == sample_meta.parquet`의 row index
+- `feature_id == feature_meta.parquet`의 row index
 
-- `sample_id == row index in sample_meta.parquet`
-- `feature_id == row index in feature_meta.parquet`
+즉:
 
-That means:
+- `sample_meta.parquet`의 0번째 row -> `sample_id = 0`
+- `feature_meta.parquet`의 17번째 row -> `feature_id = 17`
 
-- row 0 of `sample_meta.parquet` is `sample_id = 0`
-- row 17 of `feature_meta.parquet` is `feature_id = 17`
-
-External systems should treat:
+외부 시스템과 연결할 때는 보통 다음 stable key를 쓴다.
 
 - `sample_key`
 - `feature_key`
 
-as the stable identifiers.
-
-Dense ids are implementation ids optimized for storage and lookup.
-
 ## 3. `sample_meta.parquet`
 
-`sample_meta.parquet` defines the sample axis.
+`sample_meta.parquet`는 sample 축을 정의하는 authoritative metadata다.
 
-Recommended columns:
+권장 컬럼:
 
 - `sample_id`
 - `sample_key`
-- one or more target columns such as `y`, `y_alt`
+- `y`, `y_alt` 같은 target column
 
-Additional user metadata is allowed, for example:
+추가 컬럼은 자유롭게 넣을 수 있다.
+
+예:
 
 - `split`
 - `patient_id`
 - `visit_id`
 - `group`
 
-Rules:
+규칙:
 
-- if `sample_id` exists, it must equal dense row order `0..n_samples-1`
-- `sample_key`, when present, should be non-null and unique
+- `sample_id`가 있으면 반드시 `0..n_samples-1` dense row order와 일치해야 한다.
+- `sample_key`가 있으면 non-null, unique가 권장된다.
 
-Important:
+중요:
 
-- the **final shard artifact does not depend on `sample_path`**
-- lookup and selection use `sample_meta.parquet`, `feature_locator.parquet`,
-  `feature_shards/`, and `selection_stats/`
+- 최종 shard artifact는 더 이상 `sample_path`에 의존하지 않는다.
+- final lookup과 selection은 `sample_meta.parquet`, `feature_locator.parquet`, `feature_shards/`, `selection_stats/`만으로 동작한다.
 
 ## 4. `feature_meta.parquet`
 
-`feature_meta.parquet` defines the feature axis.
+`feature_meta.parquet`는 feature 축을 정의한다.
 
-Recommended columns:
+권장 컬럼:
 
 - `feature_id`
 - `feature_key`
 
-Additional columns are free-form, for example:
+추가 컬럼도 자유롭다.
+
+예:
 
 - `group`
 - `display_name`
 - `modality`
 - `feature_kind`
 
-Rules:
+규칙:
 
-- if `feature_id` exists, it must equal dense row order `0..n_features-1`
-- `feature_key`, when present, should be non-null and unique
+- `feature_id`가 있으면 반드시 `0..n_features-1` dense row order와 일치해야 한다.
+- `feature_key`가 있으면 non-null, unique가 권장된다.
 
-## 5. Feature Shard Row Schema
+## 5. 최종 shard row schema
 
-Each row in a scalar feature shard represents one feature.
+각 scalar shard parquet row는 feature 하나를 나타낸다.
 
-Current row schema:
+현재 row schema:
 
 - `feature_id: Int32`
 - `value_len: Int32`
@@ -132,23 +127,23 @@ Current row schema:
 
 ### 5.1 `value_len`
 
-In the current dense scalar format:
+현재 dense scalar format에서는 보통:
 
 - `value_len == n_samples`
 
-for every feature row.
+이다.
 
 ### 5.2 `values_blob`
 
-Physical format:
+물리 형식:
 
 - little-endian float64 buffer
 
-Length:
+길이:
 
 - `value_len * 8 bytes`
 
-Decode:
+decode 예:
 
 ```python
 np.frombuffer(values_blob, dtype="<f8", count=value_len)
@@ -156,65 +151,56 @@ np.frombuffer(values_blob, dtype="<f8", count=value_len)
 
 ### 5.3 `valid_blob`
 
-Physical format:
+물리 형식:
 
 - uint8 mask buffer
 
-Length:
+길이:
 
 - `value_len bytes`
 
-Decode:
-
-```python
-np.frombuffer(valid_blob, dtype=np.uint8, count=value_len)
-```
-
-Meaning:
+의미:
 
 - `1` = present
 - `0` = missing
 
 ## 6. `feature_locator.parquet`
 
-`feature_locator.parquet` is the serving-time lookup table.
+`feature_locator.parquet`는 serving 시점 lookup table이다.
 
-Current columns:
+현재 컬럼:
 
 - `feature_id: Int32`
 - `global_rank: Int32`
 - `shard_id: Int32`
 - `offset_in_shard: Int32`
 
-Meaning:
+의미:
 
 - `feature_id`
   - dense feature id
 - `global_rank`
-  - dense global feature order
+  - dense feature 전체 순서
 - `shard_id`
-  - which shard file contains the feature row
+  - 해당 feature가 들어 있는 shard 번호
 - `offset_in_shard`
-  - which row inside that shard file
+  - shard parquet 안에서 몇 번째 row인지
 
-Lookup flow for `feature_id = 123`:
+lookup 흐름:
 
-1. read locator row for `feature_id = 123`
-2. get `shard_id` and `offset_in_shard`
-3. open `feature_shards/shard_XXXX.parquet`
-4. read row `offset_in_shard`
-5. decode `values_blob` and `valid_blob`
+1. `feature_id = 123`인 locator row를 찾는다.
+2. `shard_id`, `offset_in_shard`를 읽는다.
+3. `feature_shards/shard_XXXX.parquet`를 연다.
+4. `offset_in_shard` row를 읽는다.
+5. `values_blob`, `valid_blob`를 decode한다.
 
-Legacy note:
-
-- older artifacts may also store `r2y` and `n_y_overlap` in the locator
-- new artifacts keep candidate stats in `selection_stats/*.parquet` instead
+예전에는 locator에 `r2y`, `n_y_overlap`가 같이 들어가던 구조도 있었지만, 현재는 그 역할을 `selection_stats/*.parquet`가 맡는다.
 
 ## 7. `selection_stats/`
 
-Precomputed selection stats are stored per target column.
+selection fast path용 precomputed stats는 target column별 sidecar로 둔다.
 
-Example:
+예:
 
 ```text
 selection_stats/
@@ -222,7 +208,7 @@ selection_stats/
   y_alt.parquet
 ```
 
-Each stats file contains:
+각 파일 컬럼:
 
 - `feature_id`
 - `shard_id`
@@ -230,7 +216,7 @@ Each stats file contains:
 - `r2y`
 - `n_y_overlap`
 
-The manifest stores a mapping:
+manifest는 이를 다음처럼 연결한다.
 
 ```json
 "selection_stats": {
@@ -239,12 +225,9 @@ The manifest stores a mapping:
 }
 ```
 
-If the requested `y_col` exists in that mapping, selection can use the
-precomputed fast path.
-
 ## 8. `shard_manifest.json`
 
-Typical example:
+예:
 
 ```json
 {
@@ -270,38 +253,26 @@ Typical example:
 }
 ```
 
-Important fields:
+중요 필드:
 
 - `sample_meta_path`
-  - relative path to `sample_meta.parquet`
 - `feature_meta_path`
-  - relative path to `feature_meta.parquet`
 - `n_samples`, `n_features`
-  - dense axis sizes
 - `shard_path`
-  - `feature_shards/`
 - `feature_locator_path`
-  - `feature_locator.parquet`
 - `id_scheme`
-  - currently `dense_row_ids`
+  - 현재는 `dense_row_ids`
 - `selection_stats`
-  - precomputed target stats sidecars
 
-Legacy compatibility:
+## 9. builder와 intermediate stage
 
-- older manifests may still expose `stats_y_col`
-- new artifacts should prefer the `selection_stats` mapping
+### 9.1 direct-ingestion builder
 
-## 9. Builder Workflow
+현재는 사용자가 sample-major parquet를 직접 조립하지 않도록 `ScalarDatasetBuilder`를 제공한다.
 
-### 9.1 Final artifact build
+### 9.2 visible sample-major stage
 
-The scalar builder produces the final shard artifact from an intermediate
-sample-major stage.
-
-### 9.2 Visible sample-major stage
-
-The public builder exposes the intermediate stage explicitly.
+public builder는 intermediate stage를 명시적으로 노출한다.
 
 Python:
 
@@ -313,11 +284,9 @@ Java:
 - `finishSampleMajor()`
 - `buildShards(keepSampleMajor)`
 
-### 9.3 Intermediate stage format
+### 9.3 intermediate 형식
 
-The current builder no longer writes one Parquet file per sample.
-
-Instead, it writes bundled sample-major files:
+현재 intermediate는 file-per-sample이 아니라 bundle 기반이다.
 
 ```text
 sample_major_stage/
@@ -330,131 +299,103 @@ sample_major_stage/
     ...
 ```
 
-Each bundle row is a simple long-format scalar row:
+각 bundle row는 long-format scalar row다.
 
 - `sample_id`
 - `feature_id`
 - `value`
 
-This reduces file count and improves build performance compared to the older
-file-per-sample layout.
+### 9.4 cleanup
 
-### 9.4 Keeping or deleting the intermediate stage
-
-Default:
+기본값:
 
 - `keep_sample_major = false`
 
-In that mode the final standalone artifact remains, but the intermediate
-sample-major stage is deleted.
+즉 최종 shard를 만든 뒤 intermediate stage는 지운다.
 
-If `keep_sample_major = true`, the stage remains on disk for debugging or for
-selection fallback workflows that need to rescan intermediate sample-major data.
+`keep_sample_major = true`로 두면 intermediate stage를 디버깅이나 fallback용으로 남길 수 있다.
 
-## 10. Selection Flow
+## 10. selection 흐름
 
-### 10.1 Fast path
+### 10.1 fast path
 
-If the requested `y_col` exists in `manifest.selection_stats`:
+요청한 `y_col`이 `manifest.selection_stats`에 있으면:
 
-1. load `selection_stats/<y>.parquet`
-2. filter by `r2y` and `n_y_overlap`
-3. use the shard reader only for the reduced candidate set
+1. `selection_stats/<y>.parquet`를 읽는다.
+2. `r2y`, `n_y_overlap`로 candidate를 줄인다.
+3. 줄어든 candidate에 대해서만 shard reader를 사용한다.
 
-### 10.2 Fallback path
+### 10.2 fallback
 
-If the requested `y_col` does not exist in `manifest.selection_stats`:
+요청한 `y_col`이 `selection_stats`에 없으면:
 
-1. load target values from `sample_meta.parquet`
-2. rescan shard rows
-3. recompute candidate stats on the fly
+1. `sample_meta.parquet`에서 target 값을 읽는다.
+2. shard row를 다시 읽는다.
+3. candidate stats를 on-the-fly로 계산한다.
 
-This fallback does not require `sample_path` in the final artifact.
+이 fallback은 final artifact에 `sample_path`가 없어도 동작한다.
 
-## 11. End-to-End Lookup Example
+## 11. end-to-end 조회 예시
 
-Suppose:
+가정:
 
 - `feature_id = 140`
 - `sample_id = 118`
 
-Lookup:
+조회 순서:
 
-1. find `feature_id = 140` in `feature_locator.parquet`
-2. get, for example:
+1. `feature_locator.parquet`에서 `feature_id = 140` row를 찾는다.
+2. 예를 들어:
    - `shard_id = 2`
    - `offset_in_shard = 17`
-3. read row 17 from `feature_shards/shard_0002.parquet`
-4. decode:
-   - `values_blob -> float64[n_samples]`
-   - `valid_blob -> uint8[n_samples]`
-5. inspect position `118`
-6. if `valid_blob[118] == 1`, return `values_blob[118]`
-7. otherwise return missing
+   를 얻는다.
+3. `feature_shards/shard_0002.parquet`의 17번째 row를 읽는다.
+4. `values_blob`, `valid_blob`를 decode한다.
+5. sample position `118`을 본다.
+6. `valid_blob[118] == 1`이면 `values_blob[118]`을 반환한다.
+7. 아니면 missing이다.
 
-Key-based lookup adds one extra step:
+key 기반 조회는 앞에 한 단계가 더 붙는다.
 
 1. `feature_key -> feature_id`
 2. `sample_key -> sample_id`
-3. then follow the same path as above
+3. 이후는 같은 fast path
 
-## 12. Public APIs
+## 12. validation checklist
 
-### Python
-
-- `ScalarDatasetBuilder`
-- `write_sample_meta(...)`
-- `write_feature_meta(...)`
-- `open_shard(...)`
-- `select_features(...)`
-
-### Java
-
-- `fs.io.ScalarDatasetBuilder`
-- `fs.io.ScalarFeatureShards`
-- `fs.io.ScalarShardDataset`
-
-## 13. Validation Checklist
-
-Reader and builder implementations should validate at least:
-
-### Metadata
+### metadata
 
 - `sample_meta.parquet` row count == `n_samples`
 - `feature_meta.parquet` row count == `n_features`
-- `sample_id` matches row order
-- `feature_id` matches row order
-- `sample_key` and `feature_key`, if present, are unique
+- `sample_id`, `feature_id`는 dense row order와 일치
+- `sample_key`, `feature_key`는 가능하면 unique
 
-### Locator
+### locator
 
 - `feature_locator.parquet` row count == `n_features`
-- every `feature_id` is unique
-- `shard_id` is in range
-- `offset_in_shard` is valid for that shard
+- `feature_id` unique
+- `shard_id` 범위 유효
+- `offset_in_shard` 범위 유효
 
-### Feature rows
+### feature rows
 
-- `feature_id` matches locator entry
 - `value_len == n_samples`
 - `values_blob.length == value_len * 8`
 - `valid_blob.length == value_len`
 
-### Selection stats
+### selection stats
 
-- every configured stats file matches the manifest key
-- `feature_id`, `shard_id`, `offset_in_shard` agree with locator
+- manifest에 적힌 각 stats 파일이 실제로 존재
+- `feature_id`, `shard_id`, `offset_in_shard`가 locator와 일치
 
-## 14. Summary
+## 13. 요약
 
-The current scalar format is:
+현재 scalar format은:
 
-- Parquet-based
+- Parquet 기반
 - standalone
-- dense-id based
-- key-aware
-- optimized for lookup and selection
+- dense-id 기반
+- key 기반 조회 지원
+- selection fast path 지원
 
-The final serving artifact does not depend on `sample_path`.
-The public direct-ingestion builders use a visible bundled sample-major stage,
-then materialize the final standalone shard artifact.
+최종 artifact는 `sample_path` 없이도 동작하고, public builder는 bundle 기반 intermediate stage를 거쳐 최종 standalone shard artifact를 만든다.

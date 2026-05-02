@@ -1,4 +1,4 @@
-"""High-level builder facade for creating array binary shards from traces."""
+"""trace 입력으로 array binary shard를 만드는 고수준 builder facade."""
 
 from __future__ import annotations
 
@@ -21,25 +21,25 @@ from .models import BuildOptions
 
 @dataclass
 class _CategoricalRegistry:
-    """Mutable string-to-code mapping for one categorical point column."""
+    """categorical point column 하나에 대한 가변 string-to-code 매핑."""
 
     label_to_code: dict
     code_to_label: list
 
     @classmethod
     def create(cls):
-        """Create an empty categorical registry."""
+        """비어 있는 categorical registry를 생성한다."""
         return cls(label_to_code={}, code_to_label=[])
 
     def encode(self, values) -> np.ndarray:
-        """Encode one categorical trace column into uint32 codes.
+        """categorical trace column 하나를 uint32 code로 인코딩한다.
 
         Args:
-            values: Sequence of labels for one point column.
+            values: point column 하나에 대한 label 시퀀스.
 
         Returns:
-            A `uint32` array where `0` is reserved for null values and all other
-            labels are assigned first-seen integer codes.
+            `0`은 null 값에 예약하고, 나머지 label에는 처음 등장한 순서대로
+            정수 code를 부여한 `uint32` 배열을 반환한다.
         """
         arr = np.asarray(values, dtype=object)
         out = np.zeros(int(arr.size), dtype=np.uint32)
@@ -57,11 +57,11 @@ class _CategoricalRegistry:
         return out
 
     def to_frame(self) -> pl.DataFrame:
-        """Materialize the registry as a parquet-ready dictionary table.
+        """registry를 parquet로 기록할 수 있는 dictionary 테이블로 만든다.
 
         Returns:
-            A Polars dataframe with `code` and `label` columns suitable for
-            writing as a categorical dictionary sidecar.
+            categorical dictionary sidecar로 저장할 수 있는 `code`, `label`
+            컬럼의 Polars dataframe을 반환한다.
         """
         codes = np.arange(1, len(self.code_to_label) + 1, dtype=np.uint32)
         return pl.DataFrame(
@@ -73,28 +73,28 @@ class _CategoricalRegistry:
 
 
 class SampleContext:
-    """Optional helper for sample-scoped trace ingestion."""
+    """sample 범위로 trace를 넣을 때 사용하는 선택적 helper."""
 
     def __init__(self, builder: "ArrayDatasetBuilder", sample_id: int):
-        """Bind one builder and one dense sample id."""
+        """builder 하나와 dense sample id 하나를 묶습니다."""
         self._builder = builder
         self._sample_id = int(sample_id)
 
     def __enter__(self):
-        """Return the sample-scoped helper for `with` usage."""
+        """`with` 문에서 사용할 sample-scoped helper를 반환한다."""
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        """Do not swallow exceptions raised inside the sample context."""
+        """sample context 내부에서 발생한 예외를 삼키지 않는다."""
         return False
 
     def add_trace(self, feature_id: Optional[int] = None, feature_key: Optional[str] = None, *, columns):
-        """Append one trace for the bound sample id.
+        """묶여 있는 sample id에 trace 하나를 추가한다.
 
         Args:
-            feature_id: Optional dense feature id.
-            feature_key: Optional external feature key.
-            columns: Explicit point-column mapping.
+            feature_id: 선택적 dense feature id.
+            feature_key: 선택적 외부 feature key.
+            columns: point-column 매핑.
         """
         self._builder.add_trace(
             sample_id=self._sample_id,
@@ -105,19 +105,18 @@ class SampleContext:
 
 
 class ArrayDatasetBuilder:
-    """High-level builder that turns traces directly into binary array shards.
+    """trace를 바로 받아 최종 binary array shard로 바꾸는 고수준 builder.
 
-    The builder accepts one trace at a time, buffers them into sample-major
-    bundle parquet files, and later turns those bundles into the final binary
-    shard artifact.
+    이 builder는 trace를 하나씩 받아 sample-major bundle parquet에 버퍼링한 뒤,
+    나중에 그 bundle을 최종 binary shard artifact로 변환한다.
 
-    Feature ids can be supplied in two modes:
+    feature id는 두 가지 방식으로 입력할 수 있다.
 
     - known-feature mode:
-      pass `feature_meta_path` or `feature_keys` up front
+      시작할 때 `feature_meta_path` 또는 `feature_keys`를 넘깁니다.
     - discovered-feature mode:
-      omit both and always add traces by `feature_key`; dense feature ids are
-      assigned in first-seen order
+      둘 다 넘기지 않고 항상 `feature_key`로 trace를 추가한다.
+      dense feature id는 처음 등장한 순서대로 부여된다.
     """
 
     def __init__(
@@ -132,21 +131,20 @@ class ArrayDatasetBuilder:
         bundle_config: ArrayBundleConfig | None = None,
         bundle_out_dir: Optional[str] = None,
     ):
-        """Create a new direct-ingestion array dataset builder.
+        """새 direct-ingestion array dataset builder를 생성한다.
 
         Args:
-            out_dir: Final output directory for the standalone binary artifact.
-            sample_meta_path: Path to dense sample metadata parquet.
-            point_schema: Manifest-wide fixed point-column schema.
-            feature_meta_path: Optional dense feature metadata parquet for
-                known-feature mode.
-            feature_keys: Optional external feature keys for known-feature mode
-                when a feature metadata file does not already exist.
-            build_options: High-level binary shard build options.
-            bundle_config: Optional internal bundle flush thresholds.
-            bundle_out_dir: Optional directory where the intermediate bundle
-                artifact should be materialized. When omitted, a visible sibling
-                directory under `out_dir` is used.
+            out_dir: 최종 standalone binary artifact를 쓸 출력 디렉터리.
+            sample_meta_path: dense sample metadata parquet 경로.
+            point_schema: manifest 전체에 고정되는 point-column schema.
+            feature_meta_path: known-feature mode에서 사용할 선택적 dense feature
+                metadata parquet 경로.
+            feature_keys: feature metadata 파일이 없을 때 known-feature mode에서
+                사용할 선택적 외부 feature key 목록.
+            build_options: 고수준 binary shard build 옵션.
+            bundle_config: 내부 bundle flush 기준.
+            bundle_out_dir: 중간 bundle artifact를 기록할 선택적 디렉터리.
+                생략하면 `out_dir` 아래에 보이는 하위 디렉터리를 사용한다.
         """
         self.out_dir = str(Path(out_dir).expanduser().resolve())
         self.sample_meta_path = str(Path(sample_meta_path).expanduser().resolve())
@@ -231,7 +229,7 @@ class ArrayDatasetBuilder:
 
     @staticmethod
     def _prepare_empty_dir(path: str):
-        """Create an empty output directory or fail if it already has contents."""
+        """비어 있는 출력 디렉터리를 만들고, 이미 내용이 있으면 실패한다."""
         if os.path.exists(path):
             if os.path.isdir(path) and not os.listdir(path):
                 return
@@ -239,23 +237,23 @@ class ArrayDatasetBuilder:
         os.makedirs(path, exist_ok=True)
 
     def _ensure_open(self):
-        """Raise when the builder has already been closed or finished."""
+        """builder가 이미 닫혔거나 종료됐으면 예외를 발생시킨다."""
         if self._closed:
             raise RuntimeError("array dataset builder is closed")
         if self._finished:
             raise RuntimeError("array dataset builder is already finished")
 
     def _ensure_trace_stage_open(self):
-        """Raise when trace ingestion is no longer allowed."""
+        """더 이상 trace 입력을 받을 수 없으면 예외를 발생시킨다."""
         self._ensure_open()
         if self._bundles_finalized:
             raise RuntimeError("bundle stage has already been finalized")
 
     def close(self):
-        """Close the builder.
+        """builder를 닫는다.
 
-        When the bundle stage has not yet been finalized, this also removes the
-        partially written bundle artifact directory.
+        bundle 단계가 아직 finalize되지 않았다면, 부분적으로 기록된 bundle
+        artifact 디렉터리도 함께 삭제한다.
         """
         if self._closed:
             return
@@ -266,12 +264,12 @@ class ArrayDatasetBuilder:
             self._closed = True
 
     def __enter__(self):
-        """Return the builder for `with` usage."""
+        """`with` 문에서 사용할 builder 자신을 반환한다."""
         self._ensure_open()
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        """Finalize shards on clean exit and clean up partial bundle state on failure."""
+        """정상 종료 시 shard를 마무리하고, 실패 시 부분 bundle 상태를 정리한다."""
         if exc_type is not None:
             self.close()
             return False
@@ -280,19 +278,19 @@ class ArrayDatasetBuilder:
         return False
 
     def sample(self, sample_id: int) -> SampleContext:
-        """Return a sample-scoped helper object.
+        """sample 범위 helper 객체를 반환한다.
 
         Args:
-            sample_id: Dense sample id for the nested context.
+            sample_id: 중첩 context에서 사용할 dense sample id.
 
         Returns:
-            A helper that automatically fills `sample_id` on `add_trace(...)`.
+            `add_trace(...)` 호출 시 `sample_id`를 자동으로 채워주는 helper.
         """
         self._ensure_trace_stage_open()
         return SampleContext(self, sample_id)
 
     def _resolve_feature_id(self, feature_id: Optional[int], feature_key: Optional[str]) -> int:
-        """Resolve one user-supplied feature reference into a dense feature id."""
+        """사용자가 넘긴 feature 참조를 dense feature id 하나로 정규화한다."""
         if feature_id is None and feature_key is None:
             raise ValueError("provide either feature_id or feature_key")
         if feature_id is not None and feature_key is not None:
@@ -322,7 +320,7 @@ class ArrayDatasetBuilder:
         return int(resolved)
 
     def _normalize_columns(self, *, columns):
-        """Normalize one trace into typed 1D NumPy arrays for every point column."""
+        """trace 하나를 point column별 타입이 맞는 1D NumPy 배열로 정규화한다."""
         if columns is None:
             raise ValueError("columns is required")
         expected_names = {spec.name for spec in self.point_schema}
@@ -371,13 +369,13 @@ class ArrayDatasetBuilder:
         feature_key: Optional[str] = None,
         columns,
     ):
-        """Append one trace into the bundle stage.
+        """bundle 단계에 trace 하나를 추가한다.
 
         Args:
-            sample_id: Dense sample id.
-            feature_id: Optional dense feature id.
-            feature_key: Optional external feature key.
-            columns: Full point-column mapping.
+            sample_id: dense sample id.
+            feature_id: 선택적 dense feature id.
+            feature_key: 선택적 외부 feature key.
+            columns: 전체 point-column 매핑.
         """
         self._ensure_trace_stage_open()
         sample_id = int(sample_id)
@@ -393,7 +391,7 @@ class ArrayDatasetBuilder:
         )
 
     def _write_feature_meta(self):
-        """Write generated dense feature metadata when the builder owns it."""
+        """builder가 소유한 경우 생성된 dense feature metadata를 기록한다."""
         if not self._writes_feature_meta:
             return
         feature_ids = np.arange(len(self._feature_keys_in_order), dtype=np.int32)
@@ -406,7 +404,7 @@ class ArrayDatasetBuilder:
         pl.DataFrame(data).write_parquet(self._feature_meta_path)
 
     def _write_categorical_dictionaries(self):
-        """Write generated categorical dictionary parquet files into the bundle artifact."""
+        """생성된 categorical dictionary parquet 파일을 bundle artifact에 기록한다."""
         dict_root = os.path.join(self.bundle_out_dir, "categorical_dictionaries")
         os.makedirs(dict_root, exist_ok=True)
         for idx, spec in enumerate(self.point_schema):
@@ -425,21 +423,21 @@ class ArrayDatasetBuilder:
         on: Optional[str] = None,
         require_all: bool = False,
     ) -> str:
-        """Merge extra feature metadata columns into the bundle-stage feature metadata.
+        """bundle 단계의 feature metadata에 추가 컬럼을 병합한다.
 
-        This method finalizes the bundle stage first when needed, so discovered
-        feature ids are frozen before metadata enrichment happens.
+        필요하면 먼저 bundle 단계를 finalize하므로, metadata를 보강하기 전에
+        discovered feature id가 고정된다.
 
         Args:
-            records: Extra feature metadata rows. Each row must contain the join
-                column specified by `on`.
-            on: Join column name. Defaults to the configured feature key column
-                when present, otherwise `feature_id`.
-            require_all: When true, require every feature row in the current
-                metadata table to receive a non-null value for each new column.
+            records: 추가할 feature metadata 행. 각 행은 `on`으로 지정한 join
+                컬럼을 반드시 포함해야 한다.
+            on: join 컬럼 이름. 생략하면 설정된 feature key 컬럼이 있으면 그것을,
+                없으면 `feature_id`를 사용한다.
+            require_all: `True`이면 현재 metadata 테이블의 모든 feature row가
+                새 컬럼에 대해 null이 아닌 값을 가져야 한다.
 
         Returns:
-            Absolute path to the updated `feature_meta.parquet`.
+            갱신된 `feature_meta.parquet`의 절대 경로.
         """
         self.finish_bundles()
         base = pl.read_parquet(self._feature_meta_path)
@@ -484,10 +482,10 @@ class ArrayDatasetBuilder:
         return self._feature_meta_path
 
     def finish_bundles(self):
-        """Finalize the intermediate sample-major bundle artifact.
+        """중간 sample-major bundle artifact를 finalize한다.
 
         Returns:
-            Path to the generated `array_bundle_manifest.json`.
+            생성된 `array_bundle_manifest.json` 경로.
         """
         if self._bundles_finalized:
             return self.bundle_manifest_path
@@ -500,15 +498,15 @@ class ArrayDatasetBuilder:
         return self.bundle_manifest_path
 
     def build_shards(self, *, cleanup_bundles: bool = False, return_stats: bool = False):
-        """Convert the finalized bundle stage into the final binary shard artifact.
+        """finalize된 bundle 단계를 최종 binary shard artifact로 변환한다.
 
         Args:
-            cleanup_bundles: Whether to delete the intermediate bundle artifact
-                directory after shard construction succeeds.
-            return_stats: Whether to return build statistics with the manifest path.
+            cleanup_bundles: shard 생성이 성공한 뒤 중간 bundle artifact
+                디렉터리를 삭제할지 여부.
+            return_stats: manifest 경로와 함께 build 통계를 반환할지 여부.
 
         Returns:
-            Manifest path, or `(manifest_path, stats)` when `return_stats=True`.
+            manifest 경로 또는 `return_stats=True`일 때 `(manifest_path, stats)`.
         """
         if self._finished:
             if return_stats:
@@ -542,5 +540,5 @@ class ArrayDatasetBuilder:
         return result
 
     def finish(self, *, cleanup_bundles: bool = False, return_stats: bool = False):
-        """Compatibility alias for `build_shards(...)`."""
+        """`build_shards(...)`와 동일한 호환용 alias입니다."""
         return self.build_shards(cleanup_bundles=cleanup_bundles, return_stats=return_stats)

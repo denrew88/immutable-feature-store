@@ -1,4 +1,4 @@
-"""High-level builder facade for creating scalar shards from per-sample values."""
+"""sample별 값 입력으로 scalar shard를 만드는 고수준 builder facade."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def _load_dense_metadata(
     entity_name: str,
     key_col: str,
 ) -> pl.DataFrame:
-    """Load dense metadata and validate row-order ids and optional keys."""
+    """dense metadata를 읽고 row 순서 id와 선택적 key를 검증한다."""
 
     df = pl.read_parquet(meta_path)
     dense_ids = np.arange(df.height, dtype=np.int64 if id_col == "sample_id" else np.int32)
@@ -48,7 +48,7 @@ def _load_dense_metadata(
 
 
 def _prepare_empty_dir(path: str):
-    """Create an empty directory or fail when it already contains files."""
+    """비어 있는 디렉터리를 만들고, 이미 파일이 있으면 실패한다."""
 
     if os.path.exists(path):
         if os.path.isdir(path) and not os.listdir(path):
@@ -59,50 +59,50 @@ def _prepare_empty_dir(path: str):
 
 @dataclass
 class ScalarSampleContext:
-    """Optional helper for sample-scoped scalar ingestion."""
+    """sample 범위로 scalar 값을 넣을 때 사용하는 선택적 helper."""
 
     builder: "ScalarDatasetBuilder"
     sample_id: int
 
     def __enter__(self):
-        """Open the sample-scoped context."""
+        """sample 범위 context를 연다."""
         self.builder._begin_sample(self.sample_id)
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        """Flush the sample when the context exits without swallowing errors."""
+        """예외를 삼키지 않고 context 종료 시 sample을 flush한다."""
         self.builder._end_sample(abort=exc_type is not None)
         return False
 
     def write_value(self, feature, value):
-        """Add one scalar feature value to the open sample.
+        """열려 있는 sample에 scalar feature value 하나를 추가한다.
 
         Args:
-            feature: Dense `feature_id` or external `feature_key`.
-            value: Scalar value to store for the feature. `None` or `NaN`
-                becomes missing.
+            feature: dense `feature_id` 또는 외부 `feature_key`.
+            value: 해당 feature에 저장할 scalar value. `None` 또는 `NaN`은
+                missing으로 처리한다.
         """
 
         self.builder._append_open_sample_value(feature, value)
 
     def write_values(self, values: Mapping):
-        """Add many scalar feature values to the open sample."""
+        """열려 있는 sample에 scalar feature value 여러 개를 추가한다."""
 
         for feature_ref, value in dict(values).items():
             self.write_value(feature_ref, value)
 
 
 class ScalarDatasetBuilder:
-    """High-level builder that writes sample-bundle inputs and final scalar shards.
+    """sample-bundle 입력과 최종 scalar shard를 만드는 고수준 builder.
 
-    The primary public API is sample-scoped on purpose:
+    기본 public API는 의도적으로 sample 범위에 맞춰져 있다.
 
     - `write_sample(sample_id, values=...)`
     - `with builder.open_sample(sample_id) as sample: ...`
 
-    This keeps memory bounded and makes sample revisits impossible. Internally,
-    completed samples are appended to bundle parquet files instead of creating
-    one parquet file per sample.
+    이 구조는 메모리를 제한하고 sample 재방문을 불가능하게 만듭니다. 내부적으로는
+    sample 하나당 parquet 파일을 만드는 대신, 완료된 sample을 bundle parquet에
+    이어 붙입니다.
     """
 
     _DEFAULT_BUNDLE_FLUSH_ROWS = 1_000_000
@@ -117,7 +117,7 @@ class ScalarDatasetBuilder:
         build_options: ScalarShardBuildOptions | None = None,
         sample_major_out_dir: Optional[str] = None,
     ):
-        """Create a new scalar dataset builder."""
+        """새 scalar dataset builder를 생성한다."""
 
         self.out_dir = str(Path(out_dir).expanduser().resolve())
         self.source_sample_meta_path = str(Path(sample_meta_path).expanduser().resolve())
@@ -201,7 +201,7 @@ class ScalarDatasetBuilder:
         self._bundle_flush_rows_target = int(self._DEFAULT_BUNDLE_FLUSH_ROWS)
 
     def _stats_y_cols(self) -> list[str]:
-        """Return the unique ordered list of target columns to precompute."""
+        """미리 계산할 target 컬럼의 순서 보존 unique 목록을 반환한다."""
 
         values = self.build_options.stats_y_cols
         if not values:
@@ -216,7 +216,7 @@ class ScalarDatasetBuilder:
         return ordered
 
     def _ensure_open(self):
-        """Raise if the builder has already been closed or finished."""
+        """builder가 이미 닫혔거나 종료됐으면 예외를 발생시킨다."""
 
         if self._closed:
             raise RuntimeError("scalar dataset builder is closed")
@@ -224,14 +224,14 @@ class ScalarDatasetBuilder:
             raise RuntimeError("scalar dataset builder has already built shards")
 
     def _ensure_sample_major_open(self):
-        """Raise if sample-major ingestion is no longer allowed."""
+        """더 이상 sample-major 입력을 받을 수 없으면 예외를 발생시킨다."""
 
         self._ensure_open()
         if self._sample_major_finalized:
             raise RuntimeError("sample-major stage has already been finalized")
 
     def _normalize_scalar_value(self, value) -> Optional[float]:
-        """Normalize one scalar value or treat `None`/`NaN` as missing."""
+        """scalar 값 하나를 정규화하고 `None`/`NaN`은 missing으로 처리한다."""
 
         if value is None:
             return None
@@ -241,7 +241,7 @@ class ScalarDatasetBuilder:
         return scalar
 
     def _resolve_feature_id(self, feature_ref) -> int:
-        """Resolve one feature reference into a dense feature id."""
+        """feature 참조 하나를 dense feature id로 변환한다."""
 
         if isinstance(feature_ref, (int, np.integer)):
             resolved = int(feature_ref)
@@ -265,7 +265,7 @@ class ScalarDatasetBuilder:
         return int(resolved)
 
     def _flush_bundle(self):
-        """Write the currently buffered scalar rows into one bundle parquet file."""
+        """현재 버퍼에 담긴 scalar row를 bundle parquet 파일 하나로 기록한다."""
 
         if self._bundle_row_count <= 0:
             return
@@ -295,7 +295,7 @@ class ScalarDatasetBuilder:
         self._bundle_row_count = 0
 
     def _append_sample_rows(self, sample_id: int, feature_values: Mapping[int, float]):
-        """Append one finished sample into the current bundle buffer."""
+        """완료된 sample 하나를 현재 bundle 버퍼에 추가한다."""
 
         if feature_values:
             feature_ids = np.asarray(sorted(feature_values.keys()), dtype=np.int32)
@@ -310,7 +310,7 @@ class ScalarDatasetBuilder:
         self._sample_written[int(sample_id)] = True
 
     def _copy_sample_meta(self):
-        """Copy the source sample metadata into the visible stage unchanged."""
+        """원본 sample metadata를 보이는 stage로 수정 없이 복사한다."""
 
         if os.path.normcase(os.path.abspath(self.sample_major_sample_meta_path)) != os.path.normcase(
             os.path.abspath(self.source_sample_meta_path)
@@ -318,7 +318,7 @@ class ScalarDatasetBuilder:
             shutil.copy2(self.source_sample_meta_path, self.sample_major_sample_meta_path)
 
     def _write_feature_meta(self):
-        """Write or copy feature metadata for the sample-major stage."""
+        """sample-major stage용 feature metadata를 기록하거나 복사한다."""
 
         if self._feature_meta_source_path:
             shutil.copy2(self._feature_meta_source_path, self.sample_major_feature_meta_path)
@@ -339,7 +339,7 @@ class ScalarDatasetBuilder:
         pl.DataFrame(data).write_parquet(self.sample_major_feature_meta_path)
 
     def _write_sample_major_manifest(self):
-        """Write the visible sample-bundle manifest for the intermediate stage."""
+        """중간 단계용 sample-bundle manifest를 기록한다."""
 
         data = {
             "format": "scalar-sample-bundles",
@@ -358,7 +358,7 @@ class ScalarDatasetBuilder:
             json.dump(data, f, indent=2)
 
     def _begin_sample(self, sample_id: int):
-        """Open one sample-scoped buffer."""
+        """sample 범위 버퍼 하나를 연다."""
 
         self._ensure_sample_major_open()
         sample_id = int(sample_id)
@@ -372,7 +372,7 @@ class ScalarDatasetBuilder:
         self._open_sample_values = {}
 
     def _append_open_sample_value(self, feature_ref, value):
-        """Append one feature value to the currently open sample."""
+        """현재 열려 있는 sample에 feature value 하나를 추가한다."""
 
         if self._open_sample_id is None or self._open_sample_values is None:
             raise RuntimeError("no sample context is currently open")
@@ -386,7 +386,7 @@ class ScalarDatasetBuilder:
             self._open_sample_values[int(resolved_feature_id)] = float(normalized)
 
     def _end_sample(self, *, abort: bool):
-        """Flush or discard the currently open sample buffer."""
+        """현재 열려 있는 sample 버퍼를 flush하거나 버립니다."""
 
         if self._open_sample_id is None:
             return
@@ -399,10 +399,10 @@ class ScalarDatasetBuilder:
         self._append_sample_rows(sample_id, values)
 
     def write_sample(self, sample_id: int, values: Mapping):
-        """Write one complete sample and flush it immediately.
+        """완성된 sample 하나를 기록하고 즉시 flush한다.
 
-        This is the recommended public API because it keeps memory bounded and
-        makes sample revisits impossible: each sample can be written exactly once.
+        이 방식은 메모리를 제한하고 sample 재방문을 불가능하게 만들기 때문에
+        권장하는 public API이다. 각 sample은 정확히 한 번만 쓸 수 있다.
         """
 
         self._begin_sample(int(sample_id))
@@ -415,7 +415,7 @@ class ScalarDatasetBuilder:
         self._end_sample(abort=False)
 
     def open_sample(self, sample_id: int) -> ScalarSampleContext:
-        """Return a sample-scoped context manager for incremental value addition."""
+        """증분 방식으로 값을 추가할 때 사용할 sample 범위 context manager를 반환한다."""
 
         return ScalarSampleContext(self, int(sample_id))
 
@@ -426,7 +426,7 @@ class ScalarDatasetBuilder:
         on: Optional[str] = None,
         require_all: bool = False,
     ) -> str:
-        """Merge extra feature metadata columns into the stage feature metadata."""
+        """stage feature metadata에 추가 컬럼을 병합한다."""
 
         self.finish_sample_major()
         base = pl.read_parquet(self.sample_major_feature_meta_path)
@@ -470,7 +470,7 @@ class ScalarDatasetBuilder:
         return self.sample_major_feature_meta_path
 
     def finish_sample_major(self):
-        """Finalize the visible sample-major stage."""
+        """보이는 sample-major 단계를 finalize한다."""
 
         if self._sample_major_finalized:
             return self.sample_major_manifest_path
@@ -486,11 +486,10 @@ class ScalarDatasetBuilder:
         return self.sample_major_manifest_path
 
     def build_shards(self, *, keep_sample_major: bool = False, return_stats: bool = False):
-        """Build the final scalar shard artifact from the sample-major stage.
+        """sample-major 단계에서 최종 scalar shard artifact를 생성한다.
 
         Notes:
-            When `keep_sample_major=False`, the visible stage directory is
-            deleted after shard construction.
+            `keep_sample_major=False`이면 shard 생성 후 보이는 stage 디렉터리를 삭제한다.
         """
 
         if self._shards_built:
@@ -530,7 +529,7 @@ class ScalarDatasetBuilder:
         return self._manifest_path
 
     def close(self):
-        """Close the builder and drop partial sample-major output when unfinished."""
+        """builder를 닫고, 미완료 상태면 부분 sample-major 출력을 정리한다."""
 
         if self._closed:
             return
@@ -540,12 +539,12 @@ class ScalarDatasetBuilder:
         self._closed = True
 
     def __enter__(self):
-        """Return the builder itself for `with` usage."""
+        """`with` 문에서 사용할 builder 자신을 반환한다."""
 
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        """Close the builder when leaving the context."""
+        """context를 빠져나갈 때 builder를 닫는다."""
 
         self.close()
         return False

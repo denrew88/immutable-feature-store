@@ -1,43 +1,43 @@
-Java package for scalar feature shards.
+Java용 scalar feature shard 라이브러리 패키지입니다.
 
-## What It Includes
+## 포함 기능
 
 - dense-id scalar shard reader facade
-- direct-ingestion builder with bundled sample-major stage
-- feature selection facade
-- sample/feature metadata helpers
+- bundled sample-major stage 기반 direct-ingestion builder
+- selection facade
+- sample/feature metadata helper
 
-Primary entry point:
+진입점:
 
 - `fs.io.ScalarFeatureShards`
 
-## Prereq
+## 준비물
 
 - Java 8
-- DuckDB JDBC jar for Java 8 in `java/lib/duckdb_jdbc-1.1.3.jar`
+- `java/lib/duckdb_jdbc-1.1.3.jar`
 
-If the jar is missing:
+jar가 없으면:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File java\download_duckdb_jdbc.ps1
 ```
 
-## Build
+## 빌드
 
 ```powershell
 cd packages\scalar_feature_shard_java
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-Output:
+출력:
 
 - `dist/scalar-feature-shard-java-0.1.0.jar`
 
-This is a thin jar. Keep `duckdb_jdbc-1.1.3.jar` on the runtime classpath.
+thin jar이므로 런타임 classpath에 DuckDB JDBC jar를 같이 둬야 한다.
 
-## Public API
+## public API
 
-`fs.io.ScalarFeatureShards` provides:
+`fs.io.ScalarFeatureShards`:
 
 - `loadManifest(...)`
 - `open(...)`
@@ -47,14 +47,14 @@ This is a thin jar. Keep `duckdb_jdbc-1.1.3.jar` on the runtime classpath.
 - `buildCandidates(...)`
 - `selectFeatures(...)`
 
-`fs.io.ScalarShardDataset` provides:
+`fs.io.ScalarShardDataset`:
 
 - `getValue(...)`
 - `getValues(...)`
 - `getValueByKey(...)`
 - `getValuesByKeys(...)`
 
-`fs.io.ScalarDatasetBuilder` provides:
+`fs.io.ScalarDatasetBuilder`:
 
 - `writeSample(...)`
 - `openSample(...)`
@@ -62,11 +62,8 @@ This is a thin jar. Keep `duckdb_jdbc-1.1.3.jar` on the runtime classpath.
 - `updateFeatureMeta(...)`
 - `buildShards(keepSampleMajor)`
 
-## Notes
+## 참고
 
-- current scalar storage format is standalone parquet shard artifact
-- ids are dense:
-  - `sample_id == sample_meta.parquet` row index
-  - `feature_id == feature_meta.parquet` row index
-- selection stats are stored per `y_col` under `selection_stats/*.parquet`
-- intermediate sample-major stage is bundle-based, not file-per-sample
+- 최종 scalar artifact는 standalone 폴더 구조입니다.
+- `selection_stats/<y>.parquet`를 통해 selection fast path를 탑니다.
+- intermediate sample-major stage는 file-per-sample이 아니라 bundle 기반입니다.

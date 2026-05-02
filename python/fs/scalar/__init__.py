@@ -1,4 +1,4 @@
-"""Scalar feature storage subpackage."""
+"""scalar feature 저장 서브패키지."""
 
 from .builder import ScalarDatasetBuilder, ScalarSampleContext
 from .metadata import write_feature_meta, write_sample_meta

@@ -191,32 +191,32 @@ _MANIFEST_CACHE_TTL_SECONDS = 30 * 60
 
 
 def _normalize_manifest_path(manifest_path: str) -> str:
-    """Normalize a manifest path for cache-key use.
+    """캐시 키로 쓰기 좋게 manifest 경로를 정규화한다.
 
     Args:
-        manifest_path: User-supplied manifest path.
+        manifest_path: 사용자가 넘긴 manifest 경로.
 
     Returns:
-        Absolute normalized manifest path.
+        정규화된 절대 manifest 경로.
     """
     return os.path.abspath(os.path.expanduser(manifest_path))
 
 
 def _load_manifest_json(manifest_path: str):
-    """Load a manifest JSON file into a dictionary.
+    """manifest JSON 파일을 읽어 dictionary로 반환한다.
 
     Args:
-        manifest_path: Path to a manifest JSON file.
+        manifest_path: manifest JSON 파일 경로.
 
     Returns:
-        Parsed JSON dictionary.
+        파싱된 JSON dictionary.
     """
     with open(manifest_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def _close_manifest_entry(entry: _ManifestCacheEntry):
-    """Release reader-backed resources for one cached manifest entry."""
+    """캐시된 manifest 엔트리 하나가 잡고 있는 reader 자원을 해제한다."""
     close_fn = getattr(entry.reader, "close", None)
     if callable(close_fn):
         try:
@@ -226,7 +226,7 @@ def _close_manifest_entry(entry: _ManifestCacheEntry):
 
 
 def _sweep_manifest_cache(cache: OrderedDict, now: float):
-    """Evict expired manifest cache entries and enforce the entry bound."""
+    """만료된 manifest 캐시 엔트리를 비우고 최대 개수 제한을 맞춥니다."""
     expired_keys = [
         key
         for key, entry in cache.items()
@@ -242,14 +242,14 @@ def _sweep_manifest_cache(cache: OrderedDict, now: float):
 
 
 def _touch_manifest_entry(cache: OrderedDict, key: str, entry: _ManifestCacheEntry, now: float):
-    """Mark one manifest cache entry as recently used."""
+    """manifest 캐시 엔트리 하나를 최근 사용 상태로 갱신한다."""
     entry.last_access_ts = float(now)
     cache[key] = entry
     cache.move_to_end(key)
 
 
 def _manifest_cache_snapshot(cache: OrderedDict, now: float):
-    """Return a JSON-safe summary for one manifest cache."""
+    """manifest 캐시 하나에 대한 JSON-safe 요약 정보를 반환한다."""
     entries = []
     for key, entry in cache.items():
         entries.append(
@@ -266,18 +266,18 @@ def _manifest_cache_snapshot(cache: OrderedDict, now: float):
 
 
 def _build_key_to_id_index(meta_path: str, key_col: str, id_col: str):
-    """Build an external-key to id index from one metadata parquet file.
+    """metadata parquet 파일 하나에서 외부 key -> id 인덱스를 생성한다.
 
     Args:
-        meta_path: Path to `sample_meta.parquet` or `feature_meta.parquet`.
-        key_col: Column containing external keys.
-        id_col: Preferred integer id column. If absent, row order becomes the id.
+        meta_path: `sample_meta.parquet` 또는 `feature_meta.parquet` 경로.
+        key_col: 외부 key가 들어 있는 컬럼 이름.
+        id_col: 우선 사용할 정수 id 컬럼 이름. 없으면 row 순서를 id로 사용한다.
 
     Returns:
-        A dictionary mapping string keys to integer ids.
+        문자열 key를 정수 id로 매핑하는 dictionary.
 
     Raises:
-        ValueError: If the key column is missing, null, or non-unique.
+        ValueError: key 컬럼이 없거나, null이 있거나, unique하지 않을 때 발생한다.
     """
     df = pl.read_parquet(meta_path)
     if key_col not in df.columns:
@@ -295,19 +295,18 @@ def _build_key_to_id_index(meta_path: str, key_col: str, id_col: str):
 
 
 def _build_id_to_key_index(meta_path: str, key_col: str, id_col: str):
-    """Build an id-to-external-key index from one metadata parquet file.
+    """metadata parquet 파일 하나에서 id -> 외부 key 인덱스를 생성한다.
 
     Args:
-        meta_path: Path to `sample_meta.parquet` or `feature_meta.parquet`.
-        key_col: Column containing external keys.
-        id_col: Preferred integer id column. If absent, row order becomes the id.
+        meta_path: `sample_meta.parquet` 또는 `feature_meta.parquet` 경로.
+        key_col: 외부 key가 들어 있는 컬럼 이름.
+        id_col: 우선 사용할 정수 id 컬럼 이름. 없으면 row 순서를 id로 사용한다.
 
     Returns:
-        A dictionary mapping integer ids to string keys, or `None` when the key
-        column is not present.
+        정수 id를 문자열 key로 매핑하는 dictionary. key 컬럼이 없으면 `None`.
 
     Raises:
-        ValueError: If the key column contains nulls or duplicate values.
+        ValueError: key 컬럼에 null 또는 중복 값이 있을 때 발생한다.
     """
     df = pl.read_parquet(meta_path)
     if key_col not in df.columns:
@@ -325,13 +324,13 @@ def _build_id_to_key_index(meta_path: str, key_col: str, id_col: str):
 
 
 def _get_array_cache_entry(manifest_path: str) -> _ManifestCacheEntry:
-    """Load and cache the reader state for an array manifest.
+    """array manifest용 reader 상태를 로드하고 캐시에 저장한다.
 
     Args:
-        manifest_path: Path to a parquet or binary array manifest.
+        manifest_path: parquet 또는 binary array manifest 경로.
 
     Returns:
-        Cached manifest metadata, indexes, and reader objects for array lookups.
+        array 조회에 필요한 manifest metadata, 인덱스, reader 객체를 담은 캐시 엔트리.
     """
     normalized = _normalize_manifest_path(manifest_path)
     with _CACHE_LOCK:
@@ -369,13 +368,13 @@ def _get_array_cache_entry(manifest_path: str) -> _ManifestCacheEntry:
 
 
 def _get_scalar_cache_entry(manifest_path: str) -> _ManifestCacheEntry:
-    """Load and cache the reader state for a scalar manifest.
+    """scalar manifest용 reader 상태를 로드하고 캐시에 저장한다.
 
     Args:
-        manifest_path: Path to a scalar shard manifest.
+        manifest_path: scalar shard manifest 경로.
 
     Returns:
-        Cached manifest metadata, indexes, and reader objects for scalar lookups.
+        scalar 조회에 필요한 manifest metadata, 인덱스, reader 객체를 담은 캐시 엔트리.
     """
     normalized = _normalize_manifest_path(manifest_path)
     with _CACHE_LOCK:
@@ -404,14 +403,14 @@ def _get_scalar_cache_entry(manifest_path: str) -> _ManifestCacheEntry:
 
 
 def _json_safe_array(values, sanitize_nonfinite: bool):
-    """Convert a numeric array into JSON-safe Python values.
+    """숫자 배열을 JSON-safe한 Python 값으로 변환한다.
 
     Args:
-        values: Iterable of numeric values.
-        sanitize_nonfinite: Whether to replace NaN and infinities with `None`.
+        values: 숫자 값 iterable.
+        sanitize_nonfinite: NaN과 infinity를 `None`으로 치환할지 여부.
 
     Returns:
-        A list containing floats or `None` values safe for JSON responses.
+        JSON 응답에 바로 넣을 수 있는 float 또는 `None` 목록.
     """
     out = []
     for value in values:
@@ -424,7 +423,7 @@ def _json_safe_array(values, sanitize_nonfinite: bool):
 
 
 def _timedelta_ns_to_iso(value_ns: int) -> str:
-    """Convert one signed nanosecond delta into an ISO 8601 duration string."""
+    """부호가 있는 nanosecond delta 하나를 ISO 8601 duration 문자열로 변환한다."""
     total_ns = int(value_ns)
     sign = "-" if total_ns < 0 else ""
     total_ns = abs(total_ns)
@@ -452,7 +451,7 @@ def _timedelta_ns_to_iso(value_ns: int) -> str:
 
 
 def _normalize_temporal_format(temporal_format: str) -> str:
-    """Validate the requested temporal JSON rendering mode."""
+    """요청된 temporal JSON 렌더링 모드를 검증한다."""
     normalized = str(temporal_format or "iso").strip().lower()
     if normalized not in {"iso", "raw_ns"}:
         raise HTTPException(status_code=400, detail="temporal_format must be 'iso' or 'raw_ns'")
@@ -460,7 +459,7 @@ def _normalize_temporal_format(temporal_format: str) -> str:
 
 
 def _array_point_schema(entry: _ManifestCacheEntry):
-    """Return the normalized point schema for one cached array manifest."""
+    """캐시된 array manifest 하나에 대한 정규화된 point schema를 반환한다."""
     if entry.point_schema is not None:
         return entry.point_schema
     if isinstance(entry.reader, ArrayBinaryShardReader):
@@ -474,7 +473,7 @@ def _array_point_schema(entry: _ManifestCacheEntry):
 
 
 def _get_array_categorical_dictionaries(entry: _ManifestCacheEntry):
-    """Load and cache categorical dictionary mappings for one array dataset."""
+    """array dataset 하나에 대한 categorical dictionary 매핑을 로드하고 캐시한다."""
     if entry.categorical_dictionaries is not None:
         return entry.categorical_dictionaries
     if not isinstance(entry.reader, ArrayBinaryShardReader):
@@ -492,7 +491,7 @@ def _json_safe_column(
     categorical_dictionary,
     temporal_format: str,
 ):
-    """Convert one point-column array into JSON-safe scalars."""
+    """point-column 배열 하나를 JSON-safe scalar 목록으로 변환한다."""
     logical_type = normalize_logical_type(
         spec.logical_type if hasattr(spec, "logical_type") else spec.get("logical_type", LogicalType.CONTINUOUS)
     )
@@ -526,7 +525,7 @@ def _json_safe_column(
 
 
 def _schema_json(specs):
-    """Convert point-schema objects into JSON-safe dictionaries."""
+    """point-schema 객체를 JSON-safe dictionary로 변환한다."""
     out = []
     for spec in specs:
         if hasattr(spec, "to_json"):
@@ -544,7 +543,7 @@ def _schema_json(specs):
 
 
 def _get_array_sample_key_index(entry: _ManifestCacheEntry):
-    """Load and cache sample-key mappings for one array dataset."""
+    """array dataset 하나에 대한 sample-key 매핑을 로드하고 캐시한다."""
     if entry.sample_key_index is None:
         entry.sample_key_index = _build_key_to_id_index(
             entry.manifest.sample_meta_path,
@@ -555,7 +554,7 @@ def _get_array_sample_key_index(entry: _ManifestCacheEntry):
 
 
 def _get_array_feature_key_index(entry: _ManifestCacheEntry):
-    """Load and cache feature-key mappings for one array dataset."""
+    """array dataset 하나에 대한 feature-key 매핑을 로드하고 캐시한다."""
     feature_meta_path = str(getattr(entry.manifest, "feature_meta_path", "") or "")
     if not feature_meta_path:
         raise ValueError("feature metadata path is required for feature_key requests")
@@ -569,7 +568,7 @@ def _get_array_feature_key_index(entry: _ManifestCacheEntry):
 
 
 def _get_array_sample_keys_by_id(entry: _ManifestCacheEntry):
-    """Load and cache sample-id to sample-key mappings for one array dataset."""
+    """array dataset 하나에 대한 sample-id -> sample-key 매핑을 로드하고 캐시한다."""
     if entry.sample_keys_by_id is None:
         entry.sample_keys_by_id = _build_id_to_key_index(
             entry.manifest.sample_meta_path,
@@ -580,7 +579,7 @@ def _get_array_sample_keys_by_id(entry: _ManifestCacheEntry):
 
 
 def _get_array_feature_keys_by_id(entry: _ManifestCacheEntry):
-    """Load and cache feature-id to feature-key mappings for one array dataset."""
+    """array dataset 하나에 대한 feature-id -> feature-key 매핑을 로드하고 캐시한다."""
     feature_meta_path = str(getattr(entry.manifest, "feature_meta_path", "") or "")
     if not feature_meta_path:
         return None
@@ -594,7 +593,7 @@ def _get_array_feature_keys_by_id(entry: _ManifestCacheEntry):
 
 
 def _get_scalar_sample_key_index(entry: _ManifestCacheEntry):
-    """Load and cache sample-key mappings for one scalar dataset."""
+    """scalar dataset 하나에 대한 sample-key 매핑을 로드하고 캐시한다."""
     if entry.sample_key_index is None:
         entry.sample_key_index = _build_key_to_id_index(
             entry.manifest.sample_meta_path,
@@ -605,7 +604,7 @@ def _get_scalar_sample_key_index(entry: _ManifestCacheEntry):
 
 
 def _get_scalar_feature_key_index(entry: _ManifestCacheEntry):
-    """Load and cache feature-key mappings for one scalar dataset."""
+    """scalar dataset 하나에 대한 feature-key 매핑을 로드하고 캐시한다."""
     feature_meta_path = str(getattr(entry.manifest, "feature_meta_path", "") or "")
     if not feature_meta_path:
         raise ValueError("feature metadata path is required for feature_key requests")
@@ -619,7 +618,7 @@ def _get_scalar_feature_key_index(entry: _ManifestCacheEntry):
 
 
 def _get_scalar_sample_keys_by_id(entry: _ManifestCacheEntry):
-    """Load and cache sample-id to sample-key mappings for one scalar dataset."""
+    """scalar dataset 하나에 대한 sample-id -> sample-key 매핑을 로드하고 캐시한다."""
     if entry.sample_keys_by_id is None:
         entry.sample_keys_by_id = _build_id_to_key_index(
             entry.manifest.sample_meta_path,
@@ -630,7 +629,7 @@ def _get_scalar_sample_keys_by_id(entry: _ManifestCacheEntry):
 
 
 def _get_scalar_feature_keys_by_id(entry: _ManifestCacheEntry):
-    """Load and cache feature-id to feature-key mappings for one scalar dataset."""
+    """scalar dataset 하나에 대한 feature-id -> feature-key 매핑을 로드하고 캐시한다."""
     feature_meta_path = str(getattr(entry.manifest, "feature_meta_path", "") or "")
     if not feature_meta_path:
         return None
@@ -644,17 +643,17 @@ def _get_scalar_feature_keys_by_id(entry: _ManifestCacheEntry):
 
 
 def _resolve_array_request_feature_ids(req: ArrayFeatureRequest, entry: _ManifestCacheEntry):
-    """Validate and normalize the array feature request fields.
+    """array feature 요청 필드를 검증하고 정규화한다.
 
     Args:
-        req: Parsed array feature request model.
-        entry: Cached manifest metadata and reader state.
+        req: 파싱된 array feature 요청 모델.
+        entry: 캐시된 manifest metadata 및 reader 상태.
 
     Returns:
-        A non-empty list of feature ids.
+        비어 있지 않은 feature id 목록.
 
     Raises:
-        HTTPException: If the request does not identify features unambiguously.
+        HTTPException: 요청이 feature를 모호하게 지정했을 때 발생한다.
     """
     provided = sum(
         int(value is not None)
@@ -694,7 +693,7 @@ def _resolve_array_request_feature_ids(req: ArrayFeatureRequest, entry: _Manifes
 
 
 def _resolve_array_request_sample_ids(req: ArrayFeatureRequest, entry: _ManifestCacheEntry):
-    """Validate and normalize the array sample request fields."""
+    """array sample 요청 필드를 검증하고 정규화한다."""
     has_ids = req.sample_ids is not None
     has_keys = req.sample_keys is not None
     if has_ids == has_keys:
@@ -721,7 +720,7 @@ def _resolve_array_request_sample_ids(req: ArrayFeatureRequest, entry: _Manifest
 
 
 def _resolve_scalar_request_feature_id(req: ScalarFeatureRequest, entry: _ManifestCacheEntry) -> int:
-    """Validate and normalize the scalar feature request fields."""
+    """scalar feature 요청 필드를 검증하고 정규화한다."""
     provided = int(req.feature_id is not None) + int(req.feature_key is not None)
     if provided != 1:
         raise HTTPException(status_code=400, detail="provide exactly one of feature_id or feature_key")
@@ -738,7 +737,7 @@ def _resolve_scalar_request_feature_id(req: ScalarFeatureRequest, entry: _Manife
 
 
 def _resolve_scalar_request_sample_ids(req: ScalarFeatureRequest, entry: _ManifestCacheEntry) -> List[int]:
-    """Validate and normalize the scalar sample request fields."""
+    """scalar sample 요청 필드를 검증하고 정규화한다."""
     has_ids = req.sample_ids is not None
     has_keys = req.sample_keys is not None
     if has_ids == has_keys:
@@ -766,13 +765,13 @@ def _resolve_scalar_request_sample_ids(req: ScalarFeatureRequest, entry: _Manife
 
 @app.get("/healthz")
 def healthz():
-    """Return a lightweight health response for liveness checks."""
+    """liveness check용 가벼운 health 응답을 반환한다."""
     return {"ok": True}
 
 
 @app.get("/cache-stats", response_model=CacheStatsResponse)
 def cache_stats():
-    """Return in-process cache occupancy and limits for the serving server."""
+    """서빙 서버의 in-process cache 사용량과 제한을 반환한다."""
     now = time.monotonic()
     with _CACHE_LOCK:
         _sweep_manifest_cache(_ARRAY_CACHE, now)
@@ -824,7 +823,7 @@ def cache_stats():
 
 @app.post("/array-schema", response_model=ArraySchemaResponse)
 def array_schema(req: ArraySchemaRequest):
-    """Return the point-column schema for one array manifest."""
+    """array manifest 하나에 대한 point-column schema를 반환한다."""
     entry = _get_array_cache_entry(req.manifest_path)
     point_schema = _array_point_schema(entry)
     categorical_dictionaries = None
@@ -850,13 +849,13 @@ def array_schema(req: ArraySchemaRequest):
 
 @app.post("/array-feature", response_model=ArrayFeatureResponse)
 def array_feature(req: ArrayFeatureRequest):
-    """Serve array traces for one or more features and requested sample ids.
+    """하나 이상의 feature와 요청한 sample id에 대한 array trace를 반환한다.
 
     Args:
-        req: Request describing the manifest, feature ids, and sample ids.
+        req: manifest, feature id, sample id를 담은 요청 객체.
 
     Returns:
-        A response containing traces for one feature or a list of feature items.
+        feature 하나의 trace 목록 또는 feature별 결과 목록을 담은 응답.
     """
     entry = _get_array_cache_entry(req.manifest_path)
     feature_ids = _resolve_array_request_feature_ids(req, entry)
@@ -929,13 +928,13 @@ def array_feature(req: ArrayFeatureRequest):
 
 @app.post("/scalar-feature", response_model=ScalarFeatureResponse)
 def scalar_feature(req: ScalarFeatureRequest):
-    """Serve scalar feature values for requested sample ids.
+    """요청한 sample id에 대한 scalar feature 값을 반환한다.
 
     Args:
-        req: Request describing the manifest, feature id, and sample ids.
+        req: manifest, feature id, sample id를 담은 요청 객체.
 
     Returns:
-        A response containing one scalar value record per requested sample id.
+        요청한 sample id마다 scalar value 레코드 하나를 담은 응답.
     """
     entry = _get_scalar_cache_entry(req.manifest_path)
     feature_id = _resolve_scalar_request_feature_id(req, entry)
@@ -979,13 +978,13 @@ def scalar_feature(req: ScalarFeatureRequest):
 
 @app.post("/run-selection", response_model=SelectionResponse)
 def run_selection(req: SelectionRequest):
-    """Run scalar feature selection and return selected feature ids.
+    """scalar feature selection을 실행하고 선택된 feature id를 반환한다.
 
     Args:
-        req: Request containing selection thresholds and batching parameters.
+        req: selection threshold와 batching 파라미터를 담은 요청 객체.
 
     Returns:
-        Selection result metadata, timing, and selected feature ids.
+        selection 결과 metadata, timing, 선택된 feature id를 담은 응답.
     """
     entry = _get_scalar_cache_entry(req.manifest_path)
     total_started = time.perf_counter()
@@ -1061,7 +1060,7 @@ def run_selection(req: SelectionRequest):
 
 
 def main():
-    """Run the local FastAPI server with uvicorn."""
+    """uvicorn으로 로컬 FastAPI 서버를 실행한다."""
     uvicorn.run(
         "scripts.serve_array_api:app",
         host="127.0.0.1",

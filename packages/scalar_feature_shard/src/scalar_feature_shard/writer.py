@@ -1,4 +1,4 @@
-"""Thin public writer facade for scalar feature shards."""
+"""scalar feature shard를 위한 얇은 public writer facade."""
 
 import json
 from pathlib import Path
@@ -24,7 +24,7 @@ def _resolve_options(
     values_dtype,
     valid_dtype,
 ):
-    """Merge explicit keyword arguments over optional build options."""
+    """선택적 build 옵션 위에 명시적 keyword 인자를 덮어써서 병합한다."""
 
     base = options or BuildOptions()
     if isinstance(base, ScalarShardBuildOptions):
@@ -77,28 +77,28 @@ def build_shard(
     values_dtype: str | None = None,
     valid_dtype: str | None = None,
 ):
-    """Build scalar shards from sample-major metadata and per-sample parquet files.
+    """sample-major metadata와 sample별 parquet 파일에서 scalar shard를 생성한다.
 
     Args:
-        source: Path to sample-major `sample_meta.parquet`.
-        out_dir: Output directory for the standalone shard artifact.
-        feature_meta_path: Optional path to dense feature metadata.
-        options: Optional `BuildOptions` bundle.
-        target_shard_mb: Preferred maximum shard size in megabytes.
-        n_shards: Optional explicit shard-count override.
-        feature_id_col: Feature id column name in sample files.
-        value_col: Scalar value column name in sample files.
-        sample_id_col: Dense sample id column name in sample metadata.
-        sample_key_col: External sample-key column name in sample metadata.
-        feature_key_col: External feature-key column name in feature metadata.
-        path_col: Sample file path column name in sample metadata.
-        y_col: Default target column name used when `stats_y_cols` is omitted.
-        stats_y_cols: Target columns to precompute into `selection_stats/`.
-        values_dtype: Encoded values dtype.
-        valid_dtype: Encoded validity dtype.
+        source: sample-major `sample_meta.parquet` 경로.
+        out_dir: standalone shard artifact를 쓸 출력 디렉터리.
+        feature_meta_path: 선택적 dense feature metadata 경로.
+        options: 선택적 `BuildOptions` 묶음.
+        target_shard_mb: 선호하는 최대 shard 크기(MB).
+        n_shards: 선택적 명시 shard 개수 override.
+        feature_id_col: sample 파일의 feature id 컬럼 이름.
+        value_col: sample 파일의 scalar value 컬럼 이름.
+        sample_id_col: sample metadata의 dense sample id 컬럼 이름.
+        sample_key_col: sample metadata의 외부 sample-key 컬럼 이름.
+        feature_key_col: feature metadata의 외부 feature-key 컬럼 이름.
+        path_col: sample metadata의 sample 파일 경로 컬럼 이름.
+        y_col: `stats_y_cols`를 생략했을 때 사용할 기본 target 컬럼 이름.
+        stats_y_cols: `selection_stats/`에 미리 계산해 둘 target 컬럼 목록.
+        values_dtype: 인코딩된 values dtype.
+        valid_dtype: 인코딩된 validity dtype.
 
     Returns:
-        Path to the generated `shard_manifest.json`.
+        생성된 `shard_manifest.json` 경로.
     """
 
     resolved = _resolve_options(

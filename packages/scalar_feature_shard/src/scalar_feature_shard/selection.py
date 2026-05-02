@@ -1,4 +1,4 @@
-"""Public feature-selection facade for scalar feature shards."""
+"""scalar feature shard용 public feature-selection facade."""
 
 import polars as pl
 
@@ -34,7 +34,7 @@ def _resolve_selection_options(
     mask_fastpath_min_group,
     mask_fastpath_min_pairs,
 ):
-    """Merge explicit keyword arguments over an optional selection options object."""
+    """선택적 selection 옵션 객체 위에 명시적 keyword 인자를 덮어써서 병합한다."""
 
     base = options or SelectionOptions()
     if isinstance(base, SelectionConfig):
@@ -75,7 +75,7 @@ def _resolve_selection_options(
 
 
 def _load_feature_keys_by_id(manifest):
-    """Load feature keys aligned to dense feature ids when configured."""
+    """설정돼 있으면 dense feature id 순서에 맞는 feature key를 로드한다."""
 
     key_col = str(getattr(manifest, "feature_key_col", "") or "")
     if not key_col:
@@ -105,7 +105,7 @@ def select_features(
     mask_fastpath_min_pairs: int | None = None,
     include_candidates: bool = False,
 ):
-    """Run scalar feature selection from a standalone shard manifest."""
+    """standalone shard manifest에서 scalar feature selection을 실행한다."""
 
     resolved = _resolve_selection_options(
         options,
@@ -125,7 +125,7 @@ def select_features(
     )
     try:
         manifest = load_manifest(str(manifest_path))
-    except Exception as exc:  # pragma: no cover - parser internals are implementation-defined.
+    except Exception as exc:  # pragma: no cover - parser 내부 예외 타입은 구현 세부사항이다.
         raise ManifestFormatError(f"failed to load scalar shard manifest: {manifest_path}") from exc
 
     reader = ParquetShardReader(manifest, max_gap=resolved.max_gap)
@@ -207,6 +207,6 @@ def select_features(
 
 
 def run_selection(manifest_path, **kwargs) -> SelectionResult:
-    """Alias for `select_features(...)`."""
+    """`select_features(...)`와 동일한 alias입니다."""
 
     return select_features(manifest_path, **kwargs)

@@ -1,4 +1,4 @@
-"""Array feature storage subpackage."""
+"""array feature 저장 서브패키지."""
 
 from .builder import ArrayDatasetBuilder, ArraySampleContext
 from .metadata import write_feature_meta, write_sample_meta

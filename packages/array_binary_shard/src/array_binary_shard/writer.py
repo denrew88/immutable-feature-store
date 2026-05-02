@@ -1,4 +1,4 @@
-"""High-level writer facade for custom array binary shards."""
+"""커스텀 array binary shard를 만드는 고수준 writer facade."""
 
 from ._impl.binary_storage import (
     build_array_binary_shards_from_array_manifest,
@@ -20,7 +20,7 @@ def _resolve_options(
     sample_key_col,
     feature_key_col,
 ):
-    """Merge explicit keyword arguments over an optional `BuildOptions` object."""
+    """선택적 `BuildOptions` 객체 위에 명시적 keyword 인자를 덮어써서 병합한다."""
     base = options or BuildOptions()
     return BuildOptions(
         target_shard_mb=int(base.target_shard_mb if target_shard_mb is None else target_shard_mb),
@@ -47,24 +47,24 @@ def build_shard(
     feature_key_col: str | None = None,
     return_stats: bool = False,
 ):
-    """Build binary array shards from a sample-major bundle manifest.
+    """sample-major bundle manifest로부터 binary array shard를 생성한다.
 
     Args:
-        source: Path to `array_bundle_manifest.json`.
-        out_dir: Output directory for the binary shard set.
-        options: Optional `BuildOptions` bundle.
-        target_shard_mb: Preferred maximum shard size in megabytes.
-        samples_per_block: Number of samples packed into one logical block.
-        n_shards: Optional explicit shard-count override.
-        codec: Payload codec name.
-        zstd_level: Compression level used only when `codec='zstd'`.
-        sample_key_col: Sample metadata column containing external keys.
-        feature_key_col: Feature metadata column containing external keys.
-        return_stats: Whether to return build statistics.
+        source: `array_bundle_manifest.json` 경로.
+        out_dir: binary shard 세트를 쓸 출력 디렉터리.
+        options: 선택적 `BuildOptions` 묶음.
+        target_shard_mb: 선호하는 최대 shard 크기(MB).
+        samples_per_block: 논리 block 하나에 담을 sample 수.
+        n_shards: 선택적 명시 shard 개수 override.
+        codec: payload codec 이름.
+        zstd_level: `codec='zstd'`일 때만 사용하는 압축 레벨.
+        sample_key_col: 외부 key가 들어 있는 sample metadata 컬럼 이름.
+        feature_key_col: 외부 key가 들어 있는 feature metadata 컬럼 이름.
+        return_stats: build 통계를 함께 반환할지 여부.
 
     Returns:
-        Either the binary shard manifest path, or `(manifest_path, stats)` when
-        `return_stats=True`.
+        binary shard manifest 경로 또는 `return_stats=True`일 때
+        `(manifest_path, stats)`.
     """
 
     resolved = _resolve_options(
@@ -107,20 +107,20 @@ def convert_parquet_shard(
     feature_key_col: str = "feature_key",
     return_stats: bool = False,
 ):
-    """Convert an existing parquet array shard set into binary shards.
+    """기존 parquet array shard 세트를 binary shard로 변환한다.
 
     Args:
-        source: Path to `array_shard_manifest.json`.
-        out_dir: Output directory for the converted binary shard set.
-        codec: Payload codec name.
-        zstd_level: Compression level used only when `codec='zstd'`.
-        sample_key_col: Sample metadata column containing external keys.
-        feature_key_col: Feature metadata column containing external keys.
-        return_stats: Whether to return conversion statistics.
+        source: `array_shard_manifest.json` 경로.
+        out_dir: 변환된 binary shard 세트를 쓸 출력 디렉터리.
+        codec: payload codec 이름.
+        zstd_level: `codec='zstd'`일 때만 사용하는 압축 레벨.
+        sample_key_col: 외부 key가 들어 있는 sample metadata 컬럼 이름.
+        feature_key_col: 외부 key가 들어 있는 feature metadata 컬럼 이름.
+        return_stats: 변환 통계를 함께 반환할지 여부.
 
     Returns:
-        Either the converted binary shard manifest path, or `(manifest_path, stats)`
-        when `return_stats=True`.
+        변환된 binary shard manifest 경로 또는 `return_stats=True`일 때
+        `(manifest_path, stats)`.
     """
 
     return build_array_binary_shards_from_array_manifest(

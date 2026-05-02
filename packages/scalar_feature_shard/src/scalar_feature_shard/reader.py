@@ -1,4 +1,4 @@
-"""High-level reader facade for scalar parquet shards."""
+"""scalar parquet shard를 읽기 위한 고수준 reader facade."""
 
 from pathlib import Path
 
@@ -14,15 +14,15 @@ from .models import FeatureValues, QueryResult, ScalarValue
 
 
 class ScalarShardDataset:
-    """User-facing dataset object for querying scalar feature shards."""
+    """scalar feature shard를 조회하는 사용자용 dataset 객체."""
 
     def __init__(self, manifest_path):
-        """Open a scalar shard dataset from its manifest path."""
+        """manifest 경로로 scalar shard dataset을 연다."""
 
         self._manifest_path = str(Path(manifest_path).expanduser().resolve())
         try:
             self._manifest = load_manifest(self._manifest_path)
-        except Exception as exc:  # pragma: no cover - parser internals are implementation-defined.
+        except Exception as exc:  # pragma: no cover - parser 내부 예외 타입은 구현 세부사항이다.
             raise ManifestFormatError(f"failed to load scalar shard manifest: {self._manifest_path}") from exc
         self._reader = ParquetShardReader(self._manifest)
         self._locator_index = build_feature_locator_index(self._manifest.feature_locator_path)
@@ -35,49 +35,49 @@ class ScalarShardDataset:
         self._closed = False
 
     def __enter__(self):
-        """Return the dataset for context-manager usage."""
+        """`with` 문에서 사용할 수 있도록 dataset 자신을 반환한다."""
 
         self._ensure_open()
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        """Drop cached scan state when leaving a context manager."""
+        """context manager를 빠져나갈 때 캐시된 scan 상태를 비운다."""
 
         self.close()
         return False
 
     @property
     def manifest_path(self) -> str:
-        """Return the absolute manifest path used to open the dataset."""
+        """dataset을 열 때 사용한 절대 manifest 경로를 반환한다."""
 
         return self._manifest_path
 
     @property
     def n_samples(self) -> int:
-        """Return the total number of dense samples in the dataset."""
+        """dataset에 포함된 dense sample 총개수를 반환한다."""
 
         return int(self._manifest.n_samples)
 
     @property
     def n_shards(self) -> int:
-        """Return the number of parquet shard files in the dataset."""
+        """dataset에 포함된 parquet shard 파일 개수를 반환한다."""
 
         return int(self._manifest.n_shards)
 
     @property
     def feature_count(self) -> int:
-        """Return the number of dense feature ids in the dataset."""
+        """dense feature id 개수를 반환한다."""
 
         return int(self._manifest.n_features)
 
     def _ensure_open(self):
-        """Raise if the dataset has already been closed."""
+        """dataset이 이미 닫혔으면 예외를 발생시킨다."""
 
         if self._closed:
             raise RuntimeError("scalar shard dataset is closed")
 
     def close(self):
-        """Drop cached lazy parquet scans and mark the dataset closed."""
+        """캐시된 lazy parquet scan을 비우고 dataset을 닫는다."""
 
         if self._closed:
             return
@@ -85,31 +85,31 @@ class ScalarShardDataset:
         self._closed = True
 
     def feature_ids(self):
-        """Return all dense feature ids in ascending order."""
+        """모든 dense feature id를 오름차순으로 반환한다."""
 
         self._ensure_open()
         return self._feature_ids
 
     def sample_ids(self):
-        """Return all dense sample ids in ascending order."""
+        """모든 dense sample id를 오름차순으로 반환한다."""
 
         self._ensure_open()
         return self._sample_ids
 
     def has_feature(self, feature_id: int) -> bool:
-        """Return whether the dataset contains the requested dense feature id."""
+        """요청한 dense feature id가 dataset에 존재하는지 반환한다."""
 
         self._ensure_open()
         return 0 <= int(feature_id) < int(self._manifest.n_features)
 
     def has_sample(self, sample_id: int) -> bool:
-        """Return whether the dataset contains the requested dense sample id."""
+        """요청한 dense sample id가 dataset에 존재하는지 반환한다."""
 
         self._ensure_open()
         return 0 <= int(sample_id) < int(self._manifest.n_samples)
 
     def _load_sample_key_index(self):
-        """Lazily load sample-key lookup structures from sample metadata."""
+        """sample metadata에서 sample-key 조회 구조를 지연 로드한다."""
 
         if self._sample_key_to_id is not None:
             return
@@ -124,7 +124,7 @@ class ScalarShardDataset:
         self._sample_key_to_id = {str(key): idx for idx, key in enumerate(keys)}
 
     def _load_feature_key_index(self):
-        """Lazily load feature-key lookup structures from feature metadata."""
+        """feature metadata에서 feature-key 조회 구조를 지연 로드한다."""
 
         if self._feature_key_to_id is not None:
             return
@@ -139,7 +139,7 @@ class ScalarShardDataset:
         self._feature_key_to_id = {str(key): idx for idx, key in enumerate(keys)}
 
     def _maybe_load_sample_keys(self):
-        """Best-effort sample-key load used by id-based query paths."""
+        """id 기반 조회 경로에서 best-effort로 sample key를 로드한다."""
 
         if self._sample_keys is not None:
             return
@@ -149,7 +149,7 @@ class ScalarShardDataset:
             pass
 
     def _maybe_load_feature_keys(self):
-        """Best-effort feature-key load used by id-based query paths."""
+        """id 기반 조회 경로에서 best-effort로 feature key를 로드한다."""
 
         if self._feature_keys is not None:
             return
@@ -159,21 +159,21 @@ class ScalarShardDataset:
             pass
 
     def feature_keys(self):
-        """Return all external feature keys in dense id order."""
+        """모든 외부 feature key를 dense id 순서로 반환한다."""
 
         self._ensure_open()
         self._load_feature_key_index()
         return self._feature_keys
 
     def sample_keys(self):
-        """Return all external sample keys in dense id order."""
+        """모든 외부 sample key를 dense id 순서로 반환한다."""
 
         self._ensure_open()
         self._load_sample_key_index()
         return self._sample_keys
 
     def resolve_feature_key(self, feature_key: str) -> int:
-        """Resolve one external feature key into its dense internal id."""
+        """외부 feature key 하나를 dense 내부 id로 변환한다."""
 
         self._ensure_open()
         self._load_feature_key_index()
@@ -183,7 +183,7 @@ class ScalarShardDataset:
         return int(feature_id)
 
     def resolve_sample_key(self, sample_key: str) -> int:
-        """Resolve one external sample key into its dense internal id."""
+        """외부 sample key 하나를 dense 내부 id로 변환한다."""
 
         self._ensure_open()
         self._load_sample_key_index()
@@ -193,7 +193,7 @@ class ScalarShardDataset:
         return int(sample_id)
 
     def _validate_requests(self, feature_id: int, sample_ids, strict: bool):
-        """Optionally raise public exceptions for missing feature/sample ids."""
+        """strict 모드일 때 누락된 feature/sample id에 대한 public 예외를 발생시킨다."""
 
         if strict and not self.has_feature(feature_id):
             raise FeatureNotFoundError(f"feature id not found: {feature_id}")
@@ -203,7 +203,7 @@ class ScalarShardDataset:
                 raise SampleNotFoundError(f"sample ids not found: {missing}")
 
     def _to_public_value(self, feature_id: int, sample_id: int, values, valid, feature_key=None, sample_key=None):
-        """Convert one decoded scalar row position into the public value model."""
+        """디코딩한 scalar row 위치 하나를 public value 모델로 변환한다."""
 
         present = False
         value = None
@@ -221,19 +221,19 @@ class ScalarShardDataset:
         )
 
     def get_value(self, feature_id: int, sample_id: int, strict: bool = False) -> ScalarValue:
-        """Load one scalar value for one feature and one sample id."""
+        """feature 하나와 sample id 하나에 대한 scalar value를 읽는다."""
 
         batch = self.get_values(feature_id=feature_id, sample_ids=[sample_id], strict=strict)
         return batch.values[0]
 
     def get_value_by_key(self, feature_key: str, sample_key: str, strict: bool = True) -> ScalarValue:
-        """Load one scalar value addressed by external feature/sample keys."""
+        """외부 feature/sample key로 scalar value 하나를 읽는다."""
 
         batch = self.get_values_by_key(feature_key=feature_key, sample_keys=[sample_key], strict=strict)
         return batch.values[0]
 
     def get_values(self, feature_id: int, sample_ids, strict: bool = False) -> FeatureValues:
-        """Load one feature row aligned to multiple dense sample ids."""
+        """feature row 하나를 여러 dense sample id에 맞춰 읽는다."""
 
         self._ensure_open()
         sample_ids = [int(sample_id) for sample_id in sample_ids]
@@ -270,7 +270,7 @@ class ScalarShardDataset:
         )
 
     def get_values_by_key(self, feature_key: str, sample_keys, strict: bool = True) -> FeatureValues:
-        """Load one feature row addressed by external keys."""
+        """외부 key를 사용해 feature row 하나를 읽는다."""
 
         self._ensure_open()
         feature_id = self.resolve_feature_key(feature_key)
@@ -296,7 +296,7 @@ class ScalarShardDataset:
         )
 
     def get_many(self, feature_ids, sample_ids, strict: bool = False) -> QueryResult:
-        """Load multiple feature rows aligned to the same sample ids."""
+        """여러 feature row를 같은 sample id 집합에 맞춰 읽는다."""
 
         self._ensure_open()
         feature_ids = [int(feature_id) for feature_id in feature_ids]
@@ -319,7 +319,7 @@ class ScalarShardDataset:
         )
 
     def get_many_by_key(self, feature_keys, sample_keys, strict: bool = True) -> QueryResult:
-        """Load multiple features addressed by external keys."""
+        """외부 key를 사용해 여러 feature를 읽는다."""
 
         self._ensure_open()
         self._load_feature_key_index()
@@ -346,6 +346,6 @@ class ScalarShardDataset:
 
 
 def open_shard(manifest_path) -> ScalarShardDataset:
-    """Open a scalar shard dataset from `shard_manifest.json`."""
+    """`shard_manifest.json` 경로로 scalar shard dataset을 연다."""
 
     return ScalarShardDataset(manifest_path)

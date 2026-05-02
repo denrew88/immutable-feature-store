@@ -1,48 +1,42 @@
 # array-binary-shard
 
-Standalone Python package for the dense-id array binary shard format.
+dense-id 기반 array binary shard 포맷을 위한 독립 Python 패키지입니다.
 
-## Design summary
+## 개요
 
-This package implements the v3 binary format described in
-[`docs/array_binary_shard_format_v3.md`](../../docs/array_binary_shard_format_v3.md).
+이 패키지는
+[docs/array_binary_shard_format_v3.md](../../docs/array_binary_shard_format_v3.md)
+에 정의된 v3 포맷을 구현한다.
 
-The core rule is simple:
+핵심 규칙:
 
-- `sample_id` is the dense row index of `sample_meta.parquet`
-- `feature_id` is the dense row index of `feature_meta.parquet`
+- `sample_id`는 `sample_meta.parquet`의 dense row index
+- `feature_id`는 `feature_meta.parquet`의 dense row index
 
-Optional external identifiers live in metadata columns:
+선택적으로 외부 식별자를 metadata에 둘 수 있다.
 
 - `sample_key`
 - `feature_key`
 
-The package therefore supports both:
+즉 이 패키지는 다음 둘 다 지원한다.
 
-- fast dense-id lookup
-- convenient external-key lookup
+- dense id 기반 빠른 조회
+- external key 기반 편의 조회
 
-Within one manifest, the point-column schema is fixed. The schema may differ
-between manifests. `time` and `value` are no longer required columns in v3.
+manifest마다 point schema는 고정이지만, manifest가 다르면 schema는 달라도 된다.
+v3에서는 `time`, `value`가 더 이상 필수 컬럼이 아닙니다.
 
-Categorical point columns are stored as integer codes inside shard payloads and
-optionally mapped back to their original string labels through sidecar parquet
-dictionary files.
+categorical point column은 shard 내부에 integer code로 저장되고, 필요하면 sidecar dictionary parquet를 통해 원래 문자열로 되돌릴 수 있다.
 
-Binary shard output is a self-contained dataset directory. The manifest stores
-relative paths to:
+최종 산출물은 self-contained dataset 디렉터리이다. manifest는 다음 경로를 relative path로 저장한다.
 
 - `sample_meta.parquet`
 - `feature_meta.parquet`
 - `array_binary_feature_shards/`
 
-This means the whole output directory can be copied or moved as one artifact.
+즉 출력 폴더 전체를 artifact 하나처럼 이동할 수 있다.
 
-Bundle-to-binary builds always use append-only temporary spill files internally.
-That keeps build cost proportional to the input size and avoids the pathological
-per-shard full rescans that a direct no-spill implementation would trigger.
-
-## Public API
+## public API
 
 - reader
   - `open_shard(...)`
@@ -51,41 +45,19 @@ per-shard full rescans that a direct no-spill implementation would trigger.
   - `build_shard(...)`
   - `convert_parquet_shard(...)`
   - `ArrayDatasetBuilder`
-- models / exceptions
-- schema enums
+- schema enum
   - `StorageType`
   - `LogicalType`
   - `PointColumnSpec`
 
-## Layout
-
-```text
-packages/array_binary_shard/
-  pyproject.toml
-  README.md
-  src/
-    array_binary_shard/
-      __init__.py
-      reader.py
-      writer.py
-      models.py
-      exceptions.py
-      _impl/
-        binary_storage.py
-        storage.py
-        config.py
-        types.py
-        sample_index.py
-```
-
-## Build
+## 빌드
 
 ```bash
 cd packages/array_binary_shard
 python -m pip wheel . -w wheelhouse --no-deps --no-build-isolation
 ```
 
-## Build from sample-major bundles
+## bundle에서 shard 만들기
 
 ```python
 from array_binary_shard import BuildOptions, build_shard
@@ -103,15 +75,13 @@ manifest_path = build_shard(
 )
 ```
 
-The builder always uses the append-only spill path internally. Spill controls are
-not exposed through the public package API.
+public API에서는 spill 옵션을 노출하지 않는다. 내부적으로는 append-only spill 경로를 사용한다.
 
-## Build directly from traces
+## trace에서 바로 만들기
 
-For user-facing ingestion, prefer `ArrayDatasetBuilder` instead of manually
-assembling sample-major parquet bundles.
+사용자 입력에서는 sample-major parquet를 직접 조립하기보다 `ArrayDatasetBuilder`를 쓰는 편이 낫습니다.
 
-Known-feature mode:
+known-feature mode:
 
 ```python
 from array_binary_shard import (
@@ -161,7 +131,7 @@ builder.add_trace(
 manifest_path = builder.build_shards()
 ```
 
-Discovered-feature mode:
+discovered-feature mode:
 
 ```python
 from array_binary_shard import ArrayDatasetBuilder, LogicalType, StorageType
@@ -182,44 +152,22 @@ with ArrayDatasetBuilder(
                 "state_code": ["OK", "OK", "WARN"],
             },
         )
-        sample.add_trace(
-            feature_key="feature_b",
-            columns={
-                "phase": [3],
-                "state_code": ["FAIL"],
-            },
-        )
 ```
 
-Categorical point columns accept original string labels during ingestion. The
-builder assigns integer codes automatically and writes the corresponding
-dictionary parquet files into the bundle stage and final artifact.
+categorical point column은 문자열 label로 넣어도 되고, builder가 자동으로 integer code를 부여한 뒤 dictionary parquet를 같이 만듭니다.
 
-Temporal point columns are also supported when stored as `int64`:
-- `logical_type="timestamp_ns"` for `datetime64[ns]`
-- `logical_type="timedelta_ns"` for `timedelta64[ns]`
+temporal point column도 지원한다.
 
-The package stores both as raw nanosecond `int64` values and converts them back
-to NumPy `datetime64[ns]` / `timedelta64[ns]` arrays in the public reader API.
+- `logical_type="timestamp_ns"`: `datetime64[ns]`
+- `logical_type="timedelta_ns"`: `timedelta64[ns]`
 
-`storage_type` and `logical_type` may still be passed as strings, but the
-recommended public API is to use the exported enums so typos fail earlier:
+저장 자체는 raw nanosecond `int64`로 하고, public reader가 NumPy temporal array로 복원한다.
 
-```python
-from array_binary_shard import LogicalType, PointColumnSpec, StorageType
+## intermediate bundle stage
 
-PointColumnSpec(
-    name="ts",
-    storage_type=StorageType.INT64,
-    logical_type=LogicalType.TIMESTAMP_NS,
-)
-```
-
-The builder now exposes the intermediate bundle stage explicitly:
+builder는 intermediate bundle stage를 명시적으로 노출한다.
 
 ```python
-from array_binary_shard import ArrayDatasetBuilder
-
 builder = ArrayDatasetBuilder(
     out_dir=".../array_binary_shards",
     bundle_out_dir=".../array_bundle_stage",
@@ -240,30 +188,18 @@ bundle_manifest_path = builder.finish_bundles()
 manifest_path = builder.build_shards(cleanup_bundles=False)
 ```
 
-Use:
-- `finish_bundles()` when the sample-major bundle artifact itself is useful
-- `build_shards()` for the final binary shard artifact
-- `cleanup_bundles=True` if the bundle stage should be deleted after shard build
+의미:
 
-In discovered-feature mode, the generated `feature_meta.parquet` currently
-contains only `feature_id` and `feature_key`. If richer feature metadata
-columns are required, prebuild `feature_meta.parquet` with
-`write_feature_meta(...)` and use known-feature mode, or enrich discovered
-features after the bundle stage has been frozen:
+- `finish_bundles()`
+  - intermediate bundle artifact를 확정
+- `build_shards()`
+  - 최종 binary shard artifact 생성
+- `cleanup_bundles=True`
+  - shard 생성 후 bundle stage 삭제
 
-```python
-builder.finish_bundles()
-builder.update_feature_meta(
-    [
-        {"feature_key": "feature_a", "group": "alpha", "rank_hint": 10},
-        {"feature_key": "feature_b", "group": "beta", "rank_hint": 20},
-    ],
-    require_all=True,
-)
-manifest_path = builder.build_shards()
-```
+discovered-feature mode에서 자동 생성되는 `feature_meta.parquet`는 기본적으로 `feature_id`, `feature_key`만 갖는다. richer metadata가 필요하면 known-feature mode를 쓰거나, bundle stage 이후 `update_feature_meta(...)`로 보강하면 된다.
 
-The resulting directory layout is:
+## 결과 디렉터리
 
 ```text
 array_binary_shards/
@@ -276,7 +212,7 @@ array_binary_shards/
     ...
 ```
 
-## Read by dense ids
+## dense id로 읽기
 
 ```python
 from array_binary_shard import open_shard
@@ -285,10 +221,9 @@ with open_shard(".../array_binary_shard_manifest.json") as ds:
     schema = ds.point_schema
     trace = ds.get_trace(feature_id=123, sample_id=1001)
     batch = ds.get_traces(feature_id=123, sample_ids=[1001, 1007, 1015])
-    result = ds.get_many(feature_ids=[123, 456], sample_ids=[1001, 1007])
 ```
 
-## Read by external keys
+## external key로 읽기
 
 ```python
 from array_binary_shard import open_shard
@@ -298,17 +233,9 @@ with open_shard(".../array_binary_shard_manifest.json") as ds:
         feature_key="feature_000123",
         sample_key="sample_001001",
     )
-    batch = ds.get_traces_by_key(
-        feature_key="feature_000123",
-        sample_keys=["sample_001001", "sample_001007"],
-    )
-    result = ds.get_many_by_key(
-        feature_keys=["feature_000123", "feature_000456"],
-        sample_keys=["sample_001001", "sample_001007"],
-    )
 ```
 
-## Decode categorical columns
+## categorical decode
 
 ```python
 from array_binary_shard import open_shard
@@ -320,24 +247,11 @@ with open_shard(".../array_binary_shard_manifest.json") as ds:
         sample_id=1001,
         decode_categorical=True,
     )
-    print(trace.columns["state_code"])
-```
 ```
 
-## Notes
+## 참고
 
-- Dense ids are the fastest path.
-- Key-based lookups lazily load metadata-to-id dictionaries and then use the same
-  dense-id fast path internally.
-- The recommended default codec is `none`.
-- `trace.columns` is the canonical response shape. `trace.time` and
-  `trace.value` remain as convenience accessors and may be empty when those
-  columns are not present in the manifest schema.
-
-## Optional compression support
-
-If you need `codec="zstd"`, install the optional extra:
-
-```bash
-python -m pip install "array-binary-shard[zstd]"
-```
+- dense id가 가장 빠른 경로입니다.
+- key 기반 조회는 metadata dictionary를 lazy load한 뒤 같은 dense-id 경로를 탑니다.
+- 권장 기본 codec은 `none`입니다.
+- canonical 응답 형태는 `trace.columns`입니다.
