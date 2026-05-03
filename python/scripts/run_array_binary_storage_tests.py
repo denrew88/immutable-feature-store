@@ -381,7 +381,7 @@ def main():
         feature_keys=["feature_alpha", "feature_beta"],
         build_options=ArrayBinaryBuildOptions(samples_per_block=4, target_shard_mb=8, codec="none"),
     )
-    with known_builder.sample(0) as sample:
+    with known_builder.sample(sample_key="sample_000") as sample:
         sample.add_trace(
             feature_key="feature_alpha",
             columns={
@@ -390,7 +390,7 @@ def main():
             },
         )
     known_builder.add_trace(
-        sample_id=3,
+        sample_key="sample_003",
         feature_id=1,
         columns={
             "phase": [9],

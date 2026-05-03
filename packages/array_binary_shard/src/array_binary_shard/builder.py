@@ -163,6 +163,15 @@ class ArrayDatasetBuilder:
             str(self.build_options.sample_key_col),
         )
         self.n_samples = int(sample_meta.height)
+        self._sample_key_col = str(self.build_options.sample_key_col)
+        self._sample_key_to_id = None
+        if self._sample_key_col and self._sample_key_col in sample_meta.columns:
+            sample_keys = sample_meta[self._sample_key_col].to_list()
+            self._sample_key_to_id = {
+                str(sample_key): int(idx)
+                for idx, sample_key in enumerate(sample_keys)
+                if sample_key is not None
+            }
 
         default_bundle_root = os.path.join(self.out_dir, "bundle_stage")
         self.bundle_out_dir = str(Path(bundle_out_dir or default_bundle_root).expanduser().resolve())
@@ -277,17 +286,41 @@ class ArrayDatasetBuilder:
             self.build_shards()
         return False
 
-    def sample(self, sample_id: int) -> SampleContext:
+    def sample(self, sample_id: Optional[int] = None, sample_key: Optional[str] = None) -> SampleContext:
         """sample 범위 helper 객체를 반환한다.
 
         Args:
-            sample_id: 중첩 context에서 사용할 dense sample id.
+            sample_id: 선택적 dense sample id.
+            sample_key: 선택적 외부 sample key.
 
         Returns:
             `add_trace(...)` 호출 시 `sample_id`를 자동으로 채워주는 helper.
         """
         self._ensure_trace_stage_open()
-        return SampleContext(self, sample_id)
+        return SampleContext(self, self._resolve_sample_id(sample_id, sample_key))
+
+    def _resolve_sample_id(self, sample_id: Optional[int], sample_key: Optional[str]) -> int:
+        """사용자가 넘긴 sample 참조를 dense sample id 하나로 정규화한다."""
+        if sample_id is None and sample_key is None:
+            raise ValueError("provide either sample_id or sample_key")
+        if sample_id is not None and sample_key is not None:
+            resolved = self._resolve_sample_id(None, sample_key)
+            if int(sample_id) != int(resolved):
+                raise ValueError(f"sample_id/sample_key mismatch: {sample_id} != {sample_key}")
+            return int(sample_id)
+        if sample_id is not None:
+            sample_id = int(sample_id)
+            if sample_id < 0 or sample_id >= int(self.n_samples):
+                raise ValueError(f"sample_id out of range: {sample_id}")
+            return sample_id
+
+        if self._sample_key_to_id is None:
+            raise ValueError(f"sample metadata does not expose sample keys: {self._sample_key_col}")
+        key = str(sample_key)
+        resolved = self._sample_key_to_id.get(key)
+        if resolved is None:
+            raise ValueError(f"unknown sample key: {key}")
+        return int(resolved)
 
     def _resolve_feature_id(self, feature_id: Optional[int], feature_key: Optional[str]) -> int:
         """사용자가 넘긴 feature 참조를 dense feature id 하나로 정규화한다."""
@@ -364,7 +397,8 @@ class ArrayDatasetBuilder:
     def add_trace(
         self,
         *,
-        sample_id: int,
+        sample_id: Optional[int] = None,
+        sample_key: Optional[str] = None,
         feature_id: Optional[int] = None,
         feature_key: Optional[str] = None,
         columns,
@@ -372,15 +406,14 @@ class ArrayDatasetBuilder:
         """bundle 단계에 trace 하나를 추가한다.
 
         Args:
-            sample_id: dense sample id.
+            sample_id: 선택적 dense sample id.
+            sample_key: 선택적 외부 sample key.
             feature_id: 선택적 dense feature id.
             feature_key: 선택적 외부 feature key.
             columns: 전체 point-column 매핑.
         """
         self._ensure_trace_stage_open()
-        sample_id = int(sample_id)
-        if sample_id < 0 or sample_id >= int(self.n_samples):
-            raise ValueError(f"sample_id out of range: {sample_id}")
+        sample_id = self._resolve_sample_id(sample_id, sample_key)
         resolved_feature_id = self._resolve_feature_id(feature_id, feature_key)
         normalized_columns = self._normalize_columns(columns=columns)
         self._bundle_writer.append_trace(
