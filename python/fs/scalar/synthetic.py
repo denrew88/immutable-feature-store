@@ -245,10 +245,13 @@ def generate_synthetic(config: SyntheticConfig):
 
     feature_ids = np.arange(config.n_features, dtype=np.int32)
     primary_y_col = "y" if "y" in targets else y_cols[0]
+    Y = np.column_stack([np.asarray(targets[y_col], dtype=np.float64) for y_col in y_cols])
 
     return {
-        "X": X,
-        "M": M,
+        "X": X.T.copy(),
+        "M": M.T.copy(),
+        "Y": Y,
+        "y_cols": tuple(str(y_col) for y_col in y_cols),
         "y": targets[primary_y_col],
         "targets": targets,
         "primary_y_col": primary_y_col,
@@ -282,17 +285,29 @@ def write_sample_major(dataset: Dict, out_dir: str, sample_meta_path: str, featu
     os.makedirs(out_dir, exist_ok=True)
     X = dataset["X"]
     M = dataset["M"]
-    targets = dict(dataset.get("targets") or {"y": dataset["y"]})
+    y_cols = tuple(str(value) for value in dataset.get("y_cols", ()))
+    Y = dataset.get("Y")
+    if Y is not None and y_cols:
+        Y = np.asarray(Y, dtype=np.float64)
+        if Y.ndim != 2:
+            raise ValueError("dataset['Y'] must be a 2D array of shape (n_samples, n_y_cols)")
+        if Y.shape[1] != len(y_cols):
+            raise ValueError(
+                f"dataset['Y'] column count must match dataset['y_cols']: {Y.shape[1]} != {len(y_cols)}"
+            )
+        targets = {y_col: Y[:, idx] for idx, y_col in enumerate(y_cols)}
+    else:
+        targets = dict(dataset.get("targets") or {"y": dataset["y"]})
     feature_meta = dataset["feature_meta"]
 
-    n_features, n_samples = X.shape
+    n_samples, n_features = X.shape
     sample_paths = []
     if feature_meta_path is None:
         feature_meta_path = os.path.join(os.path.dirname(sample_meta_path), "feature_meta.parquet")
 
     for s_idx in range(n_samples):
-        values = X[:, s_idx]
-        valid = M[:, s_idx].astype(bool)
+        values = X[s_idx]
+        valid = M[s_idx].astype(bool)
         fids = np.arange(n_features, dtype=np.int32)
         df = pl.DataFrame({
             "feature_id": pl.Series("feature_id", fids[valid], dtype=pl.Int32),

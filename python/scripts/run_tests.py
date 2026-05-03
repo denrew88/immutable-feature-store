@@ -27,9 +27,19 @@ def main():
     X = data["X"]
     M = data["M"]
     y = data["y"]
+    Y = data["Y"]
+    y_cols = data["y_cols"]
     y_mask = ~np.isnan(y)
+    X_feature_major = X.T
+    M_feature_major = M.T
 
-    validate_batch_kernel(X, M, y, y_mask, min_non_null=20)
+    assert X.shape == (synth_cfg.n_samples, synth_cfg.n_features)
+    assert M.shape == (synth_cfg.n_samples, synth_cfg.n_features)
+    assert Y.shape == (synth_cfg.n_samples, 1)
+    assert tuple(y_cols) == ("y",)
+    assert np.allclose(Y[:, 0], y, equal_nan=True)
+
+    validate_batch_kernel(X_feature_major, M_feature_major, y, y_mask, min_non_null=20)
 
     config = SelectionConfig(
         y_r2_threshold=0.01,
@@ -43,7 +53,7 @@ def main():
         mask_fastpath_min_group=8,
         mask_fastpath_min_pairs=64,
     )
-    validate_incremental_vs_naive(X, M, y, y_mask, config)
+    validate_incremental_vs_naive(X_feature_major, M_feature_major, y, y_mask, config)
     print("tests passed")
 
 

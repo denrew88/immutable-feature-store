@@ -36,6 +36,8 @@ def main():
             seed=13,
         )
     )
+    assert data["Y"].shape == (64, 2)
+    assert tuple(data["y_cols"]) == ("y", "y_alt")
     write_sample_major(data, str(sample_dir), str(sample_meta_path), str(feature_meta_path))
     manifest_path = build_shards_from_sample_major(
         str(sample_meta_path),
