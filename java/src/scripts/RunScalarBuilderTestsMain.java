@@ -98,6 +98,51 @@ public class RunScalarBuilderTestsMain {
         require(new File(knownManifestPath).exists(), "known-feature manifest missing");
         require(!new File(root, "known_stage").exists(), "known-stage dir should be removed when keepSampleMajor=false");
 
+        BuildShardConfig orderedCfg = new BuildShardConfig();
+        orderedCfg.nShards = 2;
+        orderedCfg.targetShardBytes = 1L << 20;
+        orderedCfg.statsYCols = java.util.Arrays.asList("y");
+        String orderedFeatureMetaPath = new File(root, "ordered_feature_meta.parquet").getAbsolutePath();
+        ScalarFeatureShards.writeFeatureMeta(orderedFeatureRows(), orderedFeatureMetaPath);
+        String orderedManifestPath;
+        try (ScalarDatasetBuilder builder = ScalarFeatureShards.newBuilder(
+                new File(root, "ordered_shards").getAbsolutePath(),
+                sampleMetaPath,
+                orderedFeatureMetaPath,
+                null,
+                orderedCfg,
+                new File(root, "ordered_stage").getAbsolutePath())) {
+            builder.writeSample(0L, values(
+                    "feature_00", 0.0,
+                    "feature_01", 1.0,
+                    "feature_02", 2.0,
+                    "feature_03", 3.0,
+                    "feature_04", 4.0,
+                    "feature_05", 5.0
+            ));
+            orderedManifestPath = builder.buildShards(false);
+        }
+
+        try (ScalarShardDataset dataset = ScalarFeatureShards.open(orderedManifestPath)) {
+            List<Integer> keptOrderIds = collectFeatureIds(
+                    dataset.iterMany(new int[]{4, 1, 5, 0}, new long[]{0L}, 4, true)
+            );
+            List<Integer> shardOrderIds = collectFeatureIds(
+                    dataset.iterMany(new int[]{4, 1, 5, 0}, new long[]{0L}, 4, false)
+            );
+            require(keptOrderIds.equals(java.util.Arrays.asList(4, 1, 5, 0)), "iterMany maintainOrder=true mismatch");
+            require(shardOrderIds.equals(java.util.Arrays.asList(0, 1, 4, 5)), "iterMany maintainOrder=false mismatch");
+
+            List<String> keptOrderKeys = collectFeatureKeys(
+                    dataset.iterManyByKey(new String[]{"feature_04", "feature_01", "feature_05", "feature_00"}, new String[]{"sample_000000"}, 4, true)
+            );
+            List<String> shardOrderKeys = collectFeatureKeys(
+                    dataset.iterManyByKey(new String[]{"feature_04", "feature_01", "feature_05", "feature_00"}, new String[]{"sample_000000"}, 4, false)
+            );
+            require(keptOrderKeys.equals(java.util.Arrays.asList("feature_04", "feature_01", "feature_05", "feature_00")), "iterManyByKey maintainOrder=true mismatch");
+            require(shardOrderKeys.equals(java.util.Arrays.asList("feature_00", "feature_01", "feature_04", "feature_05")), "iterManyByKey maintainOrder=false mismatch");
+        }
+
         System.out.println("java scalar builder tests passed");
     }
 
@@ -122,6 +167,14 @@ public class RunScalarBuilderTestsMain {
         ArrayList<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
         rows.add(row("feature_key", "feature_x", "group", "known"));
         rows.add(row("feature_key", "feature_y", "group", "known"));
+        return rows;
+    }
+
+    private static List<Map<String, Object>> orderedFeatureRows() {
+        ArrayList<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 6; i++) {
+            rows.add(row("feature_key", String.format("feature_%02d", Integer.valueOf(i)), "group", "ordered"));
+        }
         return rows;
     }
 
@@ -152,6 +205,22 @@ public class RunScalarBuilderTestsMain {
         }
         require(actual.value != null, "present value should not be null");
         require(Math.abs(actual.value.doubleValue() - value.doubleValue()) <= 1e-12, "value mismatch for sample_id=" + sampleId);
+    }
+
+    private static List<Integer> collectFeatureIds(Iterable<ScalarFeatureValues> rows) {
+        ArrayList<Integer> out = new ArrayList<Integer>();
+        for (ScalarFeatureValues row : rows) {
+            out.add(Integer.valueOf(row.featureId));
+        }
+        return out;
+    }
+
+    private static List<String> collectFeatureKeys(Iterable<ScalarFeatureValues> rows) {
+        ArrayList<String> out = new ArrayList<String>();
+        for (ScalarFeatureValues row : rows) {
+            out.add(row.featureKey);
+        }
+        return out;
     }
 
     private static void require(boolean condition, String message) {

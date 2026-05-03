@@ -124,6 +124,13 @@ def main():
         assert tuple(result.feature_ids) == (0, 1)
         assert tuple(result.sample_ids) == (0, 2, 3)
         assert tuple(result.feature_keys) == ("feature_a", "feature_b")
+        streamed = ds.get_many(feature_ids=[0, 1], sample_ids=[0, 2, 3], stream=True, batch_size=1)
+        streamed_features = tuple(streamed.features)
+        assert len(streamed_features) == 2
+        assert streamed_features[0].feature_id == 0
+        assert streamed_features[1].feature_id == 1
+        iter_features = tuple(ds.iter_many(feature_ids=[0, 1], sample_ids=[0, 2, 3], batch_size=1))
+        assert [item.feature_id for item in iter_features] == [0, 1]
 
         keyed_result = ds.get_many_by_key(
             feature_keys=["feature_a", "feature_b"],
@@ -132,6 +139,22 @@ def main():
         assert tuple(keyed_result.feature_ids) == (0, 1)
         assert tuple(keyed_result.sample_ids) == (0, 2)
         assert tuple(keyed_result.sample_keys) == ("sample_000000", "sample_000002")
+        keyed_streamed = ds.get_many_by_key(
+            feature_keys=["feature_a", "feature_b"],
+            sample_keys=["sample_000000", "sample_000002"],
+            stream=True,
+            batch_size=1,
+        )
+        keyed_streamed_features = tuple(keyed_streamed.features)
+        assert [item.feature_key for item in keyed_streamed_features] == ["feature_a", "feature_b"]
+        iter_keyed = tuple(
+            ds.iter_many_by_key(
+                feature_keys=["feature_a", "feature_b"],
+                sample_keys=["sample_000000", "sample_000002"],
+                batch_size=1,
+            )
+        )
+        assert [item.feature_key for item in iter_keyed] == ["feature_a", "feature_b"]
 
         try:
             ds.get_value(feature_id=999999, sample_id=0, strict=True)
@@ -196,6 +219,80 @@ def main():
         discovered_value = ds.get_value_by_key("feature_x", "sample_000001")
         assert discovered_value.present is True
         assert np.isclose(discovered_value.value, 101.0)
+
+    ordered_feature_meta_path = write_feature_meta(
+        [{"feature_key": f"feature_{idx:02d}"} for idx in range(6)],
+        root / "ordered_feature_meta.parquet",
+    )
+    ordered_out = root / "ordered_shards"
+    ordered_builder = ScalarDatasetBuilder(
+        out_dir=str(ordered_out),
+        sample_meta_path=str(sample_meta_path),
+        feature_meta_path=str(ordered_feature_meta_path),
+        build_options=BuildOptions(
+            target_shard_mb=1,
+            n_shards=2,
+            stats_y_cols=("y",),
+        ),
+    )
+    ordered_builder.write_sample(
+        0,
+        {f"feature_{idx:02d}": float(idx) for idx in range(6)},
+    )
+    ordered_manifest_path = ordered_builder.build_shards()
+
+    with open_shard(ordered_manifest_path) as ds:
+        shuffled_feature_ids = [4, 1, 5, 0]
+        kept_order = tuple(
+            item.feature_id
+            for item in ds.iter_many(
+                feature_ids=shuffled_feature_ids,
+                sample_ids=[0],
+                batch_size=4,
+                maintain_order=True,
+            )
+        )
+        shard_order = tuple(
+            item.feature_id
+            for item in ds.iter_many(
+                feature_ids=shuffled_feature_ids,
+                sample_ids=[0],
+                batch_size=4,
+                maintain_order=False,
+            )
+        )
+        assert kept_order == (4, 1, 5, 0)
+        assert shard_order == (0, 1, 4, 5)
+
+        grouped_many = ds.get_many(
+            feature_ids=shuffled_feature_ids,
+            sample_ids=[0],
+            batch_size=4,
+            maintain_order=False,
+        )
+        assert tuple(grouped_many.feature_ids) == shard_order
+        assert [item.feature_id for item in grouped_many.features] == list(shard_order)
+
+        shuffled_feature_keys = ["feature_04", "feature_01", "feature_05", "feature_00"]
+        keyed_shard_order = tuple(
+            item.feature_key
+            for item in ds.iter_many_by_key(
+                feature_keys=shuffled_feature_keys,
+                sample_keys=["sample_000000"],
+                batch_size=4,
+                maintain_order=False,
+            )
+        )
+        assert keyed_shard_order == ("feature_00", "feature_01", "feature_04", "feature_05")
+
+        grouped_many_by_key = ds.get_many_by_key(
+            feature_keys=shuffled_feature_keys,
+            sample_keys=["sample_000000"],
+            batch_size=4,
+            maintain_order=False,
+        )
+        assert tuple(grouped_many_by_key.feature_keys) == keyed_shard_order
+        assert [item.feature_key for item in grouped_many_by_key.features] == list(keyed_shard_order)
 
     print("python scalar package tests passed")
 
