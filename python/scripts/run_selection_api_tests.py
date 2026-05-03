@@ -2,7 +2,6 @@ import shutil
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-import polars as pl
 
 from fs.feature_selection.candidates import build_candidates_from_stats
 from fs.config import SelectionConfig
@@ -33,13 +32,11 @@ def main():
         SyntheticConfig(
             n_samples=64,
             n_features=128,
+            y_cols=("y", "y_alt"),
             seed=13,
         )
     )
     write_sample_major(data, str(sample_dir), str(sample_meta_path), str(feature_meta_path))
-    pl.read_parquet(sample_meta_path).with_columns(
-        (pl.col("y") * 0.5 + 1.0).alias("y_alt")
-    ).write_parquet(sample_meta_path)
     manifest_path = build_shards_from_sample_major(
         str(sample_meta_path),
         str(shard_dir),

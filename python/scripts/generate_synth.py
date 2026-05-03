@@ -16,6 +16,7 @@ def main():
     ap.add_argument("--n-missing-patterns", type=int, default=32)
     ap.add_argument("--shared-missing-feature-ratio", type=float, default=0.8)
     ap.add_argument("--residual-missing-rate", type=float, default=0.01)
+    ap.add_argument("--y-col", action="append", dest="y_cols")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -26,6 +27,7 @@ def main():
         n_missing_patterns=args.n_missing_patterns,
         shared_missing_feature_ratio=args.shared_missing_feature_ratio,
         residual_missing_rate=args.residual_missing_rate,
+        y_cols=None if not args.y_cols else tuple(str(value) for value in args.y_cols),
         seed=args.seed,
     )
     data = generate_synthetic(cfg)

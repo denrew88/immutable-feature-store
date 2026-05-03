@@ -31,7 +31,48 @@ class SyntheticConfig:
     residual_missing_rate: float = 0.01
     min_present_cohorts: int = 2
     y_missing_rate: float = 0.0
+    y_cols: tuple[str, ...] | None = None
     seed: int = 0
+
+
+def _resolve_y_cols(config: SyntheticConfig) -> list[str]:
+    """Resolve the ordered list of synthetic target column names."""
+    if not config.y_cols:
+        return ["y"]
+    ordered: list[str] = []
+    for value in config.y_cols:
+        name = str(value)
+        if not name:
+            raise ValueError("y_cols must not contain empty names")
+        if name not in ordered:
+            ordered.append(name)
+    if not ordered:
+        raise ValueError("at least one y column is required")
+    return ordered
+
+
+def _generate_target(
+    rng,
+    latent: np.ndarray,
+    informative_groups: np.ndarray,
+    config: SyntheticConfig,
+):
+    """Generate one synthetic target from the latent factors."""
+    n_latent_for_y = min(config.n_latent_for_y, len(informative_groups))
+    y_groups = rng.choice(informative_groups, size=n_latent_for_y, replace=False)
+    weights = rng.normal(1.0, 0.2, size=n_latent_for_y)
+
+    y = np.zeros(config.n_samples, dtype=np.float64)
+    for g, w in zip(y_groups, weights):
+        y += w * latent[g]
+    y += rng.normal(0.0, config.noise_scale, size=config.n_samples)
+
+    if config.y_missing_rate > 0.0:
+        y_mask = rng.random(config.n_samples) > config.y_missing_rate
+        y = y.copy()
+        y[~y_mask] = np.nan
+
+    return y, y_groups
 
 
 def _sample_group_sizes(rng, n_groups: int, total: int, mean: float) -> List[int]:
@@ -86,6 +127,7 @@ def _build_missing_pattern_pool(rng, cohort_ids: np.ndarray, config: SyntheticCo
 def generate_synthetic(config: SyntheticConfig):
     """Generate a scalar synthetic dataset with correlated groups and missingness."""
     rng = np.random.default_rng(config.seed)
+    y_cols = _resolve_y_cols(config)
 
     n_noise = int(config.n_features * config.noise_feature_ratio)
     n_group_features = config.n_features - n_noise
@@ -94,22 +136,15 @@ def generate_synthetic(config: SyntheticConfig):
 
     latent = rng.normal(0.0, 1.0, size=(config.n_latent_groups, config.n_samples))
 
-    # informative groups for Y
+    # informative groups for Y-like targets
     n_informative_groups = max(1, int(config.n_latent_groups * config.informative_group_ratio))
     informative_groups = rng.choice(config.n_latent_groups, size=n_informative_groups, replace=False)
-    n_latent_for_y = min(config.n_latent_for_y, len(informative_groups))
-    y_groups = rng.choice(informative_groups, size=n_latent_for_y, replace=False)
-    weights = rng.normal(1.0, 0.2, size=n_latent_for_y)
-
-    y = np.zeros(config.n_samples, dtype=np.float64)
-    for g, w in zip(y_groups, weights):
-        y += w * latent[g]
-    y += rng.normal(0.0, config.noise_scale, size=config.n_samples)
-
-    if config.y_missing_rate > 0.0:
-        y_mask = rng.random(config.n_samples) > config.y_missing_rate
-        y = y.copy()
-        y[~y_mask] = np.nan
+    targets = {}
+    target_groups = {}
+    for y_col in y_cols:
+        target, groups = _generate_target(rng, latent, informative_groups, config)
+        targets[str(y_col)] = target
+        target_groups[str(y_col)] = groups
 
     cohort_ids = _build_sample_cohorts(rng, config.n_samples, config.n_sample_cohorts)
     missing_patterns = _build_missing_pattern_pool(rng, cohort_ids, config)
@@ -209,15 +244,19 @@ def generate_synthetic(config: SyntheticConfig):
         feat_idx += 1
 
     feature_ids = np.arange(config.n_features, dtype=np.int32)
+    primary_y_col = "y" if "y" in targets else y_cols[0]
 
     return {
         "X": X,
         "M": M,
-        "y": y,
+        "y": targets[primary_y_col],
+        "targets": targets,
+        "primary_y_col": primary_y_col,
         "feature_ids": feature_ids,
         "feature_meta": feature_meta,
         "informative_groups": informative_groups,
-        "y_groups": y_groups,
+        "y_groups": target_groups[primary_y_col],
+        "target_groups": target_groups,
         "sample_cohort_ids": cohort_ids,
     }
 
@@ -243,7 +282,7 @@ def write_sample_major(dataset: Dict, out_dir: str, sample_meta_path: str, featu
     os.makedirs(out_dir, exist_ok=True)
     X = dataset["X"]
     M = dataset["M"]
-    y = dataset["y"]
+    targets = dict(dataset.get("targets") or {"y": dataset["y"]})
     feature_meta = dataset["feature_meta"]
 
     n_features, n_samples = X.shape
@@ -263,12 +302,14 @@ def write_sample_major(dataset: Dict, out_dir: str, sample_meta_path: str, featu
         df.write_parquet(sample_path)
         sample_paths.append(sample_path)
 
-    meta = pl.DataFrame({
+    meta_data = {
         "sample_id": np.arange(n_samples, dtype=np.int64),
         "sample_key": [f"sample_{sample_id:06d}" for sample_id in range(n_samples)],
-        "y": y,
-        "sample_path": sample_paths,
-    })
+    }
+    for y_col, values in targets.items():
+        meta_data[str(y_col)] = values
+    meta_data["sample_path"] = sample_paths
+    meta = pl.DataFrame(meta_data)
     meta.write_parquet(sample_meta_path)
 
     feature_meta_df = pl.DataFrame(
