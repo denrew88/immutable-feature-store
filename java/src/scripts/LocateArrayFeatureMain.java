@@ -1,12 +1,15 @@
 package scripts;
 
-import fs.io.ArrayFeatureLocatorIndex;
-import fs.io.ArrayShardManifestIO;
-import fs.model.ArrayBlockLocation;
-import fs.model.ArrayShardManifest;
+import fs.io.array.ArrayFeatureLocatorIndex;
+import fs.io.array.ArrayShardManifestIO;
+import fs.model.array.ArrayBlockLocation;
+import fs.model.array.ArrayShardManifest;
 
 import java.util.List;
 
+/**
+ * Array feature가 어느 shard와 block에 들어 있는지 출력하는 디버그용 CLI다.
+ */
 public class LocateArrayFeatureMain {
     public static void main(String[] args) throws Exception {
         String manifestPath = getArg(args, "--manifest", null);

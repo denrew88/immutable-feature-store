@@ -1,5 +1,8 @@
 package fs.config;
 
+/**
+ * Array synthetic 데이터 생성기에서 사용하는 샘플 수, feature 수, 랜덤 시드를 담는 설정이다.
+ */
 public class ArraySyntheticConfig {
     public int nSamples = 1000;
     public int nFeatures = 256;

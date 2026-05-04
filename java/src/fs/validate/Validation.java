@@ -1,10 +1,10 @@
 package fs.validate;
 
 import fs.config.SelectionConfig;
-import fs.io.InMemoryShardReader;
+import fs.io.scalar.InMemoryShardReader;
 import fs.math.Pearson;
-import fs.model.Candidate;
-import fs.model.SampleMeta;
+import fs.model.selection.Candidate;
+import fs.model.common.SampleMeta;
 import fs.pipeline.CandidateBuilder;
 import fs.pipeline.Selector;
 
@@ -12,6 +12,9 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Selection 결과나 synthetic 데이터의 기본 정합성을 확인하는 검증 helper 모음이다.
+ */
 public class Validation {
     public static void validateBatchKernel(double[][] X, byte[][] M, double[] y, byte[] yMask, int minNonNull, double tol) {
         Pearson.BatchResult batch = Pearson.batchR2OneVsMany(y, yMask, X, M, minNonNull);

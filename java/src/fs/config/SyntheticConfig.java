@@ -1,5 +1,8 @@
 package fs.config;
 
+/**
+ * Scalar synthetic 데이터 생성기에서 사용하는 데이터 크기와 타깃 분포를 정의하는 설정이다.
+ */
 public class SyntheticConfig {
     public int nSamples = 1000;
     public int nFeatures = 2000;

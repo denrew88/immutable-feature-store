@@ -2,18 +2,18 @@ package scripts;
 
 import fs.config.ArrayBundleConfig;
 import fs.config.ArrayShardConfig;
-import fs.io.ArrayFeatureFlags;
-import fs.io.ArrayFeatureLocatorIndex;
-import fs.io.ArraySampleBundleWriter;
-import fs.io.ArrayShardBuilder;
-import fs.io.ArrayShardManifestIO;
+import fs.io.array.ArrayFeatureFlags;
+import fs.io.array.ArrayFeatureLocatorIndex;
+import fs.io.array.ArraySampleBundleWriter;
+import fs.io.array.ArrayShardBuilder;
+import fs.io.array.ArrayShardManifestIO;
 import fs.io.ArrayBinaryShardReader;
-import fs.io.DuckDBUtils;
-import fs.model.LogicalType;
-import fs.model.ArrayShardManifest;
-import fs.model.ArrayTrace;
-import fs.model.PointColumnSpec;
-import fs.model.StorageType;
+import fs.io.common.DuckDBUtils;
+import fs.model.common.LogicalType;
+import fs.model.array.ArrayShardManifest;
+import fs.model.array.ArrayTrace;
+import fs.model.common.PointColumnSpec;
+import fs.model.common.StorageType;
 
 import java.io.File;
 import java.sql.Connection;
@@ -24,6 +24,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Array storage 경로의 핵심 정합성을 확인하는 수동 테스트 엔트리포인트다.
+ */
 public class RunArrayStorageTestsMain {
     public static void main(String[] args) throws Exception {
         File root = new File("data/tmp_array_storage_test");

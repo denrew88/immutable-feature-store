@@ -2,15 +2,18 @@ package scripts;
 
 import fs.config.BuildShardConfig;
 import fs.config.SelectionConfig;
-import fs.io.DuckDBShardReader;
-import fs.io.ManifestIO;
-import fs.model.Candidate;
-import fs.model.ShardManifest;
+import fs.io.scalar.DuckDBShardReader;
+import fs.io.scalar.ManifestIO;
+import fs.model.selection.Candidate;
+import fs.model.scalar.ShardManifest;
 import fs.pipeline.CandidateBuilder;
 import fs.pipeline.Selector;
 
 import java.util.List;
 
+/**
+ * Scalar shard에 대해 selection을 실행하는 CLI 엔트리포인트다.
+ */
 public class RunSelectionMain {
     public static void main(String[] args) throws Exception {
         String manifestPath = getArg(args, "--manifest", null);

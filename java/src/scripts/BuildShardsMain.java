@@ -1,13 +1,16 @@
 package scripts;
 
 import fs.config.BuildShardConfig;
-import fs.io.ScalarSampleBundleManifestIO;
-import fs.io.ShardBuilder;
-import fs.model.ScalarSampleBundleManifest;
+import fs.io.scalar.ScalarSampleBundleManifestIO;
+import fs.io.scalar.ShardBuilder;
+import fs.model.scalar.ScalarSampleBundleManifest;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Scalar sample-major stage에서 shard를 빌드하는 CLI 엔트리포인트다.
+ */
 public class BuildShardsMain {
     public static void main(String[] args) throws Exception {
         String sampleMeta = getArg(args, "--sample-meta", null);

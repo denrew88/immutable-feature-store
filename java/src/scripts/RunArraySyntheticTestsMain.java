@@ -3,19 +3,22 @@ package scripts;
 import fs.config.ArrayBundleConfig;
 import fs.config.ArrayShardConfig;
 import fs.config.ArraySyntheticConfig;
-import fs.io.ArrayFeatureLocatorIndex;
-import fs.io.ArrayFeatureIdIndex;
-import fs.io.ArraySampleIdIndex;
-import fs.io.ArrayShardManifestIO;
+import fs.io.array.ArrayFeatureLocatorIndex;
+import fs.io.array.ArrayFeatureIdIndex;
+import fs.io.array.ArraySampleIdIndex;
+import fs.io.array.ArrayShardManifestIO;
 import fs.io.ArrayBinaryShardReader;
-import fs.model.ArrayShardManifest;
-import fs.model.ArraySyntheticArtifacts;
-import fs.model.ArrayTrace;
+import fs.model.array.ArrayShardManifest;
+import fs.model.array.ArraySyntheticArtifacts;
+import fs.model.array.ArrayTrace;
 import fs.synth.ArraySyntheticGenerator;
 
 import java.io.File;
 import java.util.Map;
 
+/**
+ * Array synthetic 생성과 shard 빌드 경로를 한 번에 검증하는 테스트 엔트리포인트다.
+ */
 public class RunArraySyntheticTestsMain {
     public static void main(String[] args) throws Exception {
         File root = new File("data/tmp_java_array_synth_test");

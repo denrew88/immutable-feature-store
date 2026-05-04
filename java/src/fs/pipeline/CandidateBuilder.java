@@ -1,13 +1,13 @@
 package fs.pipeline;
 
 import fs.config.SelectionConfig;
-import fs.io.ArrayUtils;
-import fs.io.DuckDBUtils;
-import fs.io.SampleMetaLoader;
+import fs.io.common.ArrayUtils;
+import fs.io.common.DuckDBUtils;
+import fs.io.scalar.SampleMetaLoader;
 import fs.math.Pearson;
-import fs.model.Candidate;
-import fs.model.SampleMeta;
-import fs.model.ShardManifest;
+import fs.model.selection.Candidate;
+import fs.model.common.SampleMeta;
+import fs.model.scalar.ShardManifest;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -18,6 +18,9 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
+/**
+ * Selection 전에 feature 후보 집합을 구성하는 파이프라인 helper다.
+ */
 public class CandidateBuilder {
     public static List<Candidate> buildCandidatesFromShards(
             ShardManifest manifest,

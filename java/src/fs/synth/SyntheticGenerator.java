@@ -1,12 +1,15 @@
 package fs.synth;
 
 import fs.config.SyntheticConfig;
-import fs.model.SyntheticData;
+import fs.model.synthetic.SyntheticData;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
+/**
+ * Scalar synthetic X/Y 데이터와 기본 메타를 생성하는 helper다.
+ */
 public class SyntheticGenerator {
     public static SyntheticData generate(SyntheticConfig cfg) {
         Random rng = new Random(cfg.seed);

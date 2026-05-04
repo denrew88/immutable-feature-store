@@ -1,5 +1,8 @@
 package fs.config;
 
+/**
+ * Scalar shard 빌드 단계에서 shard 목표 크기와 selection 통계 생성을 제어하는 설정이다.
+ */
 public class BuildShardConfig {
     public int nShards = 0;
     public long targetShardBytes = 32L * 1024L * 1024L;

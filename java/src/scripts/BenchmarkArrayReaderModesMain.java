@@ -1,14 +1,17 @@
 package scripts;
 
-import fs.io.ArrayFeatureLocatorIndex;
-import fs.io.ArrayShardManifestIO;
 import fs.io.ArrayBinaryShardReader;
-import fs.model.ArrayShardManifest;
-import fs.model.ArrayTrace;
+import fs.io.array.ArrayFeatureLocatorIndex;
+import fs.io.array.ArrayShardManifestIO;
+import fs.model.array.ArrayShardManifest;
+import fs.model.array.ArrayTrace;
 
 import java.util.Arrays;
 import java.util.Map;
 
+/**
+ * Array reader 모드별 조회 시간을 비교하는 벤치마크 엔트리포인트다.
+ */
 public class BenchmarkArrayReaderModesMain {
     public static void main(String[] args) throws Exception {
         String manifestPath = getArg(args, "--manifest", "data/array_synth_py_binary/array_binary_shard_manifest.json");

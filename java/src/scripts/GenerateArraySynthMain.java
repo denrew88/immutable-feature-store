@@ -3,9 +3,12 @@ package scripts;
 import fs.config.ArrayBundleConfig;
 import fs.config.ArrayShardConfig;
 import fs.config.ArraySyntheticConfig;
-import fs.model.ArraySyntheticArtifacts;
+import fs.model.array.ArraySyntheticArtifacts;
 import fs.synth.ArraySyntheticGenerator;
 
+/**
+ * Synthetic array bundle과 shard를 생성하는 CLI 엔트리포인트다.
+ */
 public class GenerateArraySynthMain {
     public static void main(String[] args) throws Exception {
         String bundleOutDir = getArg(args, "--bundle-out-dir", null);

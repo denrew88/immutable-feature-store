@@ -1,5 +1,8 @@
 package fs.config;
 
+/**
+ * Selection 단계에서 후보 수와 상관계수 임계값을 제어하는 설정이다.
+ */
 public class SelectionConfig {
     public double yR2Threshold = 0.01;
     public int minNonNullY = 200;

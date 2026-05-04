@@ -1,7 +1,12 @@
 package fs.io;
 
 import fs.config.BuildShardConfig;
-import fs.model.ScalarSampleBundleManifest;
+import fs.model.scalar.ScalarSampleBundleManifest;
+import fs.io.common.ArrayMetadataWriter;
+import fs.io.scalar.ScalarSampleBundleManifestIO;
+import fs.io.scalar.ScalarMetadataWriter;
+import fs.io.scalar.ScalarSampleBundleWriter;
+import fs.io.scalar.ShardBuilder;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -12,6 +17,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * scalar 값을 직접 받아 sample-major stage와 최종 scalar shard dataset을 만드는 builder다.
+ *
+ * <p>public API의 기본 단위는 sample이다. 사용자는
+ * {@link #writeSample(long, Map)} 로 sample 하나를 한 번에 쓰거나,
+ * {@link #openSample(long)} 으로 sample-scoped context를 열어 값을 순차적으로 추가할 수 있다.
+ */
 public class ScalarDatasetBuilder implements AutoCloseable {
     private static final int DEFAULT_BUNDLE_FLUSH_ROWS = 1_000_000;
 
@@ -40,10 +52,23 @@ public class ScalarDatasetBuilder implements AutoCloseable {
     private long openSampleId;
     private LinkedHashMap<Integer, Double> openSampleValues;
 
+    /**
+     * 기본 설정의 builder를 생성한다.
+     */
     public ScalarDatasetBuilder(String outDir, String sampleMetaPath) throws Exception {
         this(outDir, sampleMetaPath, "", null, null, null);
     }
 
+    /**
+     * builder를 전체 옵션과 함께 생성한다.
+     *
+     * @param outDir 최종 shard 출력 디렉터리
+     * @param sampleMetaPath dense sample metadata parquet 경로
+     * @param featureMetaPath known-feature mode에서 사용할 feature metadata parquet 경로
+     * @param featureKeys known-feature mode에서 사용할 feature key 목록
+     * @param buildConfig sample-major -> shard build 설정
+     * @param sampleMajorOutDir intermediate sample-major stage 디렉터리
+     */
     public ScalarDatasetBuilder(
             String outDir,
             String sampleMetaPath,
@@ -131,6 +156,12 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         this.bundleWriter = new ScalarSampleBundleWriter(this.sampleMajorBundlesDir, DEFAULT_BUNDLE_FLUSH_ROWS);
     }
 
+    /**
+     * sample 하나를 완결된 단위로 기록한다.
+     *
+     * @param sampleId dense sample id
+     * @param values feature -> value 매핑
+     */
     public void writeSample(long sampleId, Map<?, ?> values) throws Exception {
         beginSample(sampleId);
         try {
@@ -142,10 +173,16 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         endSample(false);
     }
 
+    /**
+     * sample 하나에 값을 순차적으로 쓰는 context를 연다.
+     */
     public ScalarSampleContext openSample(long sampleId) {
         return new ScalarSampleContext(this, sampleId);
     }
 
+    /**
+     * 자동 생성된 feature metadata에 새 컬럼을 merge한다.
+     */
     public String updateFeatureMeta(List<Map<String, Object>> records, String on, boolean requireAll) throws Exception {
         finishSampleMajor();
         List<LinkedHashMap<String, Object>> baseRows = ArrayMetadataWriter.readRows(sampleMajorFeatureMetaPath);
@@ -203,6 +240,11 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         return sampleMajorFeatureMetaPath;
     }
 
+    /**
+     * sample-major stage를 finalize하고 stage manifest를 작성한다.
+     *
+     * @return sample-major manifest 경로
+     */
     public String finishSampleMajor() throws Exception {
         if (sampleMajorFinalized) {
             return sampleMajorManifestPath;
@@ -227,10 +269,19 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         return sampleMajorManifestPath;
     }
 
+    /**
+     * sample-major stage를 바탕으로 최종 scalar shard dataset을 만든다.
+     */
     public String buildShards() throws Exception {
         return buildShards(false);
     }
 
+    /**
+     * sample-major stage를 바탕으로 최종 scalar shard dataset을 만든다.
+     *
+     * @param keepSampleMajor true면 intermediate sample-major stage를 남긴다
+     * @return 최종 shard manifest 경로
+     */
     public String buildShards(boolean keepSampleMajor) throws Exception {
         if (shardsBuilt) {
             return manifestPath;
@@ -264,6 +315,11 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         }
     }
 
+    /**
+     * sample 쓰기 세션을 연다.
+     *
+     * <p>sample 재방문을 막기 위해 이미 기록된 sample이면 즉시 실패한다.
+     */
     private void beginSample(long sampleId) {
         ensureSampleMajorOpen();
         if (sampleId < 0L || sampleId >= nSamples) {
@@ -279,6 +335,9 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         openSampleValues = new LinkedHashMap<Integer, Double>();
     }
 
+    /**
+     * 현재 열린 sample에 feature/value 하나를 추가한다.
+     */
     private void writeValue(Object featureRef, Object rawValue) {
         if (openSampleValues == null) {
             throw new IllegalStateException("no sample context is currently open");
@@ -299,6 +358,9 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         }
     }
 
+    /**
+     * 현재 sample 쓰기 세션을 닫고 bundle writer로 넘긴다.
+     */
     private void endSample(boolean abort) throws Exception {
         if (openSampleValues == null) {
             return;
@@ -325,6 +387,9 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         return Double.valueOf(value);
     }
 
+    /**
+     * feature id 또는 key 입력을 dense feature id로 정규화한다.
+     */
     private int resolveFeatureId(Object featureRef) {
         if (featureRef instanceof Number) {
             int featureId = ((Number) featureRef).intValue();
@@ -353,6 +418,9 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         return nextId;
     }
 
+    /**
+     * discovered-feature mode에서 feature metadata를 자동 생성한다.
+     */
     private void writeFeatureMeta() throws Exception {
         if (!writesFeatureMeta) {
             return;
@@ -367,6 +435,9 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         ScalarMetadataWriter.writeFeatureMeta(records, sampleMajorFeatureMetaPath);
     }
 
+    /**
+     * source sample metadata를 sample-major stage 위치로 복사한다.
+     */
     private void copySampleMeta() throws Exception {
         if (new File(sourceSampleMetaPath).getCanonicalPath().equals(new File(sampleMajorSampleMetaPath).getCanonicalPath())) {
             return;

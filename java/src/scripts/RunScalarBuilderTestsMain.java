@@ -5,10 +5,10 @@ import fs.config.SelectionConfig;
 import fs.io.ScalarDatasetBuilder;
 import fs.io.ScalarFeatureShards;
 import fs.io.ScalarShardDataset;
-import fs.model.Candidate;
-import fs.model.ScalarFeatureValues;
-import fs.model.ScalarValue;
-import fs.model.ShardManifest;
+import fs.model.selection.Candidate;
+import fs.model.scalar.ScalarFeatureValues;
+import fs.model.scalar.ScalarValue;
+import fs.model.scalar.ShardManifest;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -16,6 +16,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Scalar builder, reader, selection facade를 함께 검증하는 테스트 엔트리포인트다.
+ */
 public class RunScalarBuilderTestsMain {
     public static void main(String[] args) throws Exception {
         File root = new File("data/tmp_java_scalar_builder_test");

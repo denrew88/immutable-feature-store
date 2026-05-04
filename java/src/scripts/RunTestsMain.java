@@ -2,10 +2,13 @@ package scripts;
 
 import fs.config.SelectionConfig;
 import fs.config.SyntheticConfig;
-import fs.model.SyntheticData;
+import fs.model.synthetic.SyntheticData;
 import fs.synth.SyntheticGenerator;
 import fs.validate.Validation;
 
+/**
+ * Scalar synthetic 생성과 selection 계산의 기본 정합성을 점검하는 테스트 엔트리포인트다.
+ */
 public class RunTestsMain {
     public static void main(String[] args) throws Exception {
         long seed = getLongArg(args, "--seed", 0L);

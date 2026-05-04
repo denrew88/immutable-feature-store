@@ -3,13 +3,13 @@ package fs.synth;
 import fs.config.ArrayBundleConfig;
 import fs.config.ArrayShardConfig;
 import fs.config.ArraySyntheticConfig;
-import fs.io.ArraySampleBundleWriter;
-import fs.io.ArrayShardBuilder;
-import fs.io.DuckDBUtils;
-import fs.model.ArraySyntheticArtifacts;
-import fs.model.LogicalType;
-import fs.model.PointColumnSpec;
-import fs.model.StorageType;
+import fs.io.array.ArraySampleBundleWriter;
+import fs.io.array.ArrayShardBuilder;
+import fs.io.common.DuckDBUtils;
+import fs.model.array.ArraySyntheticArtifacts;
+import fs.model.common.LogicalType;
+import fs.model.common.PointColumnSpec;
+import fs.model.common.StorageType;
 
 import java.io.File;
 import java.sql.Connection;
@@ -23,6 +23,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
+/**
+ * Array bundle과 shard를 한 번에 생성하는 synthetic 데이터 빌더다.
+ */
 public class ArraySyntheticGenerator {
     public static ArraySyntheticArtifacts generate(
             String bundleOutDir,

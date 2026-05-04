@@ -1,5 +1,8 @@
 package fs.math;
 
+/**
+ * Selection 단계에서 쓰는 Pearson 상관계수 계산 helper다.
+ */
 public class Pearson {
     public static class PairwiseResult {
         public final double r2;

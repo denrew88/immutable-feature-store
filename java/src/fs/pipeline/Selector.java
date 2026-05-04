@@ -1,11 +1,11 @@
 package fs.pipeline;
 
 import fs.config.SelectionConfig;
-import fs.io.ShardReader;
+import fs.io.scalar.ShardReader;
 import fs.math.Pearson;
-import fs.model.Candidate;
-import fs.model.Feature;
-import fs.model.RowBatch;
+import fs.model.selection.Candidate;
+import fs.model.common.Feature;
+import fs.model.scalar.RowBatch;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -15,6 +15,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 후보 feature들 사이의 pairwise 제약을 적용해 최종 selection 결과를 만든다.
+ */
 public class Selector {
     public static List<Candidate> selectFeaturesIncremental(List<Candidate> candidates, ShardReader reader, SelectionConfig config) throws SQLException {
         if (config.maxCandidates > 0 && candidates.size() > config.maxCandidates) {

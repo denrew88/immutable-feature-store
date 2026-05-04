@@ -1,11 +1,16 @@
 package fs.io;
 
-import fs.model.Feature;
-import fs.model.FeatureLocation;
-import fs.model.RowBatch;
-import fs.model.ScalarFeatureValues;
-import fs.model.ScalarValue;
-import fs.model.ShardManifest;
+import fs.model.common.Feature;
+import fs.model.common.FeatureLocation;
+import fs.model.scalar.RowBatch;
+import fs.model.scalar.ScalarFeatureValues;
+import fs.model.scalar.ScalarValue;
+import fs.model.scalar.ShardManifest;
+import fs.io.scalar.DuckDBShardReader;
+import fs.io.scalar.FeatureIdIndex;
+import fs.io.scalar.FeatureLocatorIndex;
+import fs.io.scalar.ManifestIO;
+import fs.io.scalar.SampleIdIndex;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -17,6 +22,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.NoSuchElementException;
 
+/**
+ * scalar shard dataset을 읽는 high-level facade다.
+ *
+ * <p>단일 feature 조회와 batched iteration 둘 다 제공하며, 외부 sample/feature key를
+ * dense id로 변환하는 책임도 이 클래스가 맡는다.
+ */
 public final class ScalarShardDataset implements AutoCloseable {
     private static final int DEFAULT_BATCH_SIZE = 128;
 
@@ -26,10 +37,16 @@ public final class ScalarShardDataset implements AutoCloseable {
     private final FeatureIdIndex featureIds;
     private final DuckDBShardReader reader;
 
+    /**
+     * manifest 경로에서 dataset facade를 연다.
+     */
     public ScalarShardDataset(String manifestPath) throws Exception {
         this(ManifestIO.read(manifestPath));
     }
 
+    /**
+     * 이미 로드한 manifest에서 dataset facade를 연다.
+     */
     public ScalarShardDataset(ShardManifest manifest) throws Exception {
         this.manifest = manifest;
         this.locator = FeatureLocatorIndex.load(manifest);
@@ -38,10 +55,16 @@ public final class ScalarShardDataset implements AutoCloseable {
         this.reader = new DuckDBShardReader(manifest);
     }
 
+    /**
+     * reader가 사용 중인 shard manifest를 반환한다.
+     */
     public ShardManifest manifest() {
         return manifest;
     }
 
+    /**
+     * dense sample id 목록에 대한 feature 값을 읽는다.
+     */
     public ScalarFeatureValues getValues(int featureId, long[] sampleIds) throws SQLException {
         FeatureRequest request = normalizeFeatureRequests(new int[]{featureId}, null, true).get(0);
         ResolvedSamples resolvedSamples = resolveSampleIds(sampleIds);
@@ -49,6 +72,9 @@ public final class ScalarShardDataset implements AutoCloseable {
         return buildFeatureValues(request, resolvedSamples, feature);
     }
 
+    /**
+     * sample key 목록에 대한 feature 값을 읽는다.
+     */
     public ScalarFeatureValues getValuesBySampleKeys(int featureId, String[] sampleKeys) throws SQLException {
         FeatureRequest request = normalizeFeatureRequests(new int[]{featureId}, null, true).get(0);
         ResolvedSamples resolvedSamples = resolveSampleKeys(sampleKeys);
@@ -56,6 +82,9 @@ public final class ScalarShardDataset implements AutoCloseable {
         return buildFeatureValues(request, resolvedSamples, feature);
     }
 
+    /**
+     * feature key와 sample key 조합으로 값을 읽는다.
+     */
     public ScalarFeatureValues getValuesByKeys(String featureKey, String[] sampleKeys) throws SQLException {
         ArrayList<FeatureRequest> requests = normalizeFeatureKeyRequests(new String[]{featureKey}, true);
         ResolvedSamples resolvedSamples = resolveSampleKeys(sampleKeys);
@@ -63,18 +92,33 @@ public final class ScalarShardDataset implements AutoCloseable {
         return buildFeatureValues(requests.get(0), resolvedSamples, feature);
     }
 
+    /**
+     * scalar 값 하나만 읽는다.
+     */
     public ScalarValue getValue(int featureId, long sampleId) throws SQLException {
         return getValues(featureId, new long[]{sampleId}).values.get(0);
     }
 
+    /**
+     * feature key + sample key 조합으로 값 하나만 읽는다.
+     */
     public ScalarValue getValueByKey(String featureKey, String sampleKey) throws SQLException {
         return getValuesByKeys(featureKey, new String[]{sampleKey}).values.get(0);
     }
 
+    /**
+     * 여러 feature를 배치로 읽되, 결과는 feature 단위 객체를 하나씩 iteration하게 한다.
+     */
     public Iterable<ScalarFeatureValues> iterMany(int[] requestedFeatureIds, long[] requestedSampleIds) throws SQLException {
         return iterMany(requestedFeatureIds, requestedSampleIds, DEFAULT_BATCH_SIZE, true);
     }
 
+    /**
+     * 여러 feature를 배치로 읽되, 결과는 feature 단위 객체를 하나씩 iteration하게 한다.
+     *
+     * <p>{@code maintainOrder=false}면 feature를 shard/offset 순으로 재정렬해서 locality를 높인다.
+     * 반환 순서도 이 재정렬된 순서를 따른다.
+     */
     public Iterable<ScalarFeatureValues> iterMany(
             int[] requestedFeatureIds,
             long[] requestedSampleIds,
@@ -91,10 +135,16 @@ public final class ScalarShardDataset implements AutoCloseable {
         };
     }
 
+    /**
+     * feature key 목록을 기준으로 batched iteration을 수행한다.
+     */
     public Iterable<ScalarFeatureValues> iterManyByKey(String[] requestedFeatureKeys, String[] requestedSampleKeys) throws SQLException {
         return iterManyByKey(requestedFeatureKeys, requestedSampleKeys, DEFAULT_BATCH_SIZE, true);
     }
 
+    /**
+     * feature key 목록을 기준으로 batched iteration을 수행한다.
+     */
     public Iterable<ScalarFeatureValues> iterManyByKey(
             String[] requestedFeatureKeys,
             String[] requestedSampleKeys,
@@ -152,6 +202,9 @@ public final class ScalarShardDataset implements AutoCloseable {
         return new ScalarFeatureValues(request.featureId, request.featureKey, out);
     }
 
+    /**
+     * feature id 요청을 shard/offset 정보가 붙은 내부 request 목록으로 바꾼다.
+     */
     private ArrayList<FeatureRequest> normalizeFeatureRequests(int[] requestedFeatureIds, String[] featureKeysOverride, boolean maintainOrder) {
         ArrayList<FeatureRequest> requests = new ArrayList<FeatureRequest>(requestedFeatureIds.length);
         for (int i = 0; i < requestedFeatureIds.length; i++) {
@@ -226,6 +279,9 @@ public final class ScalarShardDataset implements AutoCloseable {
         return batchSize;
     }
 
+    /**
+     * feature batch를 shard별로 묶어 실제 row read를 수행하는 iterator 구현체다.
+     */
     private final class FeatureValuesIterator implements Iterator<ScalarFeatureValues> {
         private final List<FeatureRequest> requests;
         private final ResolvedSamples resolvedSamples;
@@ -270,6 +326,9 @@ public final class ScalarShardDataset implements AutoCloseable {
             loadNextBatch();
         }
 
+        /**
+         * 다음 feature chunk를 shard별로 묶어 읽고, 현재 batch buffer를 채운다.
+         */
         private void loadNextBatch() {
             currentBatch.clear();
             batchIndex = 0;

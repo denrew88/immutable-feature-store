@@ -1,10 +1,13 @@
 package scripts;
 
 import fs.config.ArrayShardConfig;
-import fs.io.ArrayShardBuilder;
+import fs.io.array.ArrayShardBuilder;
 
 import java.io.File;
 
+/**
+ * Array bundle manifest에서 array binary shard를 빌드하는 CLI 엔트리포인트다.
+ */
 public class BuildArrayShardsMain {
     public static void main(String[] args) throws Exception {
         String bundleManifest = getArg(args, "--bundle-manifest", null);

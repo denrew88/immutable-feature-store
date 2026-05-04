@@ -1,10 +1,13 @@
 package scripts;
 
-import fs.io.FeatureLocatorIndex;
-import fs.io.ManifestIO;
-import fs.model.FeatureLocation;
-import fs.model.ShardManifest;
+import fs.io.scalar.FeatureLocatorIndex;
+import fs.io.scalar.ManifestIO;
+import fs.model.common.FeatureLocation;
+import fs.model.scalar.ShardManifest;
 
+/**
+ * Scalar feature가 어느 shard row에 저장돼 있는지 출력하는 디버그용 CLI다.
+ */
 public class LocateFeatureMain {
     public static void main(String[] args) throws Exception {
         String manifestPath = getArg(args, "--manifest", null);

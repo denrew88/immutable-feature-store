@@ -3,15 +3,15 @@ package scripts;
 import fs.config.ArrayBundleConfig;
 import fs.config.ArrayShardConfig;
 import fs.io.ArrayBinaryShards;
-import fs.io.ArrayFeatureIdIndex;
-import fs.io.ArrayFeatureLocatorIndex;
-import fs.io.ArraySampleIdIndex;
+import fs.io.array.ArrayFeatureIdIndex;
+import fs.io.array.ArrayFeatureLocatorIndex;
+import fs.io.array.ArraySampleIdIndex;
 import fs.io.ArrayBinaryShardReader;
-import fs.model.ArrayShardManifest;
-import fs.model.ArrayTrace;
-import fs.model.LogicalType;
-import fs.model.PointColumnSpec;
-import fs.model.StorageType;
+import fs.model.array.ArrayShardManifest;
+import fs.model.array.ArrayTrace;
+import fs.model.common.LogicalType;
+import fs.model.common.PointColumnSpec;
+import fs.model.common.StorageType;
 
 import java.io.File;
 import java.time.Duration;
@@ -22,6 +22,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Array binary shard v3 전용 public API와 builder 흐름을 검증하는 테스트 엔트리포인트다.
+ */
 public class RunArrayV3TestsMain {
     public static void main(String[] args) throws Exception {
         File root = new File("data/tmp_java_array_v3_test");

@@ -2,9 +2,15 @@ package fs.io;
 
 import fs.config.ArrayBundleConfig;
 import fs.config.ArrayShardConfig;
-import fs.model.LogicalType;
-import fs.model.PointColumnSpec;
-import fs.model.StorageType;
+import fs.io.array.ArrayBinaryFormat;
+import fs.io.array.ArraySampleBundleWriter;
+import fs.io.array.ArrayShardBuilder;
+import fs.io.common.ArrayMetadataWriter;
+import fs.io.common.ArrayUtils;
+import fs.io.common.JsonUtils;
+import fs.model.common.LogicalType;
+import fs.model.common.PointColumnSpec;
+import fs.model.common.StorageType;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -17,6 +23,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * trace를 직접 받아 array bundle stage와 최종 binary shard artifact를 만드는 builder다.
+ *
+ * <p>사용자는 sample/feature metadata와 point schema를 주고 {@link #addTrace(long, Integer, String, Map)}
+ * 또는 sample-scoped context를 통해 trace를 추가한다. builder는
+ * 1) bundle parquet 작성
+ * 2) feature metadata/dictionary 정리
+ * 3) bundle -> final shard build
+ * 흐름을 감춘다.
+ */
 public class ArrayDatasetBuilder implements AutoCloseable {
     private final String outDir;
     private final String sampleMetaPath;
@@ -41,6 +57,13 @@ public class ArrayDatasetBuilder implements AutoCloseable {
     private String manifestPath;
     private String bundleManifestPath;
 
+    /**
+     * 기본 builder를 생성한다.
+     *
+     * @param outDir 최종 출력 디렉터리
+     * @param sampleMetaPath dense sample metadata parquet 경로
+     * @param pointSchema point column schema
+     */
     public ArrayDatasetBuilder(
             String outDir,
             String sampleMetaPath,
@@ -48,6 +71,18 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         this(outDir, sampleMetaPath, pointSchema, "", null, null, null, "");
     }
 
+    /**
+     * builder를 전체 옵션과 함께 생성한다.
+     *
+     * @param outDir 최종 shard 출력 디렉터리
+     * @param sampleMetaPath dense sample metadata parquet 경로
+     * @param pointSchema point column schema
+     * @param featureMetaPath known-feature mode에서 사용할 feature metadata parquet 경로
+     * @param featureKeys known-feature mode에서 사용할 feature key 목록
+     * @param shardConfig 최종 shard build 설정
+     * @param bundleConfig 중간 bundle flush 설정
+     * @param bundleOutDir bundle stage 출력 디렉터리
+     */
     public ArrayDatasetBuilder(
             String outDir,
             String sampleMetaPath,
@@ -138,11 +173,28 @@ public class ArrayDatasetBuilder implements AutoCloseable {
                 this.pointSchema);
     }
 
+    /**
+     * sample 단위로 trace를 추가하는 context를 연다.
+     *
+     * @param sampleId dense sample id
+     * @return sample-scoped helper
+     */
     public ArraySampleContext sample(long sampleId) {
         ensureTraceStageOpen();
         return new ArraySampleContext(this, sampleId);
     }
 
+    /**
+     * trace 하나를 바로 builder에 추가한다.
+     *
+     * <p>feature는 id 또는 key로 지정할 수 있고, column map은 point schema와 정확히 일치해야 한다.
+     * categorical column은 필요하면 code array로 변환한 뒤 bundle writer로 전달한다.
+     *
+     * @param sampleId dense sample id
+     * @param featureId known-feature mode에서 직접 줄 feature id
+     * @param featureKey known/discovered mode에서 사용할 feature key
+     * @param columns point schema와 일치하는 column map
+     */
     public void addTrace(long sampleId, Integer featureId, String featureKey, Map<String, Object> columns) throws Exception {
         ensureTraceStageOpen();
         if (sampleId < 0L || sampleId >= nSamples) {
@@ -153,6 +205,14 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         bundleWriter.appendTrace(sampleId, resolvedFeatureId, normalizedColumns);
     }
 
+    /**
+     * bundle stage를 finalize하고 bundle manifest를 반환한다.
+     *
+     * <p>feature metadata 자동 생성, categorical dictionary JSON 작성, point schema 확정이
+     * 이 단계에서 함께 일어난다.
+     *
+     * @return bundle manifest 경로
+     */
     public String finishBundles() throws Exception {
         if (bundlesFinalized) {
             return bundleManifestPath;
@@ -166,6 +226,14 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         return bundleManifestPath;
     }
 
+    /**
+     * 자동 생성된 feature metadata에 새 컬럼을 merge한다.
+     *
+     * @param records 추가할 metadata row 목록
+     * @param on 조인 키 컬럼. 비어 있으면 feature_key 또는 feature_id를 자동 선택한다.
+     * @param requireAll 모든 feature가 새 컬럼 값을 가져야 하는지 여부
+     * @return 갱신된 feature metadata parquet 경로
+     */
     public String updateFeatureMeta(List<Map<String, Object>> records, String on, boolean requireAll) throws Exception {
         finishBundles();
         List<LinkedHashMap<String, Object>> baseRows = ArrayMetadataWriter.readRows(featureMetaPath);
@@ -222,10 +290,21 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         return featureMetaPath;
     }
 
+    /**
+     * bundle stage를 바탕으로 최종 binary shard dataset을 만든다.
+     *
+     * @return 최종 shard manifest 경로
+     */
     public String buildShards() throws Exception {
         return buildShards(false);
     }
 
+    /**
+     * bundle stage를 바탕으로 최종 binary shard dataset을 만든다.
+     *
+     * @param cleanupBundles true면 build 후 bundle stage를 삭제한다
+     * @return 최종 shard manifest 경로
+     */
     public String buildShards(boolean cleanupBundles) throws Exception {
         if (finished) {
             return manifestPath;
@@ -273,6 +352,12 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         }
     }
 
+    /**
+     * feature id/key 입력을 dense feature id 하나로 정규화한다.
+     *
+     * <p>known-feature mode에서는 기존 metadata 안에서만 해석하고,
+     * discovered-feature mode에서는 처음 본 key에 새 dense id를 붙인다.
+     */
     private int resolveFeatureId(Integer featureId, String featureKey) {
         if (featureId == null && (featureKey == null || featureKey.isEmpty())) {
             throw new IllegalArgumentException("provide either feature_id or feature_key");
@@ -310,6 +395,9 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         return nextId;
     }
 
+    /**
+     * column map을 point schema 순서와 타입 규칙에 맞게 정규화한다.
+     */
     private LinkedHashMap<String, Object> normalizeColumns(Map<String, Object> columns) {
         if (columns == null) {
             throw new IllegalArgumentException("columns is required");
@@ -457,6 +545,9 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         ArrayMetadataWriter.writeFeatureMeta(records, featureMetaPath);
     }
 
+    /**
+     * categorical column별 string -> code registry를 JSON dictionary로 기록한다.
+     */
     private void writeCategoricalDictionaries() throws Exception {
         if (categoricalRegistries.isEmpty()) {
             return;
@@ -571,6 +662,9 @@ public class ArrayDatasetBuilder implements AutoCloseable {
 
     }
 
+    /**
+     * sample 하나에 속한 trace를 묶어서 쓰는 convenience context다.
+     */
     public static final class ArraySampleContext implements AutoCloseable {
         private final ArrayDatasetBuilder builder;
         private final long sampleId;
@@ -580,6 +674,13 @@ public class ArrayDatasetBuilder implements AutoCloseable {
             this.sampleId = sampleId;
         }
 
+        /**
+         * 현재 sample에 trace 하나를 추가한다.
+         *
+         * @param featureId known-feature mode에서 직접 줄 feature id
+         * @param featureKey known/discovered mode에서 사용할 feature key
+         * @param columns point schema와 일치하는 column map
+         */
         public void addTrace(Integer featureId, String featureKey, Map<String, Object> columns) throws Exception {
             builder.addTrace(sampleId, featureId, featureKey, columns);
         }
