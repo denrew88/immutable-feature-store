@@ -3,8 +3,10 @@ import os
 import numpy as np
 import polars as pl
 
-from .storage import ArraySampleBundleWriter, build_array_shards_from_bundles
+from .binary_storage import build_array_binary_shards_from_bundles
+from .storage import ArraySampleBundleWriter
 from ..config import ArrayBundleConfig, ArrayShardConfig, ArraySyntheticConfig
+from ..types import LogicalType, PointColumnSpec, StorageType
 
 
 def _sample_group_sizes(rng, n_groups: int, total: int, mean: float):
@@ -83,29 +85,32 @@ def generate_array_synthetic(
         feature_kind[feat_idx] = "noise"
         feat_idx += 1
 
-    sample_rows = np.arange(config.n_samples, dtype=np.int64)
-    sample_ids = sample_rows.copy()
-    external_sample_ids = sample_rows + np.int64(config.sample_id_offset)
+    sample_ids = np.arange(config.n_samples, dtype=np.int64)
+    external_sample_ids = sample_ids + np.int64(config.sample_id_offset)
     sample_keys = np.asarray([f"sample_{sample_id:06d}" for sample_id in external_sample_ids], dtype=object)
     os.makedirs(bundle_out_dir, exist_ok=True)
     os.makedirs(os.path.dirname(sample_meta_path) or ".", exist_ok=True)
     feature_meta_path = os.path.join(bundle_out_dir, "array_feature_meta.parquet")
+    point_schema = [
+        PointColumnSpec(name="time", storage_type=StorageType.FLOAT64, logical_type=LogicalType.CONTINUOUS),
+        PointColumnSpec(name="value", storage_type=StorageType.FLOAT64, logical_type=LogicalType.CONTINUOUS),
+    ]
 
     with ArraySampleBundleWriter(
         bundle_out_dir,
         sample_meta_path,
-        feature_meta_path=feature_meta_path,
         n_samples=config.n_samples,
+        feature_meta_path=feature_meta_path,
         config=bundle_config,
+        point_schema=point_schema,
     ) as writer:
-        for sample_row in range(config.n_samples):
-            sample_id = int(sample_ids[sample_row])
+        for sample_idx in range(config.n_samples):
+            sample_id = int(sample_ids[sample_idx])
             for feature_id in range(config.n_features):
                 if rng.random() < config.missing_feature_rate:
                     continue
                 if rng.random() < config.empty_trace_rate:
                     writer.append_trace(
-                        sample_row,
                         sample_id,
                         feature_id,
                         columns={
@@ -124,18 +129,18 @@ def generate_array_synthetic(
                 group_id = int(feature_group[feature_id])
                 if group_id >= 0:
                     freq = group_freqs[group_id] * feature_local_freq[feature_id]
-                    phase = group_phase_shift[group_id] + sample_phase[group_id, sample_row] + feature_phase_offset[feature_id]
+                    phase = group_phase_shift[group_id] + sample_phase[group_id, sample_idx] + feature_phase_offset[feature_id]
                     base = np.sin(freq * time + phase)
                     harmonic = 0.35 * np.cos(0.5 * freq * time - phase)
                     envelope = 1.0 + 0.2 * np.sin(time / max(duration, 1e-6) * np.pi)
                     value = (
                         feature_sign[feature_id]
                         * feature_scale[feature_id]
-                        * sample_amp[group_id, sample_row]
+                        * sample_amp[group_id, sample_idx]
                         * (base + harmonic)
                         * envelope
                     )
-                    value += sample_baseline[group_id, sample_row]
+                    value += sample_baseline[group_id, sample_idx]
                     value += rng.normal(0.0, config.noise_scale, size=trace_len)
                     time *= group_time_scale[group_id]
                 else:
@@ -153,7 +158,6 @@ def generate_array_synthetic(
                         value[idx] = np.inf if (j % 2 == 0) else -np.inf
 
                 writer.append_trace(
-                    sample_row,
                     sample_id,
                     feature_id,
                     columns={
@@ -165,7 +169,6 @@ def generate_array_synthetic(
 
     meta = pl.DataFrame(
         {
-            "sample_row": pl.Series("sample_row", sample_rows, dtype=pl.Int64),
             "sample_id": pl.Series("sample_id", sample_ids, dtype=pl.Int64),
             "sample_key": pl.Series("sample_key", sample_keys.tolist(), dtype=pl.String),
             "y": pl.Series("y", y, dtype=pl.Float64),
@@ -194,7 +197,7 @@ def generate_array_synthetic(
         "feature_meta_path": feature_meta_path,
     }
     if shard_out_dir is not None:
-        shard_manifest_path = build_array_shards_from_bundles(
+        shard_manifest_path = build_array_binary_shards_from_bundles(
             bundle_manifest_path=bundle_manifest_path,
             out_dir=shard_out_dir,
             config=shard_config or ArrayShardConfig(),

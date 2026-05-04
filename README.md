@@ -22,7 +22,6 @@
 
 ```text
 docs/
-  array_binary_shard_format.md
   array_binary_shard_format_v3.md
   scalar_parquet_shard_format.md
 
@@ -50,7 +49,6 @@ packages/
 ### Array
 
 - 문서
-  - [docs/array_binary_shard_format.md](docs/array_binary_shard_format.md)
   - [docs/array_binary_shard_format_v3.md](docs/array_binary_shard_format_v3.md)
 - Python core
   - [python/fs/array](python/fs/array)

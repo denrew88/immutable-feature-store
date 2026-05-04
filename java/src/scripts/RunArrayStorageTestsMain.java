@@ -7,15 +7,21 @@ import fs.io.ArrayFeatureLocatorIndex;
 import fs.io.ArraySampleBundleWriter;
 import fs.io.ArrayShardBuilder;
 import fs.io.ArrayShardManifestIO;
-import fs.io.ArrayShardReader;
+import fs.io.ArrayBinaryShardReader;
 import fs.io.DuckDBUtils;
+import fs.model.LogicalType;
 import fs.model.ArrayShardManifest;
 import fs.model.ArrayTrace;
+import fs.model.PointColumnSpec;
+import fs.model.StorageType;
 
 import java.io.File;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public class RunArrayStorageTestsMain {
@@ -34,13 +40,17 @@ public class RunArrayStorageTestsMain {
         ArrayBundleConfig bundleCfg = new ArrayBundleConfig();
         bundleCfg.maxBundleRows = 3;
         bundleCfg.maxBundleBytes = 1L << 20;
-        try (ArraySampleBundleWriter writer = new ArraySampleBundleWriter(root.getAbsolutePath(), sampleMetaPath, featureMetaPath, 10, bundleCfg)) {
-            writer.appendTrace(0L, 0, new double[]{0.0, 1.0, 2.0}, new double[]{10.0, 11.0, 12.0});
-            writer.appendTrace(2L, 0, new double[]{0.0, 1.0}, new double[]{20.0, 21.0});
-            writer.appendTrace(5L, 0, new double[0], new double[0]);
-            writer.appendTrace(8L, 0, new double[]{0.0, Double.NaN}, new double[]{80.0, Double.POSITIVE_INFINITY});
-            writer.appendTrace(1L, 1, new double[]{1.0, 2.0, 3.0}, new double[]{1.0, 2.0, 3.0});
-            writer.appendTrace(7L, 1, new double[]{5.0}, new double[]{7.0});
+        List<PointColumnSpec> pointSchema = Arrays.asList(
+                new PointColumnSpec("time", StorageType.FLOAT64, LogicalType.CONTINUOUS),
+                new PointColumnSpec("value", StorageType.FLOAT64, LogicalType.CONTINUOUS)
+        );
+        try (ArraySampleBundleWriter writer = new ArraySampleBundleWriter(root.getAbsolutePath(), sampleMetaPath, featureMetaPath, 10, bundleCfg, pointSchema)) {
+            writer.appendTrace(0L, 0, columns(new double[]{0.0, 1.0, 2.0}, new double[]{10.0, 11.0, 12.0}));
+            writer.appendTrace(2L, 0, columns(new double[]{0.0, 1.0}, new double[]{20.0, 21.0}));
+            writer.appendTrace(5L, 0, columns(new double[0], new double[0]));
+            writer.appendTrace(8L, 0, columns(new double[]{0.0, Double.NaN}, new double[]{80.0, Double.POSITIVE_INFINITY}));
+            writer.appendTrace(1L, 1, columns(new double[]{1.0, 2.0, 3.0}, new double[]{1.0, 2.0, 3.0}));
+            writer.appendTrace(7L, 1, columns(new double[]{5.0}, new double[]{7.0}));
             bundleManifestPath = writer.finish();
         }
 
@@ -65,13 +75,13 @@ public class RunArrayStorageTestsMain {
         require(new File(manifest.sampleMetaPath).exists(), "missing sample_meta.parquet");
         require(new File(manifest.featureMetaPath).exists(), "missing feature_meta.parquet");
 
-        try (ArrayShardReader reader = new ArrayShardReader(manifest)) {
+        try (ArrayBinaryShardReader reader = new ArrayBinaryShardReader(manifest)) {
             Map<Long, ArrayTrace> traces0 = reader.loadFeatureSamples(0, new long[]{0L, 1L, 2L, 5L, 8L, 9L}, locatorIndex);
             assertTrace(traces0.get(0L), ArrayFeatureFlags.PRESENT, new double[]{0.0, 1.0, 2.0}, new double[]{10.0, 11.0, 12.0});
             assertTrace(traces0.get(1L), (byte) 0, new double[0], new double[0]);
             assertTrace(traces0.get(2L), ArrayFeatureFlags.PRESENT, new double[]{0.0, 1.0}, new double[]{20.0, 21.0});
             assertTrace(traces0.get(5L), (byte) (ArrayFeatureFlags.PRESENT | ArrayFeatureFlags.EMPTY), new double[0], new double[0]);
-            assertTrace(traces0.get(8L), (byte) (ArrayFeatureFlags.PRESENT | ArrayFeatureFlags.HAS_NONFINITE_TIME | ArrayFeatureFlags.HAS_NONFINITE_VALUE),
+            assertTrace(traces0.get(8L), ArrayFeatureFlags.PRESENT,
                     new double[]{0.0, Double.NaN},
                     new double[]{80.0, Double.POSITIVE_INFINITY});
             assertTrace(traces0.get(9L), (byte) 0, new double[0], new double[0]);
@@ -87,14 +97,23 @@ public class RunArrayStorageTestsMain {
     private static void assertTrace(ArrayTrace actual, byte expectedFlags, double[] expectedTime, double[] expectedValue) {
         require(actual != null, "trace should not be null");
         require(actual.flags == expectedFlags, "flags mismatch for sample_id=" + actual.sampleId);
-        require(actual.time.length == expectedTime.length, "time length mismatch for sample_id=" + actual.sampleId);
-        require(actual.value.length == expectedValue.length, "value length mismatch for sample_id=" + actual.sampleId);
+        double[] actualTime = (double[]) actual.columns.get("time");
+        double[] actualValue = (double[]) actual.columns.get("value");
+        require(actualTime.length == expectedTime.length, "time length mismatch for sample_id=" + actual.sampleId);
+        require(actualValue.length == expectedValue.length, "value length mismatch for sample_id=" + actual.sampleId);
         for (int i = 0; i < expectedTime.length; i++) {
-            assertDoubleEquals(actual.time[i], expectedTime[i], "time[" + i + "] sample_id=" + actual.sampleId);
+            assertDoubleEquals(actualTime[i], expectedTime[i], "time[" + i + "] sample_id=" + actual.sampleId);
         }
         for (int i = 0; i < expectedValue.length; i++) {
-            assertDoubleEquals(actual.value[i], expectedValue[i], "value[" + i + "] sample_id=" + actual.sampleId);
+            assertDoubleEquals(actualValue[i], expectedValue[i], "value[" + i + "] sample_id=" + actual.sampleId);
         }
+    }
+
+    private static LinkedHashMap<String, Object> columns(double[] time, double[] value) {
+        LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("time", time);
+        out.put("value", value);
+        return out;
     }
 
     private static void writeSampleMeta(String sampleMetaPath, int nSamples) throws Exception {

@@ -18,7 +18,6 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArraySampleBundleW
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArraySampleIdIndex.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayShardBuilder.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayShardManifestIO.java
-C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayShardReader.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayUtils.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\DuckDBShardReader.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\DuckDBUtils.java

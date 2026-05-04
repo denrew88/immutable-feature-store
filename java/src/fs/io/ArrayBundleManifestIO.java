@@ -28,12 +28,6 @@ public class ArrayBundleManifestIO {
         sb.append("  \"n_bundles\": ").append(manifest.nBundles).append(",\n");
         sb.append("  \"feature_id_dtype\": \"").append(escapeJson(manifest.featureIdType)).append("\",\n");
         sb.append("  \"flags_dtype\": \"").append(escapeJson(manifest.flagsType)).append("\",\n");
-        if (manifest.timeType != null && !manifest.timeType.isEmpty()) {
-            sb.append("  \"time_dtype\": \"").append(escapeJson(manifest.timeType)).append("\",\n");
-        }
-        if (manifest.valueType != null && !manifest.valueType.isEmpty()) {
-            sb.append("  \"value_dtype\": \"").append(escapeJson(manifest.valueType)).append("\",\n");
-        }
         sb.append("  \"point_schema\": [\n");
         for (int i = 0; i < manifest.pointSchema.size(); i++) {
             PointColumnSpec spec = manifest.pointSchema.get(i);
@@ -78,8 +72,6 @@ public class ArrayBundleManifestIO {
                     intValue(root.get("n_bundles")),
                     stringValue(root.get("feature_id_dtype")),
                     stringValue(root.get("flags_dtype")),
-                    stringValue(root.get("time_dtype")),
-                    stringValue(root.get("value_dtype")),
                     parsePointSchema(path, (List<Object>) root.get("point_schema")));
         } catch (Exception e) {
             throw new IOException("failed to parse array bundle manifest: " + path, e);
@@ -88,7 +80,7 @@ public class ArrayBundleManifestIO {
 
     private static List<PointColumnSpec> parsePointSchema(String manifestPath, List<Object> raw) {
         if (raw == null || raw.isEmpty()) {
-            return PointColumnSpec.defaultPointSchema();
+            throw new IllegalArgumentException("array bundle manifest must include point_schema");
         }
         ArrayList<PointColumnSpec> out = new ArrayList<PointColumnSpec>(raw.size());
         for (Object item : raw) {

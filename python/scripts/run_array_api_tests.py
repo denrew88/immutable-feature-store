@@ -100,7 +100,6 @@ def main():
         writer.append_trace(
             0,
             0,
-            0,
             columns={
                 "phase": np.asarray([10, 11, 12], dtype=np.int32),
                 "state_code": np.asarray([1, 1, 2], dtype=np.uint32),
@@ -108,7 +107,6 @@ def main():
             },
         )
         writer.append_trace(
-            3,
             3,
             0,
             columns={
@@ -138,14 +136,12 @@ def main():
         writer.append_trace(
             0,
             0,
-            0,
             columns={
                 "ts": np.asarray(["2024-01-01T00:00:00", "2024-01-01T00:00:01"], dtype="datetime64[ns]"),
                 "dt": np.asarray([0, 1_000_000_000], dtype="timedelta64[ns]"),
             },
         )
         writer.append_trace(
-            3,
             3,
             0,
             columns={
@@ -378,8 +374,7 @@ def main():
     assert isinstance(stats["manifest_cache"]["scalar_manifests"], list)
     assert "block_records_entries" in stats["array_binary_cache"]
     assert "open_mmaps" in stats["array_binary_cache"]
-    assert "parquet_file_cache" in stats["array_parquet_cache"]
-    assert "row_group_starts_cache" in stats["array_parquet_cache"]
+    assert stats["array_parquet_cache"] == {}
     assert "open_scans" in stats["scalar_parquet_cache"]
     assert "open_scan_manifests" in stats["scalar_parquet_cache"]
 

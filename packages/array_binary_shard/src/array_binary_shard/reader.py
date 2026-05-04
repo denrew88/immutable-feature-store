@@ -251,7 +251,6 @@ class BinaryShardDataset:
         return Trace(
             feature_id=int(feature_id),
             sample_id=int(sample_id),
-            sample_row=int(trace.sample_row),
             present=bool(int(trace.flags) & 0x01),
             flags=int(trace.flags),
             feature_key=None if feature_key is None else str(feature_key),

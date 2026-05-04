@@ -1,20 +1,13 @@
 import shutil
 from pathlib import Path
 
-import numpy as np
-
-from fs.array.storage import (
-    ArrayShardReader,
-    build_array_feature_locator_index,
-    load_array_shard_manifest,
-)
+from fs.array import open_shard
 from fs.array.synthetic import generate_array_synthetic
 from fs.config import ArrayBundleConfig, ArrayShardConfig, ArraySyntheticConfig
-from fs.scalar.parquet_storage import build_sample_id_index
 
 
 def main():
-    """Run smoke tests for synthetic array data generation and shard building."""
+    """Run smoke tests for synthetic array data generation and binary shard build."""
     root = Path(__file__).resolve().parents[2] / "data" / "tmp_py_array_synth_test"
     if root.exists():
         shutil.rmtree(root)
@@ -35,33 +28,23 @@ def main():
         shard_config=ArrayShardConfig(n_shards=4, samples_per_block=6),
     )
 
-    manifest = load_array_shard_manifest(result["shard_manifest_path"])
-    locator_index = build_array_feature_locator_index(manifest.locator_path)
-    sample_id_index = build_sample_id_index(result["sample_meta_path"])
-    for feature_locs in locator_index.values():
-        assert len({loc.shard_id for loc in feature_locs}) == 1
-    assert 0 in sample_id_index
-    assert sample_id_index[5] == 5
+    with open_shard(result["shard_manifest_path"]) as ds:
+        assert ds.n_samples == 24
+        assert ds.feature_count == 12
+        assert [spec.name for spec in ds.point_schema] == ["time", "value"]
 
-    feature_id = next(iter(locator_index))
-    sample_ids = [0, 3, 7, 11]
-    reader = ArrayShardReader(manifest)
-    traces = reader.load_feature_samples_by_sample_ids(
-        feature_id=feature_id,
-        sample_ids=sample_ids,
-        locator_index=locator_index,
-        sample_id_index=sample_id_index,
-    )
-    assert set(traces.keys()) == set(sample_ids)
-    for sample_id in sample_ids:
-        trace = traces[sample_id]
-        assert trace is not None
-        assert trace.sample_row in (-1, sample_id_index[sample_id])
-        assert trace.time.shape == trace.value.shape
-        if trace.sample_row >= 0 and trace.flags != 0:
-            assert trace.time.ndim == 1
-            assert trace.value.ndim == 1
-            assert trace.time.size >= 0
+        feature_id = int(ds.feature_ids()[0])
+        sample_ids = [0, 3, 7, 11]
+        traces = ds.get_traces(feature_id=feature_id, sample_ids=sample_ids)
+        assert tuple(traces.sample_ids) == tuple(sample_ids)
+        assert len(traces.traces) == len(sample_ids)
+        for trace in traces.traces:
+            assert trace is not None
+            assert trace.columns["time"].shape == trace.columns["value"].shape
+            if trace.flags != 0:
+                assert trace.columns["time"].ndim == 1
+                assert trace.columns["value"].ndim == 1
+                assert trace.columns["time"].size >= 0
 
     print("python array synthetic tests passed")
 

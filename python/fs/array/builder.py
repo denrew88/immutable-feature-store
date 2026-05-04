@@ -223,8 +223,8 @@ class ArrayDatasetBuilder:
         self._bundle_writer = ArraySampleBundleWriter(
             self.bundle_out_dir,
             self._bundle_sample_meta_path,
-            feature_meta_path=self._feature_meta_path,
             n_samples=self.n_samples,
+            feature_meta_path=self._feature_meta_path,
             config=self.bundle_config,
             point_schema=self.point_schema,
         )
@@ -412,7 +412,6 @@ class ArrayDatasetBuilder:
         resolved_feature_id = self._resolve_feature_id(feature_id, feature_key)
         normalized_columns = self._normalize_columns(columns=columns)
         self._bundle_writer.append_trace(
-            sample_row=sample_id,
             sample_id=sample_id,
             feature_id=resolved_feature_id,
             columns=normalized_columns,

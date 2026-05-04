@@ -16,33 +16,6 @@ public class ArrayFeatureBlock {
     public final byte[] sampleFlags;
     public final long[] sampleOffsets;
     public final Map<String, Object> columns;
-    public final double[] time;
-    public final double[] value;
-
-    public ArrayFeatureBlock(
-            int featureId,
-            int blockId,
-            long sampleIdStart,
-            int sampleCount,
-            long pointCount,
-            byte[] sampleFlags,
-            long[] sampleOffsets,
-            double[] time,
-            double[] value) {
-        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
-        columns.put("time", (time == null) ? new double[0] : time);
-        columns.put("value", (value == null) ? new double[0] : value);
-        this.featureId = featureId;
-        this.blockId = blockId;
-        this.sampleIdStart = sampleIdStart;
-        this.sampleCount = sampleCount;
-        this.pointCount = pointCount;
-        this.sampleFlags = sampleFlags;
-        this.sampleOffsets = sampleOffsets;
-        this.columns = Collections.unmodifiableMap(columns);
-        this.time = (time == null) ? new double[0] : time;
-        this.value = (value == null) ? new double[0] : value;
-    }
 
     public ArrayFeatureBlock(
             int featureId,
@@ -65,8 +38,6 @@ public class ArrayFeatureBlock {
         this.sampleFlags = sampleFlags;
         this.sampleOffsets = sampleOffsets;
         this.columns = Collections.unmodifiableMap(out);
-        this.time = extractDoubleColumn(out, "time");
-        this.value = extractDoubleColumn(out, "value");
     }
 
     public long sampleIdEnd() {
@@ -94,18 +65,6 @@ public class ArrayFeatureBlock {
             }
             traceColumns.put(entry.getKey(), ArrayUtils.slicePointColumn(values, (int) start, (int) end));
         }
-        if (len == 0) {
-            traceColumns.put("time", traceColumns.containsKey("time") ? traceColumns.get("time") : new double[0]);
-            traceColumns.put("value", traceColumns.containsKey("value") ? traceColumns.get("value") : new double[0]);
-        }
         return new ArrayTrace(sampleId, flags, traceColumns);
-    }
-
-    private static double[] extractDoubleColumn(Map<String, Object> columns, String name) {
-        Object value = columns.get(name);
-        if (value instanceof double[]) {
-            return (double[]) value;
-        }
-        return new double[0];
     }
 }

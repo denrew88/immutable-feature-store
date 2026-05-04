@@ -3,8 +3,6 @@
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
-import numpy as np
-
 
 @dataclass(frozen=True)
 class BuildOptions:
@@ -36,8 +34,6 @@ class Trace:
     Attributes:
         feature_id: Logical feature identifier that was requested.
         sample_id: External sample identifier that was requested.
-        sample_row: Dense internal sample row. In v3 this is equal to `sample_id`,
-            or `-1` when a requested sample id or sample key does not exist.
         present: Whether the feature has a stored trace for the requested sample.
         flags: Stored per-sample trace flags.
         feature_key: Optional external feature key when the request path used keys.
@@ -50,22 +46,11 @@ class Trace:
 
     feature_id: int
     sample_id: int
-    sample_row: int
     present: bool
     flags: int
     feature_key: Optional[str]
     sample_key: Optional[str]
     columns: dict = field(default_factory=dict)
-
-    @property
-    def time(self):
-        """Return the `time` column when present, otherwise an empty float64 array."""
-        return self.columns.get("time", np.empty(0, dtype=np.float64))
-
-    @property
-    def value(self):
-        """Return the `value` column when present, otherwise an empty float64 array."""
-        return self.columns.get("value", np.empty(0, dtype=np.float64))
 
 
 @dataclass(frozen=True)

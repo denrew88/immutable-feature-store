@@ -60,12 +60,6 @@ public class ArrayShardManifestIO {
             sb.append("\n");
         }
         sb.append("  ],\n");
-        if (manifest.timeType != null && !manifest.timeType.isEmpty()) {
-            sb.append("  \"time_dtype\": \"").append(escapeJson(manifest.timeType)).append("\",\n");
-        }
-        if (manifest.valueType != null && !manifest.valueType.isEmpty()) {
-            sb.append("  \"value_dtype\": \"").append(escapeJson(manifest.valueType)).append("\",\n");
-        }
         sb.append("  \"shards\": [\n");
         for (int i = 0; i < manifest.shards.length; i++) {
             ArrayBinaryShardInfo shard = manifest.shards[i];
@@ -115,8 +109,12 @@ public class ArrayShardManifestIO {
                             stringValue(shard.get("blocks_data_name")));
                 }
             }
+            int version = intValue(root.get("version"));
+            if (version != ArrayBinaryFormat.FILE_VERSION) {
+                throw new IOException("unsupported binary shard manifest version: " + version);
+            }
             return new ArrayShardManifest(
-                    intValue(root.get("version")) == 0 ? ArrayBinaryFormat.LEGACY_FILE_VERSION : intValue(root.get("version")),
+                    version,
                     resolveAgainst(path, stringValue(root.get("sample_meta_path"))),
                     resolveAgainst(path, stringValue(root.get("feature_meta_path"))),
                     intValue(root.get("n_samples")),
@@ -128,8 +126,6 @@ public class ArrayShardManifestIO {
                     stringValue(root.get("feature_id_dtype")),
                     stringValue(root.get("flags_dtype")),
                     stringValue(root.get("offset_dtype")),
-                    stringValue(root.get("time_dtype")),
-                    stringValue(root.get("value_dtype")),
                     stringValue(root.get("default_codec")),
                     stringValue(root.get("endianness")),
                     defaultString(root.get("sample_key_col"), ArrayBinaryFormat.DEFAULT_SAMPLE_KEY_COL),
@@ -144,7 +140,7 @@ public class ArrayShardManifestIO {
     @SuppressWarnings("unchecked")
     private static List<PointColumnSpec> parsePointSchema(String manifestPath, List<Object> raw) {
         if (raw == null || raw.isEmpty()) {
-            return PointColumnSpec.defaultPointSchema();
+            throw new IllegalArgumentException("array binary shard manifest must include point_schema");
         }
         ArrayList<PointColumnSpec> out = new ArrayList<PointColumnSpec>(raw.size());
         for (Object item : raw) {

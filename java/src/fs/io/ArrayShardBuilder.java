@@ -79,8 +79,6 @@ public class ArrayShardBuilder {
                     "INT32",
                     "UINT8",
                     "INT64",
-                    hasColumn(pointSchema, "time") ? "FLOAT64_LE" : "",
-                    hasColumn(pointSchema, "value") ? "FLOAT64_LE" : "",
                     ArrayBinaryFormat.DEFAULT_CODEC_NAME,
                     ArrayBinaryFormat.FILE_ENDIANNESS,
                     ArrayBinaryFormat.DEFAULT_SAMPLE_KEY_COL,

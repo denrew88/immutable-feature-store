@@ -11,7 +11,7 @@ from .exceptions import (
 from .metadata import write_feature_meta, write_sample_meta
 from .models import BuildOptions, FeatureTraces, QueryResult, Trace
 from .reader import BinaryShardDataset, open_shard
-from .writer import build_shard, convert_parquet_shard
+from .writer import build_shard
 
 __all__ = [
     "ArrayBinaryShardError",
@@ -29,7 +29,6 @@ __all__ = [
     "StorageType",
     "Trace",
     "build_shard",
-    "convert_parquet_shard",
     "open_shard",
     "write_feature_meta",
     "write_sample_meta",

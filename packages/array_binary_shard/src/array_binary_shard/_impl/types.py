@@ -139,8 +139,6 @@ class ArrayBundleManifest:
     n_bundles: int
     feature_id_dtype: str
     flags_dtype: str
-    time_dtype: str
-    value_dtype: str
     point_schema: list = field(default_factory=list)
 
     def to_json(self):
@@ -153,47 +151,10 @@ class ArrayBundleManifest:
             "n_bundles": self.n_bundles,
             "feature_id_dtype": self.feature_id_dtype,
             "flags_dtype": self.flags_dtype,
-            "time_dtype": self.time_dtype,
-            "value_dtype": self.value_dtype,
             "point_schema": [
                 spec.to_json() if hasattr(spec, "to_json") else spec
                 for spec in self.point_schema
             ],
-        }
-
-
-@dataclass
-class ArrayShardManifest:
-    sample_meta_path: str
-    feature_meta_path: str
-    n_samples: int
-    shard_path: str
-    n_shards: int
-    locator_path: str
-    samples_per_block: int
-    feature_id_dtype: str
-    flags_dtype: str
-    offset_dtype: str
-    time_dtype: str
-    value_dtype: str
-    row_group_size: int = 0
-
-    def to_json(self):
-        """Serialize the parquet array shard manifest into JSON form."""
-        return {
-            "sample_meta_path": self.sample_meta_path,
-            "feature_meta_path": self.feature_meta_path,
-            "n_samples": self.n_samples,
-            "shard_path": self.shard_path,
-            "n_shards": self.n_shards,
-            "locator_path": self.locator_path,
-            "samples_per_block": self.samples_per_block,
-            "feature_id_dtype": self.feature_id_dtype,
-            "flags_dtype": self.flags_dtype,
-            "offset_dtype": self.offset_dtype,
-            "time_dtype": self.time_dtype,
-            "value_dtype": self.value_dtype,
-            "row_group_size": self.row_group_size,
         }
 
 
@@ -233,8 +194,6 @@ class ArrayBinaryShardManifest:
     feature_id_dtype: str
     flags_dtype: str
     offset_dtype: str
-    time_dtype: str
-    value_dtype: str
     default_codec: str
     endianness: str
     id_scheme: str
@@ -273,73 +232,41 @@ class ArrayBinaryShardManifest:
                 shard.to_json() if hasattr(shard, "to_json") else shard
                 for shard in self.shards
             ],
-            **({"time_dtype": self.time_dtype} if self.time_dtype else {}),
-            **({"value_dtype": self.value_dtype} if self.value_dtype else {}),
         }
-
-
-@dataclass(frozen=True)
-class ArrayBlockLocation:
-    feature_id: int
-    block_id: int
-    shard_id: int
-    row_in_shard: int
-    sample_row_start: int
-    sample_row_end: int
-
-    def contains_sample_row(self, sample_row: int) -> bool:
-        """Return whether a sample row falls inside this block range."""
-        return self.sample_row_start <= sample_row <= self.sample_row_end
 
 
 @dataclass
 class ArrayTrace:
-    sample_row: int
+    sample_id: int
     flags: int
     columns: dict = field(default_factory=dict)
-
-    @property
-    def time(self):
-        return self.columns.get("time", np.empty(0, dtype=np.float64))
-
-    @property
-    def value(self):
-        return self.columns.get("value", np.empty(0, dtype=np.float64))
 
 
 @dataclass
 class ArrayFeatureBlock:
     feature_id: int
     block_id: int
-    sample_row_start: int
+    sample_id_start: int
     sample_count: int
     point_count: int
     sample_flags: np.ndarray
     sample_offsets: np.ndarray
     columns: dict = field(default_factory=dict)
 
-    @property
-    def time(self):
-        return self.columns.get("time", np.empty(0, dtype=np.float64))
-
-    @property
-    def value(self):
-        return self.columns.get("value", np.empty(0, dtype=np.float64))
-
-    def trace_for_sample_row(self, sample_row: int):
+    def trace_for_sample_id(self, sample_id: int):
         """Extract one sample trace from a decoded block."""
-        idx = int(sample_row - self.sample_row_start)
+        idx = int(sample_id - self.sample_id_start)
         if idx < 0 or idx >= self.sample_count:
             return None
         start = int(self.sample_offsets[idx])
         end = int(self.sample_offsets[idx + 1])
         if end < start:
-            raise ValueError(f"invalid offsets for sample_row={sample_row}")
+            raise ValueError(f"invalid offsets for sample_id={sample_id}")
         for name, values in self.columns.items():
             if end > int(values.shape[0]):
-                raise ValueError(f"invalid offsets for sample_row={sample_row} column={name}")
+                raise ValueError(f"invalid offsets for sample_id={sample_id} column={name}")
         return ArrayTrace(
-            sample_row=int(sample_row),
+            sample_id=int(sample_id),
             flags=int(self.sample_flags[idx]),
             columns={
                 name: values[start:end].copy()

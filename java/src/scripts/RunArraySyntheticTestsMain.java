@@ -7,7 +7,7 @@ import fs.io.ArrayFeatureLocatorIndex;
 import fs.io.ArrayFeatureIdIndex;
 import fs.io.ArraySampleIdIndex;
 import fs.io.ArrayShardManifestIO;
-import fs.io.ArrayShardReader;
+import fs.io.ArrayBinaryShardReader;
 import fs.model.ArrayShardManifest;
 import fs.model.ArraySyntheticArtifacts;
 import fs.model.ArrayTrace;
@@ -64,7 +64,7 @@ public class RunArraySyntheticTestsMain {
         require(new File(manifest.blocksDataPath(0)).exists(), "missing blocks.bin");
         require(new File(manifest.featureMetaPath).exists(), "missing feature_meta.parquet");
 
-        try (ArrayShardReader reader = new ArrayShardReader(manifest)) {
+        try (ArrayBinaryShardReader reader = new ArrayBinaryShardReader(manifest)) {
             Map<Long, ArrayTrace> traces = reader.loadFeatureSamplesBySampleIds(
                     0,
                     new long[]{0L, 3L, 7L, 11L},
@@ -75,7 +75,9 @@ public class RunArraySyntheticTestsMain {
                 ArrayTrace trace = traces.get(sampleId);
                 require(trace != null, "missing trace for sample_id=" + sampleId);
                 require(trace.sampleId == sampleId, "sample id mismatch for sample_id=" + sampleId);
-                require(trace.time.length == trace.value.length, "shape mismatch for sample_id=" + sampleId);
+                double[] time = (double[]) trace.columns.get("time");
+                double[] value = (double[]) trace.columns.get("value");
+                require(time.length == value.length, "shape mismatch for sample_id=" + sampleId);
                 require(trace.flags != 0, "expected present trace for sample_id=" + sampleId);
             }
 

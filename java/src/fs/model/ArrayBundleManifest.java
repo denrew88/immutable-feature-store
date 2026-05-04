@@ -11,8 +11,6 @@ public class ArrayBundleManifest {
     public final int nBundles;
     public final String featureIdType;
     public final String flagsType;
-    public final String timeType;
-    public final String valueType;
     public final List<PointColumnSpec> pointSchema;
 
     public ArrayBundleManifest(
@@ -23,8 +21,6 @@ public class ArrayBundleManifest {
             int nBundles,
             String featureIdType,
             String flagsType,
-            String timeType,
-            String valueType,
             List<PointColumnSpec> pointSchema) {
         this.sampleMetaPath = sampleMetaPath;
         this.featureMetaPath = featureMetaPath;
@@ -33,8 +29,6 @@ public class ArrayBundleManifest {
         this.nBundles = nBundles;
         this.featureIdType = featureIdType;
         this.flagsType = flagsType;
-        this.timeType = timeType;
-        this.valueType = valueType;
         this.pointSchema = PointColumnSpec.normalizeList(pointSchema);
     }
 

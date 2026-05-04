@@ -21,11 +21,8 @@ from .storage import (
     _bucket_spill_path,
     _estimate_block_overhead_bytes,
     _point_blob_column_name,
-    _default_point_schema,
     _normalize_point_schema,
-    list_array_shard_paths,
     load_array_bundle_manifest,
-    load_array_shard_manifest,
 )
 from .config import ArrayShardConfig
 from .types import (
@@ -41,7 +38,6 @@ from .types import (
 CODEC_NONE = 0
 CODEC_ZSTD = 1
 FILE_VERSION = 3
-LEGACY_FILE_VERSION = 2
 FILE_ENDIANNESS = "little"
 DEFAULT_CODEC_NAME = "none"
 DEFAULT_SAMPLE_KEY_COL = "sample_key"
@@ -78,12 +74,8 @@ if _BLOCK_RECORD_DTYPE.itemsize != 32:
 if _BLOCK_PAYLOAD_HEADER_STRUCT.size != 48:
     raise AssertionError("unexpected block payload header size")
 
-def _legacy_point_schema():
-    return _normalize_point_schema(_default_point_schema())
-
-
 def _normalize_binary_point_schema(point_schema):
-    return _normalize_point_schema(point_schema or _legacy_point_schema())
+    return _normalize_point_schema(point_schema)
 
 
 def _point_dtype(spec) -> np.dtype:
@@ -97,9 +89,9 @@ def _point_total_bytes(point_schema, point_count: int) -> int:
 
 def _build_point_schema_from_manifest_json(data: dict):
     point_schema = data.get("point_schema")
-    if point_schema:
-        return _normalize_binary_point_schema(point_schema)
-    return _legacy_point_schema()
+    if not point_schema:
+        raise ValueError("binary array shard manifest must include point_schema")
+    return _normalize_binary_point_schema(point_schema)
 
 
 def _copy_categorical_dictionaries(manifest_path: str, point_schema, out_dir: str):
@@ -278,7 +270,7 @@ def _read_file_header(path: str, expected_magic: bytes):
     )
     if magic != expected_magic:
         raise ValueError(f"unexpected magic for {path}: {magic!r}")
-    if int(version) not in {int(FILE_VERSION), int(LEGACY_FILE_VERSION)}:
+    if int(version) != int(FILE_VERSION):
         raise ValueError(f"unsupported version for {path}: {version}")
     if header_bytes != _FILE_HEADER_STRUCT.size:
         raise ValueError(f"unexpected header size for {path}: {header_bytes}")
@@ -417,7 +409,7 @@ def _empty_spill_frame(point_schema):
     """Create an empty spill dataframe matching the v3 bundle row layout."""
     columns = {
         "feature_id": pl.Series("feature_id", [], dtype=pl.Int32),
-        "sample_row": pl.Series("sample_row", [], dtype=pl.Int64),
+        "sample_id": pl.Series("sample_id", [], dtype=pl.Int64),
         "flags": pl.Series("flags", [], dtype=pl.UInt8),
         "trace_len": pl.Series("trace_len", [], dtype=pl.Int32),
     }
@@ -426,10 +418,10 @@ def _empty_spill_frame(point_schema):
     return pl.DataFrame(columns)
 
 
-def _validate_point_trace_row(sample_row: int, n_samples: int, trace_len: int, row: dict, point_schema):
+def _validate_point_trace_row(sample_id: int, n_samples: int, trace_len: int, row: dict, point_schema):
     """Validate one generic point-trace row before block packing or spill serialization."""
-    if int(sample_row) < 0 or int(sample_row) >= int(n_samples):
-        raise ValueError(f"sample_row out of range: {sample_row}")
+    if int(sample_id) < 0 or int(sample_id) >= int(n_samples):
+        raise ValueError(f"sample_id out of range: {sample_id}")
     if int(trace_len) < 0:
         raise ValueError("trace_len must be >= 0")
     for spec in point_schema:
@@ -446,13 +438,13 @@ def _validate_point_trace_row(sample_row: int, n_samples: int, trace_len: int, r
 class _DensePointBlockAccumulator:
     """Accumulate one feature block with arbitrary fixed-width point columns."""
 
-    def __init__(self, feature_id: int, block_id: int, sample_row: int, samples_per_block: int, n_samples: int, point_schema):
+    def __init__(self, feature_id: int, block_id: int, sample_id: int, samples_per_block: int, n_samples: int, point_schema):
         self.feature_id = int(feature_id)
         self.block_id = int(block_id)
-        self.sample_row_start = self.block_id * int(samples_per_block)
-        self.sample_count = int(min(samples_per_block, n_samples - self.sample_row_start))
+        self.sample_id_start = self.block_id * int(samples_per_block)
+        self.sample_count = int(min(samples_per_block, n_samples - self.sample_id_start))
         if self.sample_count <= 0:
-            raise ValueError(f"invalid block sample_count for sample_row={sample_row}")
+            raise ValueError(f"invalid block sample_count for sample_id={sample_id}")
         self.point_schema = list(point_schema)
         self.sample_flags = np.zeros(self.sample_count, dtype=np.uint8)
         self.sample_offsets = np.zeros(self.sample_count + 1, dtype=np.int64)
@@ -461,13 +453,13 @@ class _DensePointBlockAccumulator:
         self.next_relative_sample = 0
         self.present_count = 0
 
-    def append(self, sample_row: int, flags: int, trace_len: int, row: dict):
-        relative_sample = int(sample_row - self.sample_row_start)
+    def append(self, sample_id: int, flags: int, trace_len: int, row: dict):
+        relative_sample = int(sample_id - self.sample_id_start)
         if relative_sample < 0 or relative_sample >= self.sample_count:
-            raise ValueError(f"sample_row out of block range: {sample_row}")
+            raise ValueError(f"sample_id out of block range: {sample_id}")
         if relative_sample < self.next_relative_sample:
             raise ValueError(
-                f"duplicate or unsorted (feature_id={self.feature_id}, sample_row={sample_row})"
+                f"duplicate or unsorted (feature_id={self.feature_id}, sample_id={sample_id})"
             )
 
         while self.next_relative_sample < relative_sample:
@@ -511,7 +503,7 @@ def _finalize_dense_point_block(block, current_feature_id, shard_rows):
         {
             "feature_id": int(current_feature_id),
             "block_id": int(block.block_id),
-            "sample_row_start": int(block.sample_row_start),
+            "sample_id_start": int(block.sample_id_start),
             "sample_count": int(block.sample_count),
             "point_count": int(block.point_count),
             "sample_flags_blob": block.sample_flags.tobytes(),
@@ -530,7 +522,7 @@ def _process_sorted_rows_v3(df: pl.DataFrame, n_samples: int, samples_per_block:
         return []
 
     feature_ids = df["feature_id"].to_numpy().astype(np.int32, copy=False)
-    sample_rows = df["sample_row"].to_numpy().astype(np.int64, copy=False)
+    sample_ids = df["sample_id"].to_numpy().astype(np.int64, copy=False)
     flags = df["flags"].to_numpy().astype(np.uint8, copy=False)
     trace_lens = df["trace_len"].to_numpy().astype(np.int32, copy=False)
     blob_columns = {
@@ -545,11 +537,11 @@ def _process_sorted_rows_v3(df: pl.DataFrame, n_samples: int, samples_per_block:
 
     for idx in range(df.height):
         feature_id = int(feature_ids[idx])
-        sample_row = int(sample_rows[idx])
+        sample_id = int(sample_ids[idx])
         trace_len = int(trace_lens[idx])
         row = {name: values[idx] for name, values in blob_columns.items()}
-        _validate_point_trace_row(sample_row, n_samples, trace_len, row, point_schema)
-        block_id = sample_row // int(samples_per_block)
+        _validate_point_trace_row(sample_id, n_samples, trace_len, row, point_schema)
+        block_id = sample_id // int(samples_per_block)
 
         if current_feature_id is None or feature_id != current_feature_id or block_id != current_block_id:
             _finalize_dense_point_block(block, current_feature_id, shard_rows)
@@ -558,14 +550,14 @@ def _process_sorted_rows_v3(df: pl.DataFrame, n_samples: int, samples_per_block:
             block = _DensePointBlockAccumulator(
                 feature_id=feature_id,
                 block_id=block_id,
-                sample_row=sample_row,
+                sample_id=sample_id,
                 samples_per_block=samples_per_block,
                 n_samples=n_samples,
                 point_schema=point_schema,
             )
 
         block.append(
-            sample_row=sample_row,
+            sample_id=sample_id,
             flags=int(flags[idx]),
             trace_len=trace_len,
             row=row,
@@ -583,8 +575,8 @@ def _append_frame_to_spill_file_v3(df: pl.DataFrame, spill_path: str, point_sche
     with open(spill_path, "ab") as f:
         for row in df.iter_rows(named=True):
             trace_len = int(row["trace_len"])
-            _validate_point_trace_row(int(row["sample_row"]), 1 << 60, trace_len, row, point_schema)
-            header = struct.pack("<iqBi", int(row["feature_id"]), int(row["sample_row"]), int(row["flags"]), trace_len)
+            _validate_point_trace_row(int(row["sample_id"]), 1 << 60, trace_len, row, point_schema)
+            header = struct.pack("<iqBi", int(row["feature_id"]), int(row["sample_id"]), int(row["flags"]), trace_len)
             f.write(header)
             delta += len(header)
             for blob_name in blob_names:
@@ -601,7 +593,7 @@ def _load_spill_file_to_sorted_df_v3(spill_path: str, point_schema):
 
     rows = {
         "feature_id": [],
-        "sample_row": [],
+        "sample_id": [],
         "flags": [],
         "trace_len": [],
     }
@@ -619,10 +611,10 @@ def _load_spill_file_to_sorted_df_v3(spill_path: str, point_schema):
                 break
             if len(header) != header_struct.size:
                 raise ValueError(f"corrupt spill header: {spill_path}")
-            feature_id, sample_row, flags, trace_len = header_struct.unpack(header)
+            feature_id, sample_id, flags, trace_len = header_struct.unpack(header)
             trace_len = int(trace_len)
             rows["feature_id"].append(int(feature_id))
-            rows["sample_row"].append(int(sample_row))
+            rows["sample_id"].append(int(sample_id))
             rows["flags"].append(int(flags))
             rows["trace_len"].append(trace_len)
             for blob_name, dtype in zip(blob_names, dtypes):
@@ -635,7 +627,7 @@ def _load_spill_file_to_sorted_df_v3(spill_path: str, point_schema):
     frame = pl.DataFrame(
         {
             "feature_id": pl.Series("feature_id", rows["feature_id"], dtype=pl.Int32),
-            "sample_row": pl.Series("sample_row", rows["sample_row"], dtype=pl.Int64),
+            "sample_id": pl.Series("sample_id", rows["sample_id"], dtype=pl.Int64),
             "flags": pl.Series("flags", rows["flags"], dtype=pl.UInt8),
             "trace_len": pl.Series("trace_len", rows["trace_len"], dtype=pl.Int32),
             **{
@@ -646,7 +638,7 @@ def _load_spill_file_to_sorted_df_v3(spill_path: str, point_schema):
     )
     if frame.height == 0:
         return frame
-    return frame.sort(["feature_id", "sample_row"])
+    return frame.sort(["feature_id", "sample_id"])
 
 
 def _dense_feature_estimates_from_bundles(bundle_paths, n_features: int, n_samples: int, samples_per_block: int, point_schema):
@@ -667,7 +659,7 @@ def _dense_feature_estimates_from_bundles(bundle_paths, n_features: int, n_sampl
             [
                 pl.col("feature_id").cast(pl.Int32),
                 pl.col("trace_len").cast(pl.Int64),
-                (pl.col("sample_row") // samples_per_block).cast(pl.Int64).alias("block_id"),
+                (pl.col("sample_id") // samples_per_block).cast(pl.Int64).alias("block_id"),
             ]
         )
         .group_by("feature_id")
@@ -690,77 +682,6 @@ def _dense_feature_estimates_from_bundles(bundle_paths, n_features: int, n_sampl
             raise ValueError(f"bundle feature_id out of dense metadata range: {feature_id}")
         estimates[feature_id] += int(est)
     return estimates
-
-
-def _dense_feature_estimates_from_parquet_shards(shard_paths, n_features: int, n_samples: int, samples_per_block: int):
-    """Estimate per-feature bytes from existing parquet shard rows."""
-    blocks_per_feature = _blocks_per_feature(n_samples, samples_per_block)
-    estimates = np.full(
-        int(n_features),
-        int(blocks_per_feature) * int(_BLOCK_RECORD_DTYPE.itemsize),
-        dtype=np.int64,
-    )
-    if not shard_paths:
-        return estimates
-    df = (
-        pl.scan_parquet(shard_paths)
-        .select(
-            [
-                pl.col("feature_id").cast(pl.Int32),
-                pl.col("point_count").cast(pl.Int64),
-            ]
-        )
-        .group_by("feature_id")
-        .agg(pl.col("point_count").sum().alias("point_count"))
-        .sort("feature_id")
-        .collect()
-    )
-    feature_ids = df["feature_id"].to_numpy().astype(np.int32, copy=False)
-    point_counts = df["point_count"].to_numpy().astype(np.int64, copy=False)
-    for feature_id, point_count in zip(feature_ids.tolist(), point_counts.tolist()):
-        feature_id = int(feature_id)
-        if feature_id < 0 or feature_id >= int(n_features):
-            raise ValueError(f"parquet shard feature_id out of dense metadata range: {feature_id}")
-        estimates[feature_id] += int(point_count) * 16
-    return estimates
-
-
-def _collect_sorted_rows_from_parquet_shards(shard_paths, shard_feature_ids):
-    """Collect and sort parquet array-shard rows belonging to one dense shard partition."""
-    if not shard_paths or len(shard_feature_ids) == 0:
-        return pl.DataFrame(
-            {
-                "feature_id": pl.Series("feature_id", [], dtype=pl.Int32),
-                "block_id": pl.Series("block_id", [], dtype=pl.Int32),
-                "sample_row_start": pl.Series("sample_row_start", [], dtype=pl.Int64),
-                "sample_count": pl.Series("sample_count", [], dtype=pl.Int32),
-                "point_count": pl.Series("point_count", [], dtype=pl.Int64),
-                "sample_flags_blob": pl.Series("sample_flags_blob", [], dtype=pl.Binary),
-                "sample_offsets_blob": pl.Series("sample_offsets_blob", [], dtype=pl.Binary),
-                "time_blob": pl.Series("time_blob", [], dtype=pl.Binary),
-                "value_blob": pl.Series("value_blob", [], dtype=pl.Binary),
-            }
-        )
-    feature_id_list = [int(feature_id) for feature_id in shard_feature_ids.tolist()]
-    return (
-        pl.scan_parquet(shard_paths)
-        .filter(pl.col("feature_id").is_in(feature_id_list))
-        .select(
-            [
-                "feature_id",
-                "block_id",
-                "sample_row_start",
-                "sample_count",
-                "point_count",
-                "sample_flags_blob",
-                "sample_offsets_blob",
-                "time_blob",
-                "value_blob",
-            ]
-        )
-        .sort(["feature_id", "block_id"])
-        .collect()
-    )
 
 
 def _write_dense_binary_shard(
@@ -831,7 +752,7 @@ def _write_dense_binary_shard(
             if block_id < 0 or block_id >= blocks_per_feature:
                 raise ValueError(f"block_id out of range: {block_id}")
 
-            sample_row_start = int(row["sample_row_start"])
+            sample_id_start = int(row["sample_id_start"])
             sample_count = int(row["sample_count"])
             point_count = int(row["point_count"])
             sample_flags_blob = row["sample_flags_blob"] or b""
@@ -851,7 +772,7 @@ def _write_dense_binary_shard(
             payload_header = _BLOCK_PAYLOAD_HEADER_STRUCT.pack(
                 feature_id,
                 block_id,
-                sample_row_start,
+                sample_id_start,
                 sample_count,
                 codec_id,
                 0,
@@ -941,8 +862,6 @@ def _write_binary_manifest(
         feature_id_dtype="INT32",
         flags_dtype="UINT8",
         offset_dtype="INT64",
-        time_dtype="FLOAT64_LE" if any(spec.name == "time" for spec in point_schema) else "",
-        value_dtype="FLOAT64_LE" if any(spec.name == "value" for spec in point_schema) else "",
         default_codec=str(default_codec),
         endianness=FILE_ENDIANNESS,
         id_scheme="dense_row_ids",
@@ -1017,7 +936,7 @@ def _build_array_binary_shards_with_tmp_spill(
                 bundle_path,
                 columns=[
                     "feature_id",
-                    "sample_row",
+                    "sample_id",
                     "flags",
                     "trace_len",
                     *bundle_blob_columns,
@@ -1043,7 +962,7 @@ def _build_array_binary_shards_with_tmp_spill(
                     part_df.select(
                         [
                             "feature_id",
-                            "sample_row",
+                            "sample_id",
                             "flags",
                             "trace_len",
                             *bundle_blob_columns,
@@ -1200,132 +1119,6 @@ def build_array_binary_shards_from_bundles(
     return manifest_path
 
 
-def build_array_binary_shards_from_array_manifest(
-    array_manifest_path: str,
-    out_dir: str,
-    *,
-    codec: str = DEFAULT_CODEC_NAME,
-    zstd_level: int = 3,
-    return_stats: bool = False,
-    sample_key_col: str = DEFAULT_SAMPLE_KEY_COL,
-    feature_key_col: str = DEFAULT_FEATURE_KEY_COL,
-):
-    """Convert parquet array shards into dense-id binary shards.
-
-    The conversion may repartition features across shards. It preserves the logical
-    dataset contents but does not guarantee shard-for-shard identity with the
-    source parquet layout.
-    """
-    parquet_manifest = load_array_shard_manifest(array_manifest_path)
-    sample_meta_df = _load_dense_meta(parquet_manifest.sample_meta_path, "sample_id", "sample", sample_key_col)
-    feature_meta_df = _load_dense_meta(parquet_manifest.feature_meta_path, "feature_id", "feature", feature_key_col)
-    n_features = int(feature_meta_df.height)
-    if int(sample_meta_df.height) != int(parquet_manifest.n_samples):
-        raise ValueError("parquet manifest n_samples does not match sample metadata row count")
-    shard_paths = list_array_shard_paths(parquet_manifest)
-    point_schema = _legacy_point_schema()
-    feature_ids = np.arange(n_features, dtype=np.int32)
-    blocks_per_feature = _blocks_per_feature(parquet_manifest.n_samples, parquet_manifest.samples_per_block)
-    estimated_feature_bytes = _dense_feature_estimates_from_parquet_shards(
-        shard_paths,
-        n_features=n_features,
-        n_samples=parquet_manifest.n_samples,
-        samples_per_block=parquet_manifest.samples_per_block,
-    )
-    target_shard_bytes = int(max(np.sum(estimated_feature_bytes), 1) // max(int(parquet_manifest.n_shards), 1))
-    config = ArrayShardConfig(
-        samples_per_block=int(parquet_manifest.samples_per_block),
-        target_shard_bytes=max(int(target_shard_bytes), 1),
-        n_shards=int(parquet_manifest.n_shards),
-        row_group_size=0,
-        use_tmp_spill=False,
-        spill_bucket_target_bytes=8 * 1024 * 1024,
-    )
-    shard_partitions = _build_array_shard_partitions(feature_ids, estimated_feature_bytes, config)
-    artifact_sample_meta_path, artifact_feature_meta_path = _materialize_binary_metadata(
-        out_dir,
-        parquet_manifest.sample_meta_path,
-        parquet_manifest.feature_meta_path,
-    )
-
-    shard_path = os.path.join(out_dir, "array_binary_feature_shards")
-    os.makedirs(shard_path, exist_ok=True)
-    manifest_path = os.path.join(out_dir, "array_binary_shard_manifest.json")
-    shard_infos = []
-    total_data_bytes = 0
-    total_index_bytes = 0
-    total_block_count = 0
-    total_feature_count = 0
-
-    for shard_id, shard_feature_ids in enumerate(shard_partitions):
-        df = _collect_sorted_rows_from_parquet_shards(shard_paths, shard_feature_ids)
-        rows = []
-        if df.height > 0:
-            rows = [
-                {
-                    "feature_id": int(row["feature_id"]),
-                    "block_id": int(row["block_id"]),
-                    "sample_row_start": int(row["sample_row_start"]),
-                    "sample_count": int(row["sample_count"]),
-                    "point_count": int(row["point_count"]),
-                    "sample_flags_blob": row["sample_flags_blob"],
-                    "sample_offsets_blob": row["sample_offsets_blob"],
-                    "column_blobs": {
-                        "time": row["time_blob"],
-                        "value": row["value_blob"],
-                    },
-                }
-                for row in df.iter_rows(named=True)
-            ]
-        shard_write = _write_dense_binary_shard(
-            shard_path,
-            shard_id,
-            shard_feature_ids,
-            rows,
-            n_samples=parquet_manifest.n_samples,
-            samples_per_block=parquet_manifest.samples_per_block,
-            point_schema=point_schema,
-            codec=codec,
-            zstd_level=zstd_level,
-        )
-        shard_infos.append(shard_write["shard_info"])
-        total_data_bytes += int(shard_write["data_bytes"])
-        total_index_bytes += int(shard_write["index_bytes"])
-        total_block_count += int(shard_write["shard_info"].block_count)
-        total_feature_count += int(shard_write["shard_info"].feature_count)
-
-    _write_binary_manifest(
-        sample_meta_path=artifact_sample_meta_path,
-        feature_meta_path=artifact_feature_meta_path,
-        n_samples=parquet_manifest.n_samples,
-        n_features=n_features,
-        shard_path=shard_path,
-        manifest_path=manifest_path,
-        samples_per_block=parquet_manifest.samples_per_block,
-        blocks_per_feature=blocks_per_feature,
-        shard_infos=shard_infos,
-        default_codec=_codec_name(_normalize_codec(codec)),
-        point_schema=point_schema,
-        sample_key_col=sample_key_col,
-        feature_key_col=feature_key_col,
-    )
-    stats = {
-        "n_shards": int(len(shard_infos)),
-        "n_buckets": 0,
-        "temp_files_created": 0,
-        "peak_live_temp_files": 0,
-        "peak_live_temp_bytes": 0,
-        "feature_count": int(total_feature_count),
-        "block_count": int(total_block_count),
-        "data_bytes": int(total_data_bytes),
-        "index_bytes": int(total_index_bytes),
-        "total_bytes": int(total_data_bytes + total_index_bytes + os.path.getsize(manifest_path)),
-    }
-    if return_stats:
-        return manifest_path, stats
-    return manifest_path
-
-
 def _resolve_point_schema_paths(manifest_path: str, point_schema):
     """Resolve dictionary paths inside one point schema against the manifest location."""
     out = []
@@ -1350,9 +1143,11 @@ def load_array_binary_shard_manifest(manifest_path: str) -> ArrayBinaryShardMani
         data = json.load(f)
     if data.get("format") != "array-binary-shard":
         raise ValueError(f"unsupported binary shard manifest format: {manifest_path}")
-    version = int(data.get("version", 2))
-    if version not in {2, 3}:
-        raise ValueError(f"unsupported binary shard manifest version: {data.get('version')}")
+    if "version" not in data:
+        raise ValueError(f"binary shard manifest must include version: {manifest_path}")
+    version = int(data["version"])
+    if version != int(FILE_VERSION):
+        raise ValueError(f"unsupported binary shard manifest version: {version}")
     shards = [
         ArrayBinaryShardInfo(
             shard_id=int(shard["shard_id"]),
@@ -1378,8 +1173,6 @@ def load_array_binary_shard_manifest(manifest_path: str) -> ArrayBinaryShardMani
         feature_id_dtype=str(data["feature_id_dtype"]),
         flags_dtype=str(data["flags_dtype"]),
         offset_dtype=str(data["offset_dtype"]),
-        time_dtype=str(data.get("time_dtype", "")),
-        value_dtype=str(data.get("value_dtype", "")),
         default_codec=str(data.get("default_codec", DEFAULT_CODEC_NAME)),
         endianness=str(data.get("endianness", FILE_ENDIANNESS)),
         id_scheme=str(data.get("id_scheme", "dense_row_ids")),
@@ -1407,30 +1200,18 @@ def load_array_binary_categorical_dictionaries(manifest):
         dictionary_path = str(spec.dictionary_path or "")
         if not dictionary_path:
             continue
-        if str(dictionary_path).lower().endswith(".json"):
-            with open(dictionary_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            if isinstance(payload, dict) and "labels" in payload and isinstance(payload["labels"], dict):
-                mapping = {
-                    int(code): None if label is None else str(label)
-                    for code, label in payload["labels"].items()
-                }
-            elif isinstance(payload, dict) and "items" in payload and isinstance(payload["items"], list):
-                mapping = {}
-                for row in payload["items"]:
-                    if not isinstance(row, dict) or "code" not in row or "label" not in row:
-                        raise ValueError(f"categorical dictionary items must contain code/label: {dictionary_path}")
-                    mapping[int(row["code"])] = None if row["label"] is None else str(row["label"])
-            else:
-                raise ValueError(f"unsupported categorical dictionary JSON structure: {dictionary_path}")
+        if not str(dictionary_path).lower().endswith(".json"):
+            raise ValueError(f"categorical dictionary must be a JSON file: {dictionary_path}")
+        with open(dictionary_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict) and "items" in payload and isinstance(payload["items"], list):
+            mapping = {}
+            for row in payload["items"]:
+                if not isinstance(row, dict) or "code" not in row or "label" not in row:
+                    raise ValueError(f"categorical dictionary items must contain code/label: {dictionary_path}")
+                mapping[int(row["code"])] = None if row["label"] is None else str(row["label"])
         else:
-            df = pl.read_parquet(dictionary_path)
-            if "code" not in df.columns or "label" not in df.columns:
-                raise ValueError(f"categorical dictionary must contain code/label columns: {dictionary_path}")
-            mapping = {
-                int(code): None if label is None else str(label)
-                for code, label in zip(df["code"].to_list(), df["label"].to_list())
-            }
+            raise ValueError(f"unsupported categorical dictionary JSON structure: {dictionary_path}")
         out[spec.name] = mapping
     return out
 
@@ -1586,21 +1367,23 @@ def _empty_columns(point_schema):
     }
 
 
-def _empty_trace(sample_row: int, point_schema=None):
+def _empty_trace(sample_id: int, point_schema):
     """Create an empty trace placeholder for a missing sample/feature pair."""
+    if point_schema is None:
+        raise ValueError("point_schema must be provided for empty binary traces")
     return ArrayTrace(
-        sample_row=int(sample_row),
+        sample_id=int(sample_id),
         flags=0,
-        columns=_empty_columns(point_schema or _legacy_point_schema()),
+        columns=_empty_columns(point_schema),
     )
 
 
-def _empty_block(feature_id: int, block_id: int, sample_row_start: int, sample_count: int, point_schema):
+def _empty_block(feature_id: int, block_id: int, sample_id_start: int, sample_count: int, point_schema):
     """Create an empty decoded block for an unmaterialized dense block slot."""
     return ArrayFeatureBlock(
         feature_id=int(feature_id),
         block_id=int(block_id),
-        sample_row_start=int(sample_row_start),
+        sample_id_start=int(sample_id_start),
         sample_count=int(sample_count),
         point_count=0,
         sample_flags=np.zeros(int(sample_count), dtype=np.uint8),
@@ -1617,12 +1400,12 @@ def _decode_block_record(
     record,
 ):
     """Decode one block payload from a dense block record."""
-    sample_row_start = int(block_id) * int(manifest.samples_per_block)
+    sample_id_start = int(block_id) * int(manifest.samples_per_block)
     sample_count = _sample_count_for_block(manifest.n_samples, manifest.samples_per_block, block_id)
     point_schema = get_array_binary_point_schema(manifest)
     data_length = int(record["data_length"])
     if data_length == 0:
-        return _empty_block(feature_id, block_id, sample_row_start, sample_count, point_schema)
+        return _empty_block(feature_id, block_id, sample_id_start, sample_count, point_schema)
 
     path = _binary_blocks_data_file(manifest, shard.shard_id)
     _file_obj, mm = _cached_binary_data_mmap(path)
@@ -1631,11 +1414,10 @@ def _decode_block_record(
     if len(payload) != data_length:
         raise ValueError(f"binary payload truncated: shard={shard.shard_id} offset={data_offset}")
 
-    manifest_version = int(getattr(manifest, "version", LEGACY_FILE_VERSION))
     (
         header_feature_id,
         header_block_id,
-        header_sample_row_start,
+        header_sample_id_start,
         header_sample_count,
         header_codec,
         _header_flags,
@@ -1651,9 +1433,9 @@ def _decode_block_record(
         raise ValueError(f"binary payload feature mismatch: expected={feature_id} got={header_feature_id}")
     if int(header_block_id) != int(block_id):
         raise ValueError(f"binary payload block mismatch: expected={block_id} got={header_block_id}")
-    if int(header_sample_row_start) != int(sample_row_start):
+    if int(header_sample_id_start) != int(sample_id_start):
         raise ValueError(
-            f"binary payload sample_row_start mismatch: expected={sample_row_start} got={header_sample_row_start}"
+            f"binary payload sample_id_start mismatch: expected={sample_id_start} got={header_sample_id_start}"
         )
     if int(header_sample_count) != int(sample_count):
         raise ValueError(f"binary payload sample_count mismatch: expected={sample_count} got={header_sample_count}")
@@ -1666,61 +1448,43 @@ def _decode_block_record(
 
     sample_flags = np.frombuffer(sample_flags_blob, dtype=np.uint8, count=sample_count).copy()
     sample_offsets = np.frombuffer(sample_offsets_blob, dtype="<i8", count=sample_count + 1).copy()
-    columns = {}
-    if manifest_version == LEGACY_FILE_VERSION:
-        encoded_time_blob = payload[cursor : cursor + int(encoded_columns_or_time_bytes)]
-        cursor += int(encoded_columns_or_time_bytes)
-        encoded_value_blob = payload[cursor : cursor + int(value_bytes_or_reserved)]
-        cursor += int(value_bytes_or_reserved)
-        if cursor != len(payload):
-            raise ValueError(
-                f"binary payload length mismatch for shard={shard.shard_id} feature={feature_id} block={block_id}"
-            )
-        expected_value_bytes = int(point_count) * 8
-        time_blob = _maybe_decompress_payload(int(header_codec), encoded_time_blob, None, expected_value_bytes)
-        decompressor = _require_zstd().ZstdDecompressor() if int(header_codec) == CODEC_ZSTD else None
-        value_blob = _maybe_decompress_payload(int(header_codec), encoded_value_blob, decompressor, expected_value_bytes)
-        columns = {
-            "time": np.frombuffer(time_blob, dtype="<f8", count=int(point_count)).astype(np.float64, copy=True),
-            "value": np.frombuffer(value_blob, dtype="<f8", count=int(point_count)).astype(np.float64, copy=True),
-        }
-    else:
-        if int(header_schema_column_count) != len(point_schema):
-            raise ValueError(
-                f"binary payload schema column count mismatch: expected={len(point_schema)} got={header_schema_column_count}"
-            )
-        encoded_columns_payload = payload[cursor : cursor + int(encoded_columns_or_time_bytes)]
-        cursor += int(encoded_columns_or_time_bytes)
-        if cursor != len(payload):
-            raise ValueError(
-                f"binary payload length mismatch for shard={shard.shard_id} feature={feature_id} block={block_id}"
-            )
-        expected_column_bytes = _point_total_bytes(point_schema, point_count)
-        decoded_columns_payload = _maybe_decompress_payload(
-            int(header_codec),
-            encoded_columns_payload,
-            _require_zstd().ZstdDecompressor() if int(header_codec) == CODEC_ZSTD else None,
-            expected_column_bytes,
+    if int(header_schema_column_count) != len(point_schema):
+        raise ValueError(
+            f"binary payload schema column count mismatch: expected={len(point_schema)} got={header_schema_column_count}"
         )
-        column_cursor = 0
-        for spec in point_schema:
-            dtype = _point_dtype(spec)
-            byte_count = int(point_count) * int(dtype.itemsize)
-            blob = decoded_columns_payload[column_cursor : column_cursor + byte_count]
-            if len(blob) != byte_count:
-                raise ValueError(
-                    f"decoded payload length mismatch for column={spec.name}: expected={byte_count} got={len(blob)}"
-                )
-            column_cursor += byte_count
-            columns[spec.name] = np.frombuffer(blob, dtype=dtype, count=int(point_count)).copy()
-        if column_cursor != len(decoded_columns_payload):
+    encoded_columns_payload = payload[cursor : cursor + int(encoded_columns_or_time_bytes)]
+    cursor += int(encoded_columns_or_time_bytes)
+    if cursor != len(payload):
+        raise ValueError(
+            f"binary payload length mismatch for shard={shard.shard_id} feature={feature_id} block={block_id}"
+        )
+    expected_column_bytes = _point_total_bytes(point_schema, point_count)
+    decoded_columns_payload = _maybe_decompress_payload(
+        int(header_codec),
+        encoded_columns_payload,
+        _require_zstd().ZstdDecompressor() if int(header_codec) == CODEC_ZSTD else None,
+        expected_column_bytes,
+    )
+    columns = {}
+    column_cursor = 0
+    for spec in point_schema:
+        dtype = _point_dtype(spec)
+        byte_count = int(point_count) * int(dtype.itemsize)
+        blob = decoded_columns_payload[column_cursor : column_cursor + byte_count]
+        if len(blob) != byte_count:
             raise ValueError(
-                f"decoded payload trailing bytes mismatch: expected={column_cursor} got={len(decoded_columns_payload)}"
+                f"decoded payload length mismatch for column={spec.name}: expected={byte_count} got={len(blob)}"
             )
+        column_cursor += byte_count
+        columns[spec.name] = np.frombuffer(blob, dtype=dtype, count=int(point_count)).copy()
+    if column_cursor != len(decoded_columns_payload):
+        raise ValueError(
+            f"decoded payload trailing bytes mismatch: expected={column_cursor} got={len(decoded_columns_payload)}"
+        )
     return ArrayFeatureBlock(
         feature_id=int(feature_id),
         block_id=int(block_id),
-        sample_row_start=int(sample_row_start),
+        sample_id_start=int(sample_id_start),
         sample_count=int(sample_count),
         point_count=int(point_count),
         sample_flags=sample_flags,
@@ -1842,7 +1606,7 @@ class ArrayBinaryShardReader:
             record_index = self._record_index(shard, feature_id, block_id)
             block = _decode_block_record(self.manifest, shard, int(feature_id), int(block_id), block_records[record_index])
             for sample_id in block_sample_ids:
-                trace = block.trace_for_sample_row(sample_id)
+                trace = block.trace_for_sample_id(sample_id)
                 if trace is not None:
                     out[int(sample_id)] = trace
         return out
@@ -1851,19 +1615,8 @@ class ArrayBinaryShardReader:
         self,
         feature_id: int,
         sample_ids,
-        locator_index=None,
-        sample_id_index=None,
-        sample_meta_path: str = None,
     ):
-        """Load traces for one feature using dense sample ids.
-
-        The dense-id v2 format defines `sample_id == sample_row`. The legacy
-        `sample_id_index` and `sample_meta_path` arguments are accepted only for
-        API compatibility and are ignored.
-        """
-        _ = locator_index
-        _ = sample_id_index
-        _ = sample_meta_path
+        """Load traces for one feature using dense sample ids."""
         sample_id_list = [int(sample_id) for sample_id in sample_ids]
         traces_by_row = self.load_feature_samples(feature_id, sample_id_list)
         out = {}
@@ -1879,9 +1632,6 @@ def load_array_binary_feature_samples_by_sample_ids(
     manifest,
     feature_id: int,
     sample_ids,
-    locator_index=None,
-    sample_id_index=None,
-    sample_meta_path: str = None,
 ):
     """Convenience wrapper to load binary traces from a manifest path or object."""
     if isinstance(manifest, str):
@@ -1890,8 +1640,5 @@ def load_array_binary_feature_samples_by_sample_ids(
     return reader.load_feature_samples_by_sample_ids(
         feature_id=feature_id,
         sample_ids=sample_ids,
-        locator_index=locator_index,
-        sample_id_index=sample_id_index,
-        sample_meta_path=sample_meta_path,
     )
 

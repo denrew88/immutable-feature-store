@@ -43,15 +43,11 @@ public class PointColumnSpec {
         return new PointColumnSpec(name, storageType, logicalType, dictionaryPath);
     }
 
-    public static List<PointColumnSpec> defaultPointSchema() {
-        ArrayList<PointColumnSpec> out = new ArrayList<PointColumnSpec>(2);
-        out.add(new PointColumnSpec("time", StorageType.FLOAT64, LogicalType.CONTINUOUS));
-        out.add(new PointColumnSpec("value", StorageType.FLOAT64, LogicalType.CONTINUOUS));
-        return out;
-    }
-
     public static List<PointColumnSpec> normalizeList(List<PointColumnSpec> pointSchema) {
-        List<PointColumnSpec> source = (pointSchema == null || pointSchema.isEmpty()) ? defaultPointSchema() : pointSchema;
+        if (pointSchema == null || pointSchema.isEmpty()) {
+            throw new IllegalArgumentException("point_schema must be provided explicitly");
+        }
+        List<PointColumnSpec> source = pointSchema;
         ArrayList<PointColumnSpec> out = new ArrayList<PointColumnSpec>(source.size());
         HashSet<String> names = new HashSet<String>();
         for (PointColumnSpec spec : source) {

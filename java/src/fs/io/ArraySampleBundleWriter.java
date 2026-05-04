@@ -34,14 +34,6 @@ public class ArraySampleBundleWriter implements AutoCloseable {
     private int nBundles;
     private boolean finished;
 
-    public ArraySampleBundleWriter(String outDir, String sampleMetaPath, int nSamples, ArrayBundleConfig config) throws Exception {
-        this(outDir, sampleMetaPath, "", nSamples, config, null);
-    }
-
-    public ArraySampleBundleWriter(String outDir, String sampleMetaPath, String featureMetaPath, int nSamples, ArrayBundleConfig config) throws Exception {
-        this(outDir, sampleMetaPath, featureMetaPath, nSamples, config, null);
-    }
-
     public ArraySampleBundleWriter(
             String outDir,
             String sampleMetaPath,
@@ -65,13 +57,6 @@ public class ArraySampleBundleWriter implements AutoCloseable {
         this.manifestPath = new File(out, "array_bundle_manifest.json").getAbsolutePath();
         this.conn = DuckDBUtils.connect(null);
         resetBundleTable();
-    }
-
-    public void appendTrace(long sampleId, int featureId, double[] time, double[] value) throws SQLException {
-        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
-        columns.put("time", (time == null) ? new double[0] : time);
-        columns.put("value", (value == null) ? new double[0] : value);
-        appendTrace(sampleId, featureId, columns);
     }
 
     public void appendTrace(long sampleId, int featureId, Map<String, Object> columns) throws SQLException {
@@ -127,8 +112,6 @@ public class ArraySampleBundleWriter implements AutoCloseable {
                 nBundles,
                 "INT32",
                 "UINT8",
-                hasColumn("time") ? "FLOAT64_LE_BLOB" : "",
-                hasColumn("value") ? "FLOAT64_LE_BLOB" : "",
                 pointSchema);
         ArrayBundleManifestIO.write(manifest, manifestPath);
         finished = true;

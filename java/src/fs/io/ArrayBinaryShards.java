@@ -19,8 +19,8 @@ public final class ArrayBinaryShards {
         return ArrayShardManifestIO.read(manifestPath);
     }
 
-    public static ArrayShardReader open(String manifestPath) throws Exception {
-        return new ArrayShardReader(loadManifest(manifestPath));
+    public static ArrayBinaryShardReader open(String manifestPath) throws Exception {
+        return new ArrayBinaryShardReader(loadManifest(manifestPath));
     }
 
     public static ArrayFeatureLocatorIndex loadLocator(ArrayShardManifest manifest) throws Exception {

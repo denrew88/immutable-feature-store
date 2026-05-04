@@ -122,7 +122,7 @@ def main():
         assert trace.feature_id == feature_id
         assert trace.sample_id == sample_id
         assert isinstance(trace.present, bool)
-        np.testing.assert_equal(trace.time.shape, trace.value.shape)
+        np.testing.assert_equal(trace.columns["time"].shape, trace.columns["value"].shape)
 
         feature_key = str(ds.feature_keys()[0])
         sample_key = str(ds.sample_keys()[0])
@@ -251,7 +251,6 @@ def main():
         writer.append_trace(
             0,
             0,
-            0,
             columns={
                 "phase": np.asarray([10, 11, 12], dtype=np.int32),
                 "state_code": np.asarray([1, 1, 2], dtype=np.uint32),
@@ -259,7 +258,6 @@ def main():
             },
         )
         writer.append_trace(
-            3,
             3,
             0,
             columns={
@@ -281,7 +279,7 @@ def main():
         raw_trace = ds.get_trace(feature_id=0, sample_id=0)
         np.testing.assert_equal(raw_trace.columns["phase"], np.asarray([10, 11, 12], dtype=np.int32))
         np.testing.assert_equal(raw_trace.columns["state_code"], np.asarray([1, 1, 2], dtype=np.uint32))
-        assert raw_trace.time.size == 0
+        assert "time" not in raw_trace.columns
         decoded_trace = ds.get_trace(feature_id=0, sample_id=0, decode_categorical=True)
         assert tuple(decoded_trace.columns["state_code"]) == ("OK", "OK", "WARN")
         assert tuple(decoded_trace.columns["event_type"]) == ("START", "START", "STOP")

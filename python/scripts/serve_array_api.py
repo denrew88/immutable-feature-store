@@ -22,13 +22,6 @@ from fs.array.binary_storage import (
     load_array_binary_categorical_dictionaries,
     load_array_binary_shard_manifest,
 )
-from fs.array.storage import (
-    ArrayShardReader,
-    _cached_array_parquet_file,
-    _cached_array_row_group_starts,
-    build_array_feature_locator_index,
-    load_array_shard_manifest,
-)
 from fs.scalar.parquet_storage import (
     ParquetShardReader,
     build_feature_locator_index,
@@ -44,7 +37,7 @@ from fs.types import LogicalType, StorageType, normalize_logical_type, normalize
 
 
 class ArrayFeatureRequest(BaseModel):
-    manifest_path: str = Field(..., description="Path to array_shard_manifest.json")
+    manifest_path: str = Field(..., description="Path to array_binary_shard_manifest.json")
     feature_id: Optional[int] = None
     feature_ids: Optional[List[int]] = None
     feature_key: Optional[str] = None
@@ -81,7 +74,7 @@ class ArrayFeatureResponse(BaseModel):
 
 
 class ArraySchemaRequest(BaseModel):
-    manifest_path: str = Field(..., description="Path to an array manifest")
+    manifest_path: str = Field(..., description="Path to array_binary_shard_manifest.json")
     include_dictionaries: bool = False
 
 
@@ -327,10 +320,10 @@ def _get_array_cache_entry(manifest_path: str) -> _ManifestCacheEntry:
     """array manifest용 reader 상태를 로드하고 캐시에 저장한다.
 
     Args:
-        manifest_path: parquet 또는 binary array manifest 경로.
+        manifest_path: binary array manifest 경로.
 
     Returns:
-        array 조회에 필요한 manifest metadata, 인덱스, reader 객체를 담은 캐시 엔트리.
+        array 조회에 필요한 manifest metadata와 reader 객체를 담은 캐시 엔트리.
     """
     normalized = _normalize_manifest_path(manifest_path)
     with _CACHE_LOCK:
@@ -341,18 +334,13 @@ def _get_array_cache_entry(manifest_path: str) -> _ManifestCacheEntry:
             _touch_manifest_entry(_ARRAY_CACHE, normalized, entry, now)
             return entry
         manifest_json = _load_manifest_json(normalized)
-        if manifest_json.get("format") == "array-binary-shard":
-            manifest = load_array_binary_shard_manifest(normalized)
-            reader = ArrayBinaryShardReader(manifest)
-            locator_index = None
-            sample_key_col = str(getattr(manifest, "sample_key_col", "sample_key"))
-            feature_key_col = str(getattr(manifest, "feature_key_col", "feature_key"))
-        else:
-            manifest = load_array_shard_manifest(normalized)
-            reader = ArrayShardReader(manifest)
-            locator_index = build_array_feature_locator_index(manifest.locator_path)
-            sample_key_col = "sample_key"
-            feature_key_col = "feature_key"
+        if manifest_json.get("format") != "array-binary-shard":
+            raise ValueError(f"unsupported array manifest format: {manifest_json.get('format')!r}")
+        manifest = load_array_binary_shard_manifest(normalized)
+        reader = ArrayBinaryShardReader(manifest)
+        locator_index = None
+        sample_key_col = str(getattr(manifest, "sample_key_col", "sample_key"))
+        feature_key_col = str(getattr(manifest, "feature_key_col", "feature_key"))
         entry = _ManifestCacheEntry(
             manifest_path=normalized,
             manifest=manifest,
@@ -462,22 +450,13 @@ def _array_point_schema(entry: _ManifestCacheEntry):
     """캐시된 array manifest 하나에 대한 정규화된 point schema를 반환한다."""
     if entry.point_schema is not None:
         return entry.point_schema
-    if isinstance(entry.reader, ArrayBinaryShardReader):
-        entry.point_schema = get_array_binary_point_schema(entry.manifest)
-    else:
-        entry.point_schema = [
-            {"name": "time", "storage_type": "float64", "logical_type": "continuous"},
-            {"name": "value", "storage_type": "float64", "logical_type": "continuous"},
-        ]
+    entry.point_schema = get_array_binary_point_schema(entry.manifest)
     return entry.point_schema
 
 
 def _get_array_categorical_dictionaries(entry: _ManifestCacheEntry):
     """array dataset 하나에 대한 categorical dictionary 매핑을 로드하고 캐시한다."""
     if entry.categorical_dictionaries is not None:
-        return entry.categorical_dictionaries
-    if not isinstance(entry.reader, ArrayBinaryShardReader):
-        entry.categorical_dictionaries = {}
         return entry.categorical_dictionaries
     entry.categorical_dictionaries = load_array_binary_categorical_dictionaries(entry.manifest)
     return entry.categorical_dictionaries
@@ -788,8 +767,6 @@ def cache_stats():
             if scan_count > 0:
                 scalar_open_scan_manifests += 1
 
-    parquet_file_info = _cached_array_parquet_file.cache_info()
-    row_group_info = _cached_array_row_group_starts.cache_info()
     return CacheStatsResponse(
         manifest_cache={
             "array_entries": int(len(array_entries)),
@@ -800,20 +777,7 @@ def cache_stats():
             "scalar_manifests": scalar_entries,
         },
         array_binary_cache=get_array_binary_cache_stats(),
-        array_parquet_cache={
-            "parquet_file_cache": {
-                "hits": int(parquet_file_info.hits),
-                "misses": int(parquet_file_info.misses),
-                "currsize": int(parquet_file_info.currsize),
-                "maxsize": int(parquet_file_info.maxsize),
-            },
-            "row_group_starts_cache": {
-                "hits": int(row_group_info.hits),
-                "misses": int(row_group_info.misses),
-                "currsize": int(row_group_info.currsize),
-                "maxsize": int(row_group_info.maxsize),
-            },
-        },
+        array_parquet_cache={},
         scalar_parquet_cache={
             "open_scan_manifests": int(scalar_open_scan_manifests),
             "open_scans": int(scalar_open_scans),
@@ -837,11 +801,11 @@ def array_schema(req: ArraySchemaRequest):
         }
     return ArraySchemaResponse(
         manifest_path=entry.manifest_path,
-        version=int(getattr(entry.manifest, "version", 1 if not isinstance(entry.reader, ArrayBinaryShardReader) else 3)),
+        version=int(entry.manifest.version),
         n_samples=int(entry.manifest.n_samples),
-        n_features=int(getattr(entry.manifest, "n_features", 0)) if hasattr(entry.manifest, "n_features") else None,
+        n_features=int(entry.manifest.n_features),
         samples_per_block=int(entry.manifest.samples_per_block),
-        default_codec=None if not hasattr(entry.manifest, "default_codec") else str(entry.manifest.default_codec),
+        default_codec=str(entry.manifest.default_codec),
         point_schema=_schema_json(point_schema),
         categorical_dictionaries=categorical_dictionaries,
     )
@@ -874,8 +838,6 @@ def array_feature(req: ArrayFeatureRequest):
         traces = entry.reader.load_feature_samples_by_sample_ids(
             feature_id=feature_id,
             sample_ids=sample_ids,
-            locator_index=entry.locator_index,
-            sample_meta_path=entry.manifest.sample_meta_path,
         )
         response_traces = []
         for sample_id in sample_ids:

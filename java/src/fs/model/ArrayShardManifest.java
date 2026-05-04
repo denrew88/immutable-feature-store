@@ -16,8 +16,6 @@ public class ArrayShardManifest {
     public final String featureIdType;
     public final String flagsType;
     public final String offsetType;
-    public final String timeType;
-    public final String valueType;
     public final String defaultCodec;
     public final String endianness;
     public final String sampleKeyCol;
@@ -38,8 +36,6 @@ public class ArrayShardManifest {
             String featureIdType,
             String flagsType,
             String offsetType,
-            String timeType,
-            String valueType,
             String defaultCodec,
             String endianness,
             String sampleKeyCol,
@@ -58,8 +54,6 @@ public class ArrayShardManifest {
         this.featureIdType = featureIdType;
         this.flagsType = flagsType;
         this.offsetType = offsetType;
-        this.timeType = timeType;
-        this.valueType = valueType;
         this.defaultCodec = defaultCodec;
         this.endianness = endianness;
         this.sampleKeyCol = sampleKeyCol;

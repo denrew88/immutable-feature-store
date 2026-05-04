@@ -1,4 +1,4 @@
-"""array shard를 여는 core reader facade."""
+"""array shard용 core reader facade."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
-import numpy as np
 import polars as pl
 
 from ..types import LogicalType
@@ -14,13 +13,10 @@ from .binary_storage import (
     DEFAULT_FEATURE_KEY_COL,
     DEFAULT_SAMPLE_KEY_COL,
     ArrayBinaryShardReader,
-    _legacy_point_schema,
     get_array_binary_point_schema,
     load_array_binary_categorical_dictionaries,
     load_array_binary_shard_manifest,
 )
-from .storage import ArrayShardReader as ArrayParquetShardReader
-from .storage import build_array_feature_locator_index, load_array_shard_manifest
 
 
 @dataclass(frozen=True)
@@ -29,22 +25,11 @@ class Trace:
 
     feature_id: int
     sample_id: int
-    sample_row: int
     present: bool
     flags: int
     feature_key: Optional[str]
     sample_key: Optional[str]
     columns: dict = field(default_factory=dict)
-
-    @property
-    def time(self):
-        """`time` 컬럼이 있으면 반환하고, 없으면 빈 배열을 반환한다."""
-        return self.columns.get("time", np.empty(0, dtype=np.float64))
-
-    @property
-    def value(self):
-        """`value` 컬럼이 있으면 반환하고, 없으면 빈 배열을 반환한다."""
-        return self.columns.get("value", np.empty(0, dtype=np.float64))
 
 
 @dataclass(frozen=True)
@@ -70,10 +55,7 @@ class QueryResult:
 
 
 class ArrayShardDataset:
-    """array shard를 읽는 core dataset facade.
-
-    binary v2/v3 manifest와 기존 parquet array manifest를 모두 연다.
-    """
+    """array binary shard를 읽는 core dataset facade."""
 
     def __init__(self, manifest_path):
         self._manifest_path = str(Path(manifest_path).expanduser().resolve())
@@ -82,37 +64,14 @@ class ArrayShardDataset:
         self._sample_keys = None
         self._feature_key_to_id = None
         self._feature_keys = None
-        self._feature_ids = None
 
-        binary_error = None
-        try:
-            self._manifest = load_array_binary_shard_manifest(self._manifest_path)
-            self._kind = "binary"
-            self._reader = ArrayBinaryShardReader(self._manifest)
-            self._locator_index = None
-            self._point_schema = tuple(get_array_binary_point_schema(self._manifest))
-            self._categorical_dictionaries = None
-            self._sample_key_col = str(self._manifest.sample_key_col)
-            self._feature_key_col = str(self._manifest.feature_key_col)
-            self._feature_ids = tuple(range(int(self._manifest.n_features)))
-        except Exception as exc:
-            binary_error = exc
-            try:
-                self._manifest = load_array_shard_manifest(self._manifest_path)
-                self._kind = "parquet"
-                self._reader = ArrayParquetShardReader(self._manifest)
-                self._locator_index = build_array_feature_locator_index(self._manifest.locator_path)
-                self._point_schema = tuple(_legacy_point_schema())
-                self._categorical_dictionaries = {}
-                self._sample_key_col = DEFAULT_SAMPLE_KEY_COL
-                self._feature_key_col = DEFAULT_FEATURE_KEY_COL
-            except Exception as parquet_exc:
-                raise ValueError(
-                    f"array shard manifest를 읽지 못했다: {self._manifest_path}\n"
-                    f"binary parser: {binary_error}\n"
-                    f"parquet parser: {parquet_exc}"
-                ) from parquet_exc
-
+        self._manifest = load_array_binary_shard_manifest(self._manifest_path)
+        self._reader = ArrayBinaryShardReader(self._manifest)
+        self._point_schema = tuple(get_array_binary_point_schema(self._manifest))
+        self._categorical_dictionaries = None
+        self._sample_key_col = str(getattr(self._manifest, "sample_key_col", DEFAULT_SAMPLE_KEY_COL))
+        self._feature_key_col = str(getattr(self._manifest, "feature_key_col", DEFAULT_FEATURE_KEY_COL))
+        self._feature_ids = tuple(range(int(self._manifest.n_features)))
         self._sample_ids = tuple(range(int(self._manifest.n_samples)))
 
     def __enter__(self):
@@ -141,9 +100,7 @@ class ArrayShardDataset:
     @property
     def feature_count(self) -> int:
         """dense feature 개수를 반환한다."""
-        if self._feature_ids is None:
-            self._load_feature_ids()
-        return int(len(self._feature_ids))
+        return int(self._manifest.n_features)
 
     @property
     def point_schema(self):
@@ -155,7 +112,7 @@ class ArrayShardDataset:
             raise RuntimeError("array shard dataset is closed")
 
     def close(self):
-        """dataset이 잡고 있는 reader 상태를 정리한다."""
+        """dataset이 들고 있는 reader 상태를 정리한다."""
         if self._closed:
             return
         close_fn = getattr(self._reader, "close", None)
@@ -171,17 +128,9 @@ class ArrayShardDataset:
     def categorical_dictionaries(self):
         """categorical dictionary를 반환한다."""
         self._ensure_open()
-        if self._kind != "binary":
-            return {}
         if self._categorical_dictionaries is None:
             self._categorical_dictionaries = load_array_binary_categorical_dictionaries(self._manifest)
         return self._categorical_dictionaries
-
-    def _load_feature_ids(self):
-        if self._feature_ids is not None:
-            return
-        df = pl.read_parquet(self._manifest.feature_meta_path, columns=["feature_id"])
-        self._feature_ids = tuple(int(value) for value in df["feature_id"].to_list())
 
     def _load_sample_key_index(self):
         if self._sample_key_to_id is not None:
@@ -204,16 +153,11 @@ class ArrayShardDataset:
         keys = df[key_col].to_list()
         self._feature_keys = tuple(None if key is None else str(key) for key in keys)
         self._feature_key_to_id = {str(key): idx for idx, key in enumerate(keys) if key is not None}
-        if self._feature_ids is None:
-            self._feature_ids = tuple(range(len(keys)))
 
     def has_feature(self, feature_id: int) -> bool:
         """해당 dense feature id가 존재하는지 반환한다."""
         self._ensure_open()
-        feature_id = int(feature_id)
-        if self._kind == "binary":
-            return bool(self._reader.has_feature(feature_id))
-        return bool(self._locator_index.get(feature_id))
+        return bool(self._reader.has_feature(int(feature_id)))
 
     def has_sample(self, sample_id: int) -> bool:
         """해당 dense sample id가 존재하는지 반환한다."""
@@ -223,8 +167,6 @@ class ArrayShardDataset:
     def feature_ids(self):
         """모든 dense feature id를 반환한다."""
         self._ensure_open()
-        if self._feature_ids is None:
-            self._load_feature_ids()
         return self._feature_ids
 
     def sample_ids(self):
@@ -298,7 +240,6 @@ class ArrayShardDataset:
         return Trace(
             feature_id=int(feature_id),
             sample_id=int(sample_id),
-            sample_row=int(trace.sample_row),
             present=bool(int(trace.flags) & 0x01),
             flags=int(trace.flags),
             feature_key=None if feature_key is None else str(feature_key),
@@ -340,14 +281,7 @@ class ArrayShardDataset:
         feature_id = int(feature_id)
         sample_id_list = [int(sample_id) for sample_id in sample_ids]
         self._validate_requests(feature_id, sample_id_list, bool(strict))
-        if self._kind == "binary":
-            traces = self._reader.load_feature_samples_by_sample_ids(feature_id=feature_id, sample_ids=sample_id_list)
-        else:
-            traces = self._reader.load_feature_samples_by_sample_ids(
-                feature_id=feature_id,
-                sample_ids=sample_id_list,
-                locator_index=self._locator_index,
-            )
+        traces = self._reader.load_feature_samples_by_sample_ids(feature_id=feature_id, sample_ids=sample_id_list)
         public_traces = [
             self._to_public_trace(feature_id, sample_id, traces[int(sample_id)], decode_categorical=decode_categorical)
             for sample_id in sample_id_list
@@ -365,14 +299,7 @@ class ArrayShardDataset:
         sample_key_list = [str(sample_key) for sample_key in sample_keys]
         sample_id_list = [self.resolve_sample_key(sample_key) for sample_key in sample_key_list]
         self._validate_requests(feature_id, sample_id_list, bool(strict))
-        if self._kind == "binary":
-            traces = self._reader.load_feature_samples_by_sample_ids(feature_id=feature_id, sample_ids=sample_id_list)
-        else:
-            traces = self._reader.load_feature_samples_by_sample_ids(
-                feature_id=feature_id,
-                sample_ids=sample_id_list,
-                locator_index=self._locator_index,
-            )
+        traces = self._reader.load_feature_samples_by_sample_ids(feature_id=feature_id, sample_ids=sample_id_list)
         public_traces = [
             self._to_public_trace(
                 feature_id,
@@ -393,7 +320,7 @@ class ArrayShardDataset:
         )
 
     def get_many(self, feature_ids, sample_ids, strict: bool = False, decode_categorical: bool = False) -> QueryResult:
-        """여러 feature를 공통 sample 집합에 맞춰 읽는다."""
+        """여러 feature를 공통 sample 집합으로 읽는다."""
         self._ensure_open()
         feature_id_list = [int(feature_id) for feature_id in feature_ids]
         sample_id_list = [int(sample_id) for sample_id in sample_ids]
@@ -438,5 +365,5 @@ class ArrayShardDataset:
 
 
 def open_shard(manifest_path) -> ArrayShardDataset:
-    """array shard manifest를 열어 dataset facade를 반환한다."""
+    """array binary shard manifest를 열어 dataset facade를 반환한다."""
     return ArrayShardDataset(manifest_path)

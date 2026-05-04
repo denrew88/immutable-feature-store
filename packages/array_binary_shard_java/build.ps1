@@ -47,7 +47,6 @@ $sources = @(
     "java\src\fs\io\ArraySampleIdIndex.java",
     "java\src\fs\io\ArrayShardBuilder.java",
     "java\src\fs\io\ArrayShardManifestIO.java",
-    "java\src\fs\io\ArrayShardReader.java",
     "java\src\fs\io\ArrayUtils.java",
     "java\src\fs\io\DuckDBUtils.java",
     "java\src\fs\model\ArrayBinaryShardInfo.java",

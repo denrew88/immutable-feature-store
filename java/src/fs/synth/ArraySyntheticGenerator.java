@@ -7,6 +7,9 @@ import fs.io.ArraySampleBundleWriter;
 import fs.io.ArrayShardBuilder;
 import fs.io.DuckDBUtils;
 import fs.model.ArraySyntheticArtifacts;
+import fs.model.LogicalType;
+import fs.model.PointColumnSpec;
+import fs.model.StorageType;
 
 import java.io.File;
 import java.sql.Connection;
@@ -14,7 +17,10 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
 public class ArraySyntheticGenerator {
@@ -106,17 +112,21 @@ public class ArraySyntheticGenerator {
         for (int s = 0; s < synthCfg.nSamples; s++) {
             sampleIds[s] = s;
         }
+        List<PointColumnSpec> pointSchema = Arrays.asList(
+                new PointColumnSpec("time", StorageType.FLOAT64, LogicalType.CONTINUOUS),
+                new PointColumnSpec("value", StorageType.FLOAT64, LogicalType.CONTINUOUS)
+        );
 
         ensureParentDir(sampleMetaPath);
         String featureMetaPath = new File(bundleOutDir, "array_feature_meta.parquet").getAbsolutePath();
-        try (ArraySampleBundleWriter writer = new ArraySampleBundleWriter(bundleOutDir, sampleMetaPath, featureMetaPath, synthCfg.nSamples, outBundleCfg)) {
+        try (ArraySampleBundleWriter writer = new ArraySampleBundleWriter(bundleOutDir, sampleMetaPath, featureMetaPath, synthCfg.nSamples, outBundleCfg, pointSchema)) {
             for (int sampleId = 0; sampleId < synthCfg.nSamples; sampleId++) {
                 for (int featureId = 0; featureId < synthCfg.nFeatures; featureId++) {
                     if (rng.nextDouble() < synthCfg.missingFeatureRate) {
                         continue;
                     }
                     if (rng.nextDouble() < synthCfg.emptyTraceRate) {
-                        writer.appendTrace(sampleId, featureId, new double[0], new double[0]);
+                        writer.appendTrace(sampleId, featureId, columns(new double[0], new double[0]));
                         continue;
                     }
 
@@ -163,7 +173,7 @@ public class ArraySyntheticGenerator {
                         }
                     }
 
-                    writer.appendTrace(sampleId, featureId, time, value);
+                    writer.appendTrace(sampleId, featureId, columns(time, value));
                 }
             }
             writer.finish();
@@ -191,6 +201,13 @@ public class ArraySyntheticGenerator {
             time[i] = (time[i] / sum) * duration;
         }
         return time;
+    }
+
+    private static Map<String, Object> columns(double[] time, double[] value) {
+        LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("time", time);
+        out.put("value", value);
+        return out;
     }
 
     private static void writeSampleMetaParquet(String sampleMetaPath, long[] sampleIds, double[] y) throws SQLException {

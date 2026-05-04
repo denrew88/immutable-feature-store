@@ -1,8 +1,10 @@
 package fs.io;
 
 import fs.model.ArrayBinaryShardInfo;
+import fs.model.ArrayBlockLocation;
 import fs.model.ArrayFeatureBlock;
 import fs.model.ArrayShardManifest;
+import fs.model.ArrayTrace;
 import fs.model.LogicalType;
 import fs.model.PointColumnSpec;
 
@@ -12,9 +14,6 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -71,6 +70,199 @@ public class ArrayBinaryShardReader implements AutoCloseable {
         return block;
     }
 
+    public Map<Long, ArrayTrace> loadFeatureSamples(int featureId, long[] sampleIds, ArrayFeatureLocatorIndex locatorIndex) throws IOException {
+        return loadFeatureSamples(featureId, sampleIds, locatorIndex, false);
+    }
+
+    public Map<Long, ArrayTrace> loadFeatureSamples(
+            int featureId,
+            long[] sampleIds,
+            ArrayFeatureLocatorIndex locatorIndex,
+            boolean decodeCategorical) throws IOException {
+        LinkedHashMap<Long, ArrayTrace> out = new LinkedHashMap<Long, ArrayTrace>();
+        if (sampleIds == null || sampleIds.length == 0) {
+            return out;
+        }
+        for (long sampleId : sampleIds) {
+            out.put(sampleId, emptyTrace(sampleId, decodeCategorical));
+        }
+
+        List<ArrayBlockLocation> blocks = locatorIndex.blocksForFeature(featureId);
+        if (blocks.isEmpty()) {
+            return out;
+        }
+
+        LinkedHashMap<String, List<Long>> sampleIdsByBlock = new LinkedHashMap<String, List<Long>>();
+        LinkedHashMap<String, ArrayBlockLocation> blockByKey = new LinkedHashMap<String, ArrayBlockLocation>();
+        for (long sampleId : sampleIds) {
+            ArrayBlockLocation loc = locatorIndex.findBlockForSampleId(featureId, sampleId);
+            if (loc == null) {
+                continue;
+            }
+            String key = loc.shardId + ":" + loc.rowInShard;
+            List<Long> ids = sampleIdsByBlock.get(key);
+            if (ids == null) {
+                ids = new ArrayList<Long>();
+                sampleIdsByBlock.put(key, ids);
+                blockByKey.put(key, loc);
+            }
+            ids.add(sampleId);
+        }
+
+        for (Map.Entry<String, List<Long>> entry : sampleIdsByBlock.entrySet()) {
+            ArrayBlockLocation loc = blockByKey.get(entry.getKey());
+            ArrayFeatureBlock block = loadBlock(loc.shardId, loc.rowInShard, decodeCategorical);
+            for (long sampleId : entry.getValue()) {
+                ArrayTrace trace = block.traceForSampleId(sampleId);
+                if (trace != null) {
+                    out.put(sampleId, trace);
+                }
+            }
+        }
+        return out;
+    }
+
+    public Map<Long, ArrayTrace> loadFeatureSamplesBySampleIds(
+            int featureId,
+            long[] sampleIds,
+            ArrayFeatureLocatorIndex locatorIndex,
+            ArraySampleIdIndex sampleIdIndex) throws Exception {
+        return loadFeatureSamplesBySampleIds(featureId, sampleIds, locatorIndex, sampleIdIndex, false);
+    }
+
+    public Map<Long, ArrayTrace> loadFeatureSamplesBySampleIds(
+            int featureId,
+            long[] sampleIds,
+            ArrayFeatureLocatorIndex locatorIndex,
+            ArraySampleIdIndex sampleIdIndex,
+            boolean decodeCategorical) throws Exception {
+        LinkedHashMap<Long, ArrayTrace> out = new LinkedHashMap<Long, ArrayTrace>();
+        if (sampleIds == null || sampleIds.length == 0) {
+            return out;
+        }
+        ArraySampleIdIndex idx = sampleIdIndex;
+        if (idx == null) {
+            if (manifest.sampleMetaPath == null || manifest.sampleMetaPath.isEmpty()) {
+                throw new IllegalArgumentException("sampleMetaPath is required to resolve sample ids");
+            }
+            idx = ArraySampleIdIndex.load(manifest.sampleMetaPath);
+        }
+
+        List<Long> denseSampleIds = new ArrayList<Long>();
+        for (long sampleId : sampleIds) {
+            Long denseSampleId = idx.findSampleId(sampleId);
+            if (denseSampleId != null) {
+                denseSampleIds.add(denseSampleId);
+            }
+        }
+        long[] denseSampleIdArray = new long[denseSampleIds.size()];
+        for (int i = 0; i < denseSampleIds.size(); i++) {
+            denseSampleIdArray[i] = denseSampleIds.get(i);
+        }
+        Map<Long, ArrayTrace> tracesBySampleId = loadFeatureSamples(featureId, denseSampleIdArray, locatorIndex, decodeCategorical);
+        for (long sampleId : sampleIds) {
+            Long denseSampleId = idx.findSampleId(sampleId);
+            if (denseSampleId == null) {
+                out.put(sampleId, emptyTrace(-1L, decodeCategorical));
+            } else {
+                ArrayTrace trace = tracesBySampleId.get(denseSampleId);
+                if (trace == null) {
+                    trace = emptyTrace(denseSampleId, decodeCategorical);
+                }
+                out.put(sampleId, trace);
+            }
+        }
+        return out;
+    }
+
+    public Map<String, ArrayTrace> loadFeatureSamplesBySampleKeys(
+            int featureId,
+            String[] sampleKeys,
+            ArrayFeatureLocatorIndex locatorIndex,
+            ArraySampleIdIndex sampleIdIndex) throws Exception {
+        return loadFeatureSamplesBySampleKeys(featureId, sampleKeys, locatorIndex, sampleIdIndex, false);
+    }
+
+    public Map<String, ArrayTrace> loadFeatureSamplesBySampleKeys(
+            int featureId,
+            String[] sampleKeys,
+            ArrayFeatureLocatorIndex locatorIndex,
+            ArraySampleIdIndex sampleIdIndex,
+            boolean decodeCategorical) throws Exception {
+        LinkedHashMap<String, ArrayTrace> out = new LinkedHashMap<String, ArrayTrace>();
+        if (sampleKeys == null || sampleKeys.length == 0) {
+            return out;
+        }
+        ArraySampleIdIndex idx = sampleIdIndex;
+        if (idx == null) {
+            if (manifest.sampleMetaPath == null || manifest.sampleMetaPath.isEmpty()) {
+                throw new IllegalArgumentException("sampleMetaPath is required to resolve sample keys");
+            }
+            idx = ArraySampleIdIndex.load(manifest.sampleMetaPath, manifest.sampleKeyCol);
+        }
+
+        long[] denseSampleIds = new long[sampleKeys.length];
+        int denseCount = 0;
+        for (String sampleKey : sampleKeys) {
+            Long sampleId = idx.findSampleIdByKey(sampleKey);
+            if (sampleId != null) {
+                denseSampleIds[denseCount++] = sampleId;
+            }
+        }
+        long[] requestedSampleIds = new long[denseCount];
+        System.arraycopy(denseSampleIds, 0, requestedSampleIds, 0, denseCount);
+        Map<Long, ArrayTrace> tracesBySampleId = loadFeatureSamples(featureId, requestedSampleIds, locatorIndex, decodeCategorical);
+        for (String sampleKey : sampleKeys) {
+            Long sampleId = idx.findSampleIdByKey(sampleKey);
+            if (sampleId == null) {
+                out.put(sampleKey, emptyTrace(-1L, decodeCategorical));
+            } else {
+                ArrayTrace trace = tracesBySampleId.get(sampleId);
+                if (trace == null) {
+                    trace = emptyTrace(sampleId, decodeCategorical);
+                }
+                out.put(sampleKey, trace);
+            }
+        }
+        return out;
+    }
+
+    public Map<String, ArrayTrace> loadFeatureSamplesByKeys(
+            String featureKey,
+            String[] sampleKeys,
+            ArrayFeatureLocatorIndex locatorIndex,
+            ArrayFeatureIdIndex featureIdIndex,
+            ArraySampleIdIndex sampleIdIndex) throws Exception {
+        return loadFeatureSamplesByKeys(featureKey, sampleKeys, locatorIndex, featureIdIndex, sampleIdIndex, false);
+    }
+
+    public Map<String, ArrayTrace> loadFeatureSamplesByKeys(
+            String featureKey,
+            String[] sampleKeys,
+            ArrayFeatureLocatorIndex locatorIndex,
+            ArrayFeatureIdIndex featureIdIndex,
+            ArraySampleIdIndex sampleIdIndex,
+            boolean decodeCategorical) throws Exception {
+        ArrayFeatureIdIndex features = featureIdIndex;
+        if (features == null) {
+            if (manifest.featureMetaPath == null || manifest.featureMetaPath.isEmpty()) {
+                throw new IllegalArgumentException("featureMetaPath is required to resolve feature keys");
+            }
+            features = ArrayFeatureIdIndex.load(manifest.featureMetaPath, manifest.featureKeyCol);
+        }
+        Integer featureId = features.findFeatureIdByKey(featureKey);
+        if (featureId == null) {
+            LinkedHashMap<String, ArrayTrace> out = new LinkedHashMap<String, ArrayTrace>();
+            if (sampleKeys != null) {
+                for (String sampleKey : sampleKeys) {
+                    out.put(sampleKey, emptyTrace(-1L, decodeCategorical));
+                }
+            }
+            return out;
+        }
+        return loadFeatureSamplesBySampleKeys(featureId.intValue(), sampleKeys, locatorIndex, sampleIdIndex, decodeCategorical);
+    }
+
     private ArrayFeatureBlock decodePayload(
             int expectedFeatureId,
             int expectedBlockId,
@@ -121,43 +313,30 @@ public class ArrayBinaryShardReader implements AutoCloseable {
             throw new IOException("point_count/sample_offsets mismatch");
         }
 
+        if (schemaColumnCount != manifest.pointSchema.size()) {
+            throw new IOException("payload point_schema mismatch: expected=" + manifest.pointSchema.size() + " got=" + schemaColumnCount);
+        }
+        int expectedLength = ArrayBinaryFormat.BLOCK_PAYLOAD_HEADER_BYTES + flagsBytes + offsetsBytes + encodedColumnsOrTimeBytes;
+        if (expectedLength != payload.length) {
+            throw new IOException("payload length mismatch: expected=" + expectedLength + " got=" + payload.length);
+        }
+        byte[] encodedColumns = new byte[encodedColumnsOrTimeBytes];
+        bb.get(encodedColumns);
         LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
-        if (manifest.version == ArrayBinaryFormat.LEGACY_FILE_VERSION) {
-            int expectedLength = ArrayBinaryFormat.BLOCK_PAYLOAD_HEADER_BYTES + flagsBytes + offsetsBytes + encodedColumnsOrTimeBytes + valueBytesOrReserved;
-            if (expectedLength != payload.length) {
-                throw new IOException("payload length mismatch: expected=" + expectedLength + " got=" + payload.length);
+        int cursor = 0;
+        for (PointColumnSpec spec : manifest.pointSchema) {
+            int byteCount = ArrayUtils.pointColumnBytes(spec, (int) pointCount);
+            byte[] blob = new byte[byteCount];
+            System.arraycopy(encodedColumns, cursor, blob, 0, byteCount);
+            cursor += byteCount;
+            Object values = ArrayUtils.decodePointColumn(blob, pointCount, spec);
+            if (decodeCategorical && spec.logicalType == LogicalType.CATEGORICAL && spec.dictionaryPath != null && !spec.dictionaryPath.isEmpty()) {
+                values = ArrayUtils.decodeCategoricalLabels(values, loadDictionary(spec.dictionaryPath));
             }
-            byte[] timeBlob = new byte[encodedColumnsOrTimeBytes];
-            bb.get(timeBlob);
-            byte[] valueBlob = new byte[valueBytesOrReserved];
-            bb.get(valueBlob);
-            columns.put("time", ArrayUtils.decodeDoubleArray(timeBlob, (int) pointCount));
-            columns.put("value", ArrayUtils.decodeDoubleArray(valueBlob, (int) pointCount));
-        } else {
-            if (schemaColumnCount != manifest.pointSchema.size()) {
-                throw new IOException("payload point_schema mismatch: expected=" + manifest.pointSchema.size() + " got=" + schemaColumnCount);
-            }
-            int expectedLength = ArrayBinaryFormat.BLOCK_PAYLOAD_HEADER_BYTES + flagsBytes + offsetsBytes + encodedColumnsOrTimeBytes;
-            if (expectedLength != payload.length) {
-                throw new IOException("payload length mismatch: expected=" + expectedLength + " got=" + payload.length);
-            }
-            byte[] encodedColumns = new byte[encodedColumnsOrTimeBytes];
-            bb.get(encodedColumns);
-            int cursor = 0;
-            for (PointColumnSpec spec : manifest.pointSchema) {
-                int byteCount = ArrayUtils.pointColumnBytes(spec, (int) pointCount);
-                byte[] blob = new byte[byteCount];
-                System.arraycopy(encodedColumns, cursor, blob, 0, byteCount);
-                cursor += byteCount;
-                Object values = ArrayUtils.decodePointColumn(blob, pointCount, spec);
-                if (decodeCategorical && spec.logicalType == LogicalType.CATEGORICAL && spec.dictionaryPath != null && !spec.dictionaryPath.isEmpty()) {
-                    values = ArrayUtils.decodeCategoricalLabels(values, loadDictionary(spec.dictionaryPath));
-                }
-                columns.put(spec.name, values);
-            }
-            if (cursor != encodedColumns.length) {
-                throw new IOException("decoded point column bytes mismatch: expected=" + encodedColumns.length + " got=" + cursor);
-            }
+            columns.put(spec.name, values);
+        }
+        if (cursor != encodedColumns.length) {
+            throw new IOException("decoded point column bytes mismatch: expected=" + encodedColumns.length + " got=" + cursor);
         }
         return new ArrayFeatureBlock(
                 featureId,
@@ -201,23 +380,10 @@ public class ArrayBinaryShardReader implements AutoCloseable {
         if (cached != null) {
             return cached;
         }
-        HashMap<Long, String> out;
-        if (dictionaryPath.toLowerCase().endsWith(".json")) {
-            out = JsonUtils.readCategoricalDictionary(dictionaryPath);
-        } else {
-            out = new HashMap<Long, String>();
-            try (Connection conn = DuckDBUtils.connect(null)) {
-                String sql = "SELECT code, label FROM read_parquet(" + DuckDBUtils.quotePath(dictionaryPath) + ") ORDER BY code";
-                try (Statement st = conn.createStatement();
-                     ResultSet rs = st.executeQuery(sql)) {
-                    while (rs.next()) {
-                        out.put(rs.getLong(1), rs.getString(2));
-                    }
-                }
-            } catch (Exception e) {
-                throw new IOException("failed to load categorical dictionary: " + dictionaryPath, e);
-            }
+        if (!dictionaryPath.toLowerCase().endsWith(".json")) {
+            throw new IOException("categorical dictionary must be a JSON file: " + dictionaryPath);
         }
+        HashMap<Long, String> out = JsonUtils.readCategoricalDictionary(dictionaryPath);
         dictionaryCache.put(dictionaryPath, out);
         return out;
     }
@@ -242,6 +408,15 @@ public class ArrayBinaryShardReader implements AutoCloseable {
                 dataHeader);
         shardCache.put(shardId, created);
         return created;
+    }
+
+    private ArrayTrace emptyTrace(long sampleId, boolean decodeCategorical) {
+        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
+        for (PointColumnSpec spec : manifest.pointSchema) {
+            boolean decode = decodeCategorical && spec.logicalType == LogicalType.CATEGORICAL;
+            columns.put(spec.name, ArrayUtils.emptyPointColumn(spec, decode));
+        }
+        return new ArrayTrace(sampleId, (byte) 0, columns);
     }
 
     @Override

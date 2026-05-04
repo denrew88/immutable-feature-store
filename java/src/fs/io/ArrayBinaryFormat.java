@@ -16,7 +16,6 @@ final class ArrayBinaryFormat {
     static final int CODEC_ZSTD = 1;
 
     static final int FILE_VERSION = 3;
-    static final int LEGACY_FILE_VERSION = 2;
     static final String FILE_ENDIANNESS = "little";
     static final String DEFAULT_CODEC_NAME = "none";
     static final String DEFAULT_SAMPLE_KEY_COL = "sample_key";
@@ -91,7 +90,7 @@ final class ArrayBinaryFormat {
             long entryCount = bb.getLong();
             long auxCount = bb.getLong();
             int shardId = bb.getInt();
-            if (version != FILE_VERSION && version != LEGACY_FILE_VERSION) {
+            if (version != FILE_VERSION) {
                 throw new IOException("unsupported version=" + version + " for " + file.getAbsolutePath());
             }
             if (headerBytes != FILE_HEADER_BYTES) {

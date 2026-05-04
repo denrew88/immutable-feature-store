@@ -2,7 +2,7 @@ package scripts;
 
 import fs.io.ArrayFeatureLocatorIndex;
 import fs.io.ArrayShardManifestIO;
-import fs.io.ArrayShardReader;
+import fs.io.ArrayBinaryShardReader;
 import fs.model.ArrayShardManifest;
 import fs.model.ArrayTrace;
 
@@ -28,7 +28,7 @@ public class BenchmarkArrayReaderModesMain {
         long[] contiguousSampleIds = buildContiguousSampleIds(contiguousCount);
         long[] spreadSampleIds = buildSpreadSampleIds(spreadCount, spreadStep, manifest.nSamples);
 
-        try (ArrayShardReader reader = new ArrayShardReader(manifest)) {
+        try (ArrayBinaryShardReader reader = new ArrayBinaryShardReader(manifest)) {
             benchmarkCase("many_features_one_sample", warmup, iters, new RunnerAdapter(reader, featureBase, manyFeaturesCount, singleSampleIds, locatorIndex));
             benchmarkCase("single_feature_contiguous", warmup, iters, new SingleFeatureAdapter(reader, singleFeatureId, contiguousSampleIds, locatorIndex));
             benchmarkCase("single_feature_spread", warmup, iters, new SingleFeatureAdapter(reader, singleFeatureId, spreadSampleIds, locatorIndex));
@@ -108,13 +108,13 @@ public class BenchmarkArrayReaderModesMain {
     }
 
     private static final class RunnerAdapter implements RunnableCase {
-        private final ArrayShardReader reader;
+        private final ArrayBinaryShardReader reader;
         private final int featureBase;
         private final int manyFeaturesCount;
         private final long[] sampleIds;
         private final ArrayFeatureLocatorIndex locatorIndex;
 
-        RunnerAdapter(ArrayShardReader reader, int featureBase, int manyFeaturesCount, long[] sampleIds, ArrayFeatureLocatorIndex locatorIndex) {
+        RunnerAdapter(ArrayBinaryShardReader reader, int featureBase, int manyFeaturesCount, long[] sampleIds, ArrayFeatureLocatorIndex locatorIndex) {
             this.reader = reader;
             this.featureBase = featureBase;
             this.manyFeaturesCount = manyFeaturesCount;
@@ -131,12 +131,12 @@ public class BenchmarkArrayReaderModesMain {
     }
 
     private static final class SingleFeatureAdapter implements RunnableCase {
-        private final ArrayShardReader reader;
+        private final ArrayBinaryShardReader reader;
         private final int featureId;
         private final long[] sampleIds;
         private final ArrayFeatureLocatorIndex locatorIndex;
 
-        SingleFeatureAdapter(ArrayShardReader reader, int featureId, long[] sampleIds, ArrayFeatureLocatorIndex locatorIndex) {
+        SingleFeatureAdapter(ArrayBinaryShardReader reader, int featureId, long[] sampleIds, ArrayFeatureLocatorIndex locatorIndex) {
             this.reader = reader;
             this.featureId = featureId;
             this.sampleIds = sampleIds;

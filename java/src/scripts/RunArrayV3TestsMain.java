@@ -6,7 +6,7 @@ import fs.io.ArrayBinaryShards;
 import fs.io.ArrayFeatureIdIndex;
 import fs.io.ArrayFeatureLocatorIndex;
 import fs.io.ArraySampleIdIndex;
-import fs.io.ArrayShardReader;
+import fs.io.ArrayBinaryShardReader;
 import fs.model.ArrayShardManifest;
 import fs.model.ArrayTrace;
 import fs.model.LogicalType;
@@ -111,12 +111,12 @@ public class RunArrayV3TestsMain {
         require(featureIds.findFeatureIdByKey("feature_a") != null && featureIds.findFeatureIdByKey("feature_a") == 0, "feature key lookup mismatch");
         require(sampleIds.findSampleIdByKey("sample_000002") != null && sampleIds.findSampleIdByKey("sample_000002") == 2L, "sample key lookup mismatch");
 
-        try (ArrayShardReader reader = ArrayBinaryShards.open(shardManifestPath)) {
+        try (ArrayBinaryShardReader reader = ArrayBinaryShards.open(shardManifestPath)) {
             Map<Long, ArrayTrace> raw = reader.loadFeatureSamples(0, new long[]{0L, 1L, 2L}, locator, false);
             ArrayTrace sample0 = raw.get(0L);
             require(sample0 != null, "missing feature_a sample0 trace");
-            require(sample0.time.length == 0, "v3 trace should not synthesize time compatibility column");
-            require(sample0.value.length == 0, "v3 trace should not synthesize value compatibility column");
+            require(!sample0.columns.containsKey("time"), "v3 trace should not synthesize time compatibility column");
+            require(!sample0.columns.containsKey("value"), "v3 trace should not synthesize value compatibility column");
             assertLongArray((long[]) sample0.columns.get("ts"), new long[]{1_000_000_000L, 2_000_000_005L}, "sample0 ts");
             assertLongArray((long[]) sample0.columns.get("dt"), new long[]{0L, 1_000_000_000L}, "sample0 dt");
             assertIntArray((int[]) sample0.columns.get("phase"), new int[]{10, 11}, "sample0 phase");
