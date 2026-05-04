@@ -642,7 +642,31 @@ def _load_spill_file_to_sorted_df_v3(spill_path: str, point_schema):
 
 
 def _dense_feature_estimates_from_bundles(bundle_paths, n_features: int, n_samples: int, samples_per_block: int, point_schema):
-    """Estimate per-feature bytes for dense-id shard partition planning."""
+    """Bundle 집합을 훑어서 feature별 예상 shard 크기를 계산한다.
+
+    이 함수의 목적은 shard partition을 나누기 전에 각 feature가 대략 몇 바이트를
+    차지할지 추정하는 것이다. 최종 추정치는 아래 두 항목을 더해서 만든다.
+
+    - 해당 feature의 전체 point 수에 따른 payload 크기
+    - 해당 feature가 실제로 사용한 block 수에 따른 block 제어 오버헤드
+
+    수행 방식은 다음과 같다.
+
+    1. feature마다 `total_trace_len` 누적 배열을 하나 만든다.
+       bundle row를 읽으면서 같은 feature의 `trace_len`을 계속 더한다.
+
+    2. feature마다 어떤 `block_id`를 사용했는지 `seen_blocks` 불리언 행렬에 기록한다.
+       `sample_id // samples_per_block`로 `block_id`를 계산하고,
+       해당 `(feature_id, block_id)` 위치를 `True`로 켠다.
+
+    3. 마지막에 `seen_blocks`를 행 방향으로 합쳐서 feature별 `block_count`를 구한다.
+
+    4. `total_trace_len * bytes_per_point + block_count * block_overhead`를 계산해서
+       feature별 예상 바이트 수로 사용한다.
+
+    이 구현은 bundle 파일을 하나씩 읽고, 메모리에는 feature별 누적 길이 배열과
+    feature x block 불리언 행렬만 유지한다.
+    """
     blocks_per_feature = _blocks_per_feature(n_samples, samples_per_block)
     estimates = np.full(
         int(n_features),
@@ -653,34 +677,36 @@ def _dense_feature_estimates_from_bundles(bundle_paths, n_features: int, n_sampl
         return estimates
     bytes_per_point = int(sum(int(_point_dtype(spec).itemsize) for spec in point_schema))
     block_overhead = int(_estimate_block_overhead_bytes(samples_per_block))
-    df = (
-        pl.scan_parquet(bundle_paths)
-        .select(
-            [
-                pl.col("feature_id").cast(pl.Int32),
-                pl.col("trace_len").cast(pl.Int64),
-                (pl.col("sample_id") // samples_per_block).cast(pl.Int64).alias("block_id"),
-            ]
-        )
-        .group_by("feature_id")
-        .agg(
-            [
-                pl.col("trace_len").sum().alias("total_trace_len"),
-                pl.col("block_id").n_unique().alias("block_count"),
-            ]
-        )
-        .sort("feature_id")
-        .collect()
-    )
-    feature_ids = df["feature_id"].to_numpy().astype(np.int32, copy=False)
-    total_trace_len = df["total_trace_len"].to_numpy().astype(np.int64, copy=False)
-    block_count = df["block_count"].to_numpy().astype(np.int64, copy=False)
+    total_trace_len = np.zeros(int(n_features), dtype=np.int64)
+    seen_blocks = np.zeros((int(n_features), int(blocks_per_feature)), dtype=bool)
+
+    for bundle_path in bundle_paths:
+        frame = pl.read_parquet(bundle_path, columns=["feature_id", "trace_len", "sample_id"])
+        if frame.height == 0:
+            continue
+        feature_ids = frame["feature_id"].to_numpy().astype(np.int32, copy=False)
+        if feature_ids.size == 0:
+            continue
+        min_feature_id = int(feature_ids.min())
+        max_feature_id = int(feature_ids.max())
+        if min_feature_id < 0 or max_feature_id >= int(n_features):
+            raise ValueError(
+                f"bundle feature_id out of dense metadata range: min={min_feature_id} max={max_feature_id}"
+            )
+
+        trace_len = frame["trace_len"].to_numpy().astype(np.int64, copy=False)
+        sample_ids = frame["sample_id"].to_numpy().astype(np.int64, copy=False)
+        np.add.at(total_trace_len, feature_ids.astype(np.intp, copy=False), trace_len)
+
+        block_ids = (sample_ids // int(samples_per_block)).astype(np.int64, copy=False)
+        seen_blocks[
+            feature_ids.astype(np.intp, copy=False),
+            block_ids.astype(np.intp, copy=False),
+        ] = True
+
+    block_count = seen_blocks.sum(axis=1, dtype=np.int64)
     observed = total_trace_len * np.int64(bytes_per_point) + block_count * np.int64(block_overhead)
-    for feature_id, est in zip(feature_ids.tolist(), observed.tolist()):
-        feature_id = int(feature_id)
-        if feature_id < 0 or feature_id >= int(n_features):
-            raise ValueError(f"bundle feature_id out of dense metadata range: {feature_id}")
-        estimates[feature_id] += int(est)
+    estimates += observed
     return estimates
 
 
