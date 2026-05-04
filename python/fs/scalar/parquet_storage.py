@@ -11,6 +11,10 @@ import polars as pl
 
 from ..feature_selection.pearson import batch_r2_one_vs_many
 
+SCALAR_VALUE_BYTES = 8
+SCALAR_VALID_BYTES = 1
+SCALAR_ROW_PARQUET_OVERHEAD_BYTES = 64
+
 
 def load_sample_meta(
     sample_meta_path: str,
@@ -142,7 +146,7 @@ def _estimate_scalar_feature_bytes(n_samples: int) -> int:
         Approximate bytes for one feature row, including blob payloads and a
         small fixed overhead for parquet row metadata.
     """
-    return int(n_samples) * (8 + 1) + 64
+    return int(n_samples) * (SCALAR_VALUE_BYTES + SCALAR_VALID_BYTES) + SCALAR_ROW_PARQUET_OVERHEAD_BYTES
 
 
 def _assign_shards_by_target_bytes(

@@ -24,6 +24,9 @@ import java.util.List;
 import java.util.Map;
 
 public class ArrayShardBuilder {
+    private static final long BLOCK_HEADER_ESTIMATE_BYTES = 64L;
+    private static final long BLOCK_PER_SAMPLE_CONTROL_BYTES = 9L;
+
     public static String buildFromBundles(String bundleManifestPath, String outDir, ArrayShardConfig config) throws Exception {
         ArrayBundleManifest bundleManifest = ArrayBundleManifestIO.read(bundleManifestPath);
         ArrayShardConfig cfg = (config == null) ? new ArrayShardConfig() : config;
@@ -208,7 +211,9 @@ public class ArrayShardBuilder {
     }
 
     private static long estimateBlockOverheadBytes(int samplesPerBlock) {
-        return 64L + 9L * (long) samplesPerBlock;
+        // Per-block size estimation includes one fixed binary payload header and
+        // one control section per sample for flags plus offsets.
+        return BLOCK_HEADER_ESTIMATE_BYTES + BLOCK_PER_SAMPLE_CONTROL_BYTES * (long) samplesPerBlock;
     }
 
     private static int[][] buildShardPartitions(ArrayFeatureStats featureStats, ArrayShardConfig cfg) {

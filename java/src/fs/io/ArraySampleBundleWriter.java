@@ -16,6 +16,14 @@ import java.util.Map;
 
 public class ArraySampleBundleWriter implements AutoCloseable {
     private static final int INSERT_BATCH_SIZE = 256;
+    private static final long SAMPLE_ID_BYTES = 8L;
+    // Keep the historical row-size estimate stable so bundle flush behavior does not shift.
+    private static final long ROW_ENCODING_OVERHEAD_BYTES = 8L;
+    private static final long FEATURE_ID_BYTES = 4L;
+    private static final long FLAGS_BYTES = 1L;
+    private static final long TRACE_LEN_BYTES = 4L;
+    private static final long BUNDLE_TRACE_ROW_FIXED_BYTES =
+            SAMPLE_ID_BYTES + ROW_ENCODING_OVERHEAD_BYTES + FEATURE_ID_BYTES + FLAGS_BYTES + TRACE_LEN_BYTES;
 
     private final String sampleMetaPath;
     private final String featureMetaPath;
@@ -194,7 +202,7 @@ public class ArraySampleBundleWriter implements AutoCloseable {
     }
 
     private long estimateRowBytes(int traceLen) {
-        long bytes = 8L + 8L + 4L + 1L + 4L;
+        long bytes = BUNDLE_TRACE_ROW_FIXED_BYTES;
         for (PointColumnSpec spec : pointSchema) {
             bytes += (long) traceLen * (long) spec.storageType.itemSize;
         }

@@ -10,6 +10,14 @@ from ..types import LogicalType, PointColumnSpec, normalize_logical_type, point_
 FLAG_PRESENT = 0x01
 FLAG_EMPTY = 0x02
 
+SAMPLE_ID_BYTES = 8
+FEATURE_ID_BYTES = 4
+FLAGS_BYTES = 1
+TRACE_LEN_BYTES = 4
+BUNDLE_TRACE_ROW_FIXED_BYTES = SAMPLE_ID_BYTES + FEATURE_ID_BYTES + FLAGS_BYTES + TRACE_LEN_BYTES
+BLOCK_HEADER_ESTIMATE_BYTES = 64
+BLOCK_PER_SAMPLE_CONTROL_BYTES = 9
+
 
 def _normalize_point_schema(point_schema):
     if point_schema is None:
@@ -51,6 +59,13 @@ def _encode_point_values(values, spec: PointColumnSpec) -> np.ndarray:
     if logical_type == LogicalType.TIMEDELTA_NS:
         return np.asarray(values, dtype="timedelta64[ns]").reshape(-1).astype(storage_dtype, copy=False)
     return np.asarray(values, dtype=storage_dtype).reshape(-1)
+
+
+def _estimate_bundle_trace_row_bytes(encoded_columns: dict[str, bytes], point_schema: list[PointColumnSpec]) -> int:
+    # Bundle flush thresholds work on the serialized row footprint:
+    # sample_id + feature_id + flags + trace_len fixed fields,
+    # plus the already-encoded point-column blobs stored in parquet.
+    return int(BUNDLE_TRACE_ROW_FIXED_BYTES + sum(len(encoded_columns[spec.name]) for spec in point_schema))
 
 
 def bundle_file_path(bundle_path: str, bundle_id: int) -> str:
@@ -131,7 +146,7 @@ class ArraySampleBundleWriter:
         for spec in self.point_schema:
             self._column_blobs[spec.name].append(encoded_columns[spec.name])
         self._current_rows += 1
-        self._current_bytes += 8 + 4 + 1 + 4 + sum(len(encoded_columns[spec.name]) for spec in self.point_schema)
+        self._current_bytes += _estimate_bundle_trace_row_bytes(encoded_columns, self.point_schema)
 
         if self._current_rows >= self.config.max_bundle_rows or self._current_bytes >= self.config.max_bundle_bytes:
             self.flush_bundle()
@@ -207,7 +222,9 @@ def load_array_bundle_manifest(manifest_path: str):
 
 
 def _estimate_block_overhead_bytes(samples_per_block: int) -> int:
-    return int(64 + 9 * int(samples_per_block))
+    # Per-block size estimation includes one fixed binary payload header and
+    # one control section per sample for flags plus offsets.
+    return int(BLOCK_HEADER_ESTIMATE_BYTES + BLOCK_PER_SAMPLE_CONTROL_BYTES * int(samples_per_block))
 
 
 def _partition_feature_ids_by_count(feature_ids, n_shards: int):
