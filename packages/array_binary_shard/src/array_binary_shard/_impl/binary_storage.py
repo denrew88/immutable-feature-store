@@ -517,7 +517,25 @@ def _finalize_dense_point_block(block, current_feature_id, shard_rows):
 
 
 def _process_sorted_rows_v3(df: pl.DataFrame, n_samples: int, samples_per_block: int, point_schema):
-    """Compact sorted spill rows into dense block rows for one shard."""
+    """정렬된 spill row를 block 단위 row 목록으로 다시 묶는다.
+
+    입력 `df`는 `(feature_id, sample_id)` 기준으로 정렬된 상태라고 가정한다.
+    이 함수는 같은 `(feature_id, block_id)`에 속한 trace row를 하나의 block으로
+    합쳐서, 최종 binary writer가 바로 사용할 수 있는 row 목록으로 바꾼다.
+
+    처리 순서는 다음과 같다.
+
+    1. 현재 보고 있는 `feature_id`와 `block_id`를 추적한다.
+    2. 같은 block에 속한 row가 이어지는 동안
+       - sample flags
+       - sample offsets
+       - point column blob
+       을 누적한다.
+    3. feature나 block 경계가 바뀌면 지금까지 누적한 내용을 block row 하나로 확정한다.
+
+    반환값의 각 원소는 `_write_dense_binary_shard(...)`가 `blocks.idx`와 `blocks.bin`
+    payload를 만들 때 그대로 소비하는 중간 row 표현이다.
+    """
     if df.height == 0:
         return []
 
@@ -568,7 +586,23 @@ def _process_sorted_rows_v3(df: pl.DataFrame, n_samples: int, samples_per_block:
 
 
 def _append_frame_to_spill_file_v3(df: pl.DataFrame, spill_path: str, point_schema):
-    """Append generic point-trace rows to one spill file."""
+    """DataFrame row들을 append-only spill 파일 뒤에 직렬화해서 붙인다.
+
+    이 함수는 bundle에서 읽은 row 일부를 `(shard_id, bucket_id)`별 임시 spill 파일에
+    적재하는 단계에서 사용한다.
+
+    spill 파일 형식은 단순한 append-only 바이너리 형식이다.
+
+    - 고정 길이 header
+      - `feature_id`
+      - `sample_id`
+      - `flags`
+      - `trace_len`
+    - 그 뒤에 point schema 순서대로 column blob payload
+
+    반환값은 이번 append로 실제로 증가한 바이트 수다.
+    상위 build 함수는 이 값을 이용해서 temp file 총량과 peak bytes를 추적한다.
+    """
     os.makedirs(os.path.dirname(spill_path), exist_ok=True)
     blob_names = _point_column_blob_names(point_schema)
     delta = 0
@@ -587,7 +621,21 @@ def _append_frame_to_spill_file_v3(df: pl.DataFrame, spill_path: str, point_sche
 
 
 def _load_spill_file_to_sorted_df_v3(spill_path: str, point_schema):
-    """Load one generic point spill file into a sorted dataframe."""
+    """spill 파일 하나를 읽어서 정렬된 DataFrame으로 복원한다.
+
+    `_append_frame_to_spill_file_v3(...)`가 만든 append-only 바이너리 파일을 다시 읽어
+    DataFrame 형태로 되돌린다.
+
+    복원 과정은 다음과 같다.
+
+    1. 고정 길이 row header를 반복해서 읽는다.
+    2. 각 row의 `trace_len`과 point schema를 바탕으로
+       뒤따르는 column blob 바이트 수를 계산한다.
+    3. 모든 row를 모은 뒤 `(feature_id, sample_id)` 기준으로 정렬한다.
+
+    반환값은 이후 `_process_sorted_rows_v3(...)`가 block 단위로 다시 묶을 수 있는
+    정렬된 DataFrame이다.
+    """
     if not os.path.exists(spill_path) or os.path.getsize(spill_path) == 0:
         return _empty_spill_frame(point_schema)
 
@@ -919,12 +967,34 @@ def _build_array_binary_shards_with_tmp_spill(
     feature_key_col: str,
     point_schema,
 ):
-    """Build binary shards through append-only temporary spill buckets.
+    """임시 spill bucket을 거쳐 array binary shard 전체를 만든다.
 
-    Each `(shard_id, bucket_id)` pair owns one spill file under `_tmp/`. As bundle
-    files are scanned, rows are partitioned by `(shard_id, bucket_id)` and appended
-    to that fixed spill file. Later, each spill file is loaded once, sorted, compacted
-    into block rows, and then deleted.
+    이 함수는 bundle parquet 집합을 바로 shard로 쓰지 않고,
+    한 번 `_tmp/` 아래의 spill 파일들로 흘려보낸 다음 다시 읽어서 최종 shard를 만든다.
+
+    전체 흐름은 세 단계다.
+
+    1. 출력 artifact 준비
+       - sample/feature metadata를 output 디렉터리로 복사한다.
+       - categorical dictionary가 있으면 artifact 내부 경로로 복사한다.
+       - shard 최종 출력 경로와 `_tmp/` 작업 디렉터리를 만든다.
+
+    2. bundle row를 `(shard_id, bucket_id)`별 spill 파일로 분배
+       - `_build_bucket_partitions(...)`로 feature -> `(shard_id, bucket_id)` 매핑을 만든다.
+       - 각 bundle parquet를 읽고, feature 매핑과 join한다.
+       - 같은 `(shard_id, bucket_id)`에 속한 row만 모아서
+         `_append_frame_to_spill_file_v3(...)`로 해당 spill 파일 뒤에 붙인다.
+
+    3. spill 파일을 다시 읽어 shard를 완성
+       - spill 파일을 `_load_spill_file_to_sorted_df_v3(...)`로 복원한다.
+       - 복원된 row를 `_process_sorted_rows_v3(...)`로 block 단위 row로 다시 묶는다.
+       - shard별 row를 전부 모은 뒤 `_write_dense_binary_shard(...)`로
+         `blocks.idx`, `blocks.bin`을 실제로 쓴다.
+       - 마지막에 top-level manifest를 기록하고 `_tmp/`를 정리한다.
+
+    핵심 아이디어는 "입력 bundle 전체를 한 번에 메모리에 올리지 않고",
+    shard/bucket 기준 append-only spill 파일로 먼저 분산 저장한 뒤,
+    그 spill을 다시 읽어서 shard를 완성하는 것이다.
     """
     artifact_sample_meta_path, artifact_feature_meta_path = _materialize_binary_metadata(
         out_dir,
@@ -958,6 +1028,7 @@ def _build_array_binary_shards_with_tmp_spill(
 
     try:
         for bundle_path in bundle_paths:
+            # 한 bundle 파일을 읽고, 각 row를 어느 shard/bucket spill로 보낼지 결정한다.
             bundle_df = pl.read_parquet(
                 bundle_path,
                 columns=[
@@ -1015,6 +1086,7 @@ def _build_array_binary_shards_with_tmp_spill(
                 spill_path = spill_paths.get(spill_key)
                 if spill_path is None or not os.path.exists(spill_path):
                     continue
+                # spill 파일을 복원 -> 정렬 -> block row로 묶은 뒤 shard row 목록에 합친다.
                 df = _load_spill_file_to_sorted_df_v3(spill_path, point_schema)
                 bucket_rows = _process_sorted_rows_v3(
                     df,
@@ -1090,21 +1162,57 @@ def build_array_binary_shards_from_bundles(
     sample_key_col: str = DEFAULT_SAMPLE_KEY_COL,
     feature_key_col: str = DEFAULT_FEATURE_KEY_COL,
 ):
-    """Build dense-id binary shards from a sample-major bundle manifest.
+    """Bundle manifest를 입력으로 받아 array binary shard 세트를 만든다.
+
+    이 함수는 builder와 CLI가 공통으로 호출하는 상위 진입점이다.
+    입력은 sample-major bundle manifest 하나이고, 출력은 v3 array binary shard
+    artifact 디렉터리 하나다.
+
+    이 함수가 하는 일은 크게 다섯 단계다.
+
+    1. bundle manifest와 메타데이터를 읽는다.
+       - bundle 파일 목록을 만들고
+       - point schema를 정규화하고
+       - sample / feature metadata가 dense id 규칙과 맞는지 확인한다.
+    2. feature별 예상 크기를 계산한다.
+       - bundle row를 직접 훑으면서
+         `total_trace_len`과 `block_count`를 feature별로 집계한다.
+       - 이 값은 shard 분할 기준으로만 쓰는 추정치다.
+    3. feature를 shard 단위로 나눈다.
+       - `config.n_shards`가 있으면 개수 기준으로 자르고
+       - 그렇지 않으면 `config.target_shard_bytes` 기준으로 자른다.
+    4. 실제 shard build를 하위 함수에 위임한다.
+       - `_build_array_binary_shards_with_tmp_spill(...)`가
+         bundle row를 spill 파일로 분배하고
+         spill을 다시 정렬/압축해서 shard 파일을 만든다.
+    5. 필요하면 build 통계를 같이 돌려준다.
+
+    `config.use_tmp_spill` 값과 무관하게, binary build는 항상 append-only
+    temporary spill 경로를 사용한다. 이 함수는 그 정책을 감춘 채
+    "bundle manifest -> binary shard artifact" 변환만 담당한다.
 
     Args:
-        bundle_manifest_path: Path to `array_bundle_manifest.json`.
-        out_dir: Output directory for the binary shard set.
-        config: Optional shard build configuration. Binary builds always use the
-            append-only temporary spill path even if `config.use_tmp_spill` is `False`.
-        codec: Payload codec name.
-        zstd_level: Compression level when `codec='zstd'`.
-        return_stats: Whether to return `(manifest_path, stats)` instead of only the manifest path.
-        sample_key_col: Metadata column containing external sample keys.
-        feature_key_col: Metadata column containing external feature keys.
+        bundle_manifest_path:
+            `array_bundle_manifest.json` 경로다.
+        out_dir:
+            최종 binary shard artifact를 쓸 출력 디렉터리다.
+        config:
+            shard 분할과 block 크기를 정하는 build 설정이다.
+            `use_tmp_spill` 값과 무관하게 binary build는 항상 spill 경로를 사용한다.
+        codec:
+            block payload 압축 코덱 이름이다.
+        zstd_level:
+            `codec="zstd"`일 때 사용할 압축 레벨이다.
+        return_stats:
+            `True`면 manifest 경로만이 아니라 build 통계도 함께 돌려준다.
+        sample_key_col:
+            sample metadata에서 외부 sample key를 담고 있는 컬럼 이름이다.
+        feature_key_col:
+            feature metadata에서 외부 feature key를 담고 있는 컬럼 이름이다.
 
     Returns:
-        Manifest path, or `(manifest_path, stats)` when `return_stats=True`.
+        기본값은 최종 manifest 경로 문자열이다.
+        `return_stats=True`면 `(manifest_path, stats)` 튜플을 돌려준다.
     """
     config = config or ArrayShardConfig()
     bundle_manifest = load_array_bundle_manifest(bundle_manifest_path)
@@ -1116,6 +1224,8 @@ def build_array_binary_shards_from_bundles(
         raise ValueError("bundle manifest n_samples does not match sample metadata row count")
     n_features = int(feature_meta_df.height)
     feature_ids = np.arange(n_features, dtype=np.int32)
+    # shard 분할은 실제 직렬화 전에 결정해야 하므로, 먼저 bundle row를 훑어서
+    # feature별 예상 바이트 수를 계산한다.
     estimated_feature_bytes = _dense_feature_estimates_from_bundles(
         bundle_paths,
         n_features=n_features,
@@ -1123,7 +1233,9 @@ def build_array_binary_shards_from_bundles(
         samples_per_block=config.samples_per_block,
         point_schema=point_schema,
     )
+    # 추정 바이트 수를 기준으로 feature를 shard 단위로 나눈다.
     shard_partitions = _build_array_shard_partitions(feature_ids, estimated_feature_bytes, config)
+    # 실제 row 이동과 block payload 작성은 spill 기반 하위 함수에서 수행한다.
     manifest_path, stats = _build_array_binary_shards_with_tmp_spill(
         bundle_manifest_path=bundle_manifest_path,
         bundle_manifest=bundle_manifest,
@@ -1164,7 +1276,24 @@ def _resolve_point_schema_paths(manifest_path: str, point_schema):
 
 
 def load_array_binary_shard_manifest(manifest_path: str) -> ArrayBinaryShardManifest:
-    """Load a dense-id binary shard manifest JSON file."""
+    """array binary shard manifest JSON을 읽어 정규화된 객체로 만든다.
+
+    이 함수는 단순히 JSON을 파싱하는 것에서 끝나지 않는다.
+    reader가 바로 사용할 수 있도록 다음 정리를 함께 수행한다.
+
+    - `format`과 `version`을 검사해 현재 구현이 이해할 수 있는 v3 manifest인지 확인한다.
+    - shard 목록을 `ArrayBinaryShardInfo` 객체 목록으로 바꾼다.
+    - `sample_meta_path`, `feature_meta_path`, `shard_path`처럼
+      manifest 기준 상대경로로 저장된 파일 경로를 절대경로로 풀어 준다.
+    - point schema를 재구성하고, categorical dictionary 경로도 manifest 기준으로 정규화한다.
+
+    Args:
+        manifest_path:
+            `array_binary_shard_manifest.json` 경로다.
+
+    Returns:
+        reader가 그대로 사용할 수 있는 `ArrayBinaryShardManifest` 객체다.
+    """
     with open(manifest_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     if data.get("format") != "array-binary-shard":
@@ -1217,7 +1346,21 @@ def get_array_binary_point_schema(manifest):
 
 
 def load_array_binary_categorical_dictionaries(manifest):
-    """Load categorical dictionaries declared by a binary shard manifest."""
+    """manifest가 가리키는 categorical dictionary JSON들을 한 번에 읽는다.
+
+    array v3에서는 categorical point column이 정수 code로 저장되고,
+    원래 label은 column별 JSON sidecar에 들어 있다.
+    이 함수는 point schema를 훑으면서 categorical column만 골라
+    `{column_name: {code: label}}` 형태의 메모리 lookup table을 만든다.
+
+    Args:
+        manifest:
+            manifest 객체 또는 manifest 경로다.
+
+    Returns:
+        column 이름을 key로 하고, `code -> label` 매핑을 value로 갖는 dict다.
+        dictionary 경로가 비어 있는 categorical column은 결과에서 빠진다.
+    """
     manifest_obj = load_array_binary_shard_manifest(manifest) if isinstance(manifest, str) else manifest
     out = {}
     for spec in get_array_binary_point_schema(manifest_obj):
@@ -1260,7 +1403,29 @@ def _binary_blocks_data_file(manifest: ArrayBinaryShardManifest, shard_id: int) 
 
 
 def _cached_binary_block_records(path: str):
-    """Load and cache the fixed-size block record array for one shard."""
+    """한 shard의 `blocks.idx` 레코드 배열을 읽어 LRU 캐시에 보관한다.
+
+    `blocks.idx`는 shard 안의 각 block row가
+    - `blocks.bin`의 어느 offset에 있는지
+    - payload 길이가 얼마인지
+    - 어떤 codec으로 저장됐는지
+    같은 고정 길이 메타데이터를 담고 있다.
+
+    reader는 feature/sample 조회 때 같은 shard를 반복해서 보게 되므로,
+    이 함수는 `blocks.idx` 전체를 한 번 NumPy structured array로 읽어 둔 뒤
+    프로세스 내부 LRU 캐시에 넣는다.
+
+    캐시 정책은 두 제한을 동시에 따른다.
+    - 최대 entry 수
+    - 최대 총 바이트 수
+
+    Args:
+        path:
+            한 shard의 `blocks.idx` 파일 경로다.
+
+    Returns:
+        `_BLOCK_RECORD_DTYPE` structured array다. 각 원소가 block row 하나에 대응한다.
+    """
     path = os.path.abspath(path)
     global _BINARY_BLOCK_RECORDS_CACHE_BYTES
     with _BINARY_CACHE_LOCK:
@@ -1289,7 +1454,23 @@ def _cached_binary_block_records(path: str):
 
 
 def _cached_binary_data_mmap(path: str):
-    """Open and cache the memory-mapped data file for one shard."""
+    """한 shard의 `blocks.bin` 파일을 read-only mmap으로 열고 캐시한다.
+
+    `blocks.bin`은 실제 block payload bytes가 연속으로 저장된 큰 바이너리 파일이다.
+    매 조회마다 파일을 다시 열고 읽는 대신, 이 함수는 파일을 mmap으로 연 뒤
+    `(file_object, mmap_object)` 쌍을 LRU 캐시에 보관한다.
+
+    이렇게 해 두면 이후 block decode는
+    - `blocks.idx`에서 offset/length를 찾고
+    - mmap slice를 바로 잘라 오는 식으로 수행할 수 있다.
+
+    Args:
+        path:
+            한 shard의 `blocks.bin` 파일 경로다.
+
+    Returns:
+        `(file_object, mmap_object)` 튜플이다.
+    """
     path = os.path.abspath(path)
     with _BINARY_CACHE_LOCK:
         cached = _BINARY_DATA_MMAP_CACHE.get(path)
@@ -1425,7 +1606,46 @@ def _decode_block_record(
     block_id: int,
     record,
 ):
-    """Decode one block payload from a dense block record."""
+    """`blocks.idx` 레코드 하나를 따라가 실제 block payload를 디코드한다.
+
+    reader 경로에서 가장 중요한 저수준 함수다. 입력으로는
+    - manifest
+    - shard 정보
+    - 기대하는 `(feature_id, block_id)`
+    - 그리고 `blocks.idx`의 레코드 하나
+    를 받는다.
+
+    동작 순서는 다음과 같다.
+
+    1. `blocks.idx` 레코드에서 `data_offset` / `data_length`를 읽는다.
+    2. 해당 shard의 `blocks.bin` mmap에서 payload byte 구간을 잘라 온다.
+    3. payload header를 해석해
+       - feature / block / sample 범위가 맞는지
+       - schema column 수가 맞는지
+       를 검증한다.
+    4. sample flags와 sample offsets를 복원한다.
+    5. point-column payload를 codec에 따라 풀고,
+       schema 순서대로 각 column NumPy 배열을 다시 만든다.
+    6. 최종적으로 `ArrayFeatureBlock` 객체를 돌려준다.
+
+    `data_length == 0`인 경우는 실제 payload가 없는 비어 있는 dense slot로 보고,
+    해당 위치에 맞는 empty block 객체를 만든다.
+
+    Args:
+        manifest:
+            현재 shard 세트 manifest다.
+        shard:
+            현재 조회 중인 shard의 manifest entry다.
+        feature_id:
+            caller가 기대하는 dense feature id다.
+        block_id:
+            caller가 기대하는 dense block id다.
+        record:
+            `blocks.idx`에서 읽은 structured record 한 개다.
+
+    Returns:
+        디코드된 `ArrayFeatureBlock` 객체다.
+    """
     sample_id_start = int(block_id) * int(manifest.samples_per_block)
     sample_count = _sample_count_for_block(manifest.n_samples, manifest.samples_per_block, block_id)
     point_schema = get_array_binary_point_schema(manifest)
@@ -1598,16 +1818,36 @@ class ArrayBinaryShardReader:
         return int(local_feature) * int(self.manifest.blocks_per_feature) + int(block_id)
 
     def load_feature_samples(self, feature_id: int, sample_ids):
-        """Load traces for one dense feature id at requested dense sample ids.
+        """feature 하나에 대해 원하는 sample id들의 trace를 읽는다.
+
+        이 함수의 핵심 아이디어는 "sample마다 바로 block을 읽지 않고,
+        먼저 block 단위로 sample 요청을 묶는다"는 점이다.
+
+        동작 순서는 다음과 같다.
+
+        1. 요청 sample id 목록을 받아 기본 결과 dict를 empty trace로 채운다.
+           - out-of-range sample id도 결과 key로는 유지한다.
+        2. feature가 속한 shard를 찾는다.
+           - feature가 존재하지 않으면 empty trace dict를 그대로 반환한다.
+        3. 유효한 sample id만 골라 `block_id`별로 묶는다.
+           - 같은 block 안의 sample들은 한 번 block을 디코드한 뒤 같이 꺼낼 수 있다.
+        4. shard의 `blocks.idx`를 캐시에서 가져오고,
+           필요한 `record_index`를 계산해 block을 디코드한다.
+        5. 디코드된 block에서 sample별 trace를 꺼내 결과 dict를 갱신한다.
+
+        즉, 읽기 단위는 "sample 하나"가 아니라 "필요한 block 하나"다.
+        이 구조 덕분에 같은 feature에서 sample 여러 개를 요청할 때
+        block decode를 중복하지 않는다.
 
         Args:
-            feature_id: Dense feature identifier.
-            sample_ids: Iterable of dense sample ids. The binary format uses the same
-                dense ids internally and externally.
+            feature_id:
+                조회할 dense feature id다.
+            sample_ids:
+                조회할 dense sample id iterable이다.
 
         Returns:
-            A dictionary keyed by requested sample id with `ArrayTrace` values. Missing
-            or out-of-range sample ids map to empty traces with `flags=0`.
+            `{sample_id: ArrayTrace}` 형태 dict다.
+            feature가 없거나 sample id가 범위를 벗어나면 해당 위치는 empty trace가 들어간다.
         """
         requested_ids = [int(sample_id) for sample_id in sample_ids]
         out = {sample_id: _empty_trace(sample_id, self._point_schema) for sample_id in requested_ids}
@@ -1629,6 +1869,8 @@ class ArrayBinaryShardReader:
 
         block_records = _cached_binary_block_records(_binary_blocks_index_file(self.manifest, shard_id))
         for block_id, block_sample_ids in rows_by_block.items():
+            # feature 하나는 shard 안에서 blocks_per_feature 길이의 dense block row 구간을
+            # 차지하므로, (feature_id, block_id)로 바로 record index를 계산할 수 있다.
             record_index = self._record_index(shard, feature_id, block_id)
             block = _decode_block_record(self.manifest, shard, int(feature_id), int(block_id), block_records[record_index])
             for sample_id in block_sample_ids:
@@ -1642,7 +1884,15 @@ class ArrayBinaryShardReader:
         feature_id: int,
         sample_ids,
     ):
-        """Load traces for one feature using dense sample ids."""
+        """dense sample id 순서를 유지한 채 trace dict를 다시 정렬한다.
+
+        `load_feature_samples(...)`는 sample id를 key로 하는 dict를 반환한다.
+        이 helper는 caller가 넘긴 sample id 순서를 그대로 보존하면서
+        결과 dict를 다시 구성하는 얇은 wrapper다.
+
+        out-of-range sample id는 호출 순서상 유지하되,
+        `sample_id=-1`인 empty trace placeholder로 채운다.
+        """
         sample_id_list = [int(sample_id) for sample_id in sample_ids]
         traces_by_row = self.load_feature_samples(feature_id, sample_id_list)
         out = {}

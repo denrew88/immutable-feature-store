@@ -121,7 +121,15 @@ class BinaryShardDataset:
         return self._categorical_dictionaries
 
     def _load_sample_key_index(self):
-        """sample metadata에서 sample key 조회 구조를 지연 로드한다."""
+        """sample metadata에서 `sample_key -> sample_id` 인덱스를 lazy 로드한다.
+
+        dataset을 열자마자 key 인덱스를 전부 메모리에 만들지는 않는다.
+        key 기반 조회가 처음 호출될 때만 sample metadata의 key 컬럼 하나를 읽고,
+        이후에는
+        - dense id 순서의 key tuple
+        - `sample_key -> sample_id` dict
+        를 재사용한다.
+        """
         if self._sample_key_to_id is not None:
             return
         key_col = str(self._manifest.sample_key_col)
@@ -135,7 +143,7 @@ class BinaryShardDataset:
         self._sample_key_to_id = {str(key): idx for idx, key in enumerate(keys)}
 
     def _load_feature_key_index(self):
-        """feature metadata에서 feature key 조회 구조를 지연 로드한다."""
+        """feature metadata에서 `feature_key -> feature_id` 인덱스를 lazy 로드한다."""
         if self._feature_key_to_id is not None:
             return
         key_col = str(self._manifest.feature_key_col)
@@ -199,7 +207,7 @@ class BinaryShardDataset:
         return int(sample_id)
 
     def _validate_requests(self, feature_id: int, sample_ids, strict: bool):
-        """strict 모드일 때 누락된 feature/sample id에 대한 public 예외를 발생시킨다."""
+        """strict 모드에서 feature/sample 존재 여부를 미리 검증한다."""
         if strict and not self.has_feature(feature_id):
             raise FeatureNotFoundError(f"feature id not found: {feature_id}")
         if strict:
@@ -208,7 +216,19 @@ class BinaryShardDataset:
                 raise SampleNotFoundError(f"sample ids not found: {missing}")
 
     def _decode_trace_columns(self, trace, decode_categorical: bool):
-        """내부 trace column 표현을 public 표현으로 변환한다."""
+        """internal trace column을 public 반환 형식으로 바꾼다.
+
+        reader 내부의 `ArrayTrace.columns`는 storage dtype 그대로의 NumPy 배열이다.
+        public facade에서는 point schema를 참고해 다음 후처리를 한다.
+
+        - categorical:
+          - 기본은 code 배열을 그대로 복사한다.
+          - `decode_categorical=True`면 dictionary를 적용해 label tuple로 바꾼다.
+        - timestamp_ns / timedelta_ns:
+          - storage `int64` 배열을 각각 `datetime64[ns]`, `timedelta64[ns]`로 복원한다.
+        - 그 외:
+          - NumPy 배열을 복사해 그대로 돌려준다.
+        """
         dictionaries = self.categorical_dictionaries()
         point_schema_by_name = {spec.name: spec for spec in self._point_schema}
         out = {}
@@ -247,7 +267,7 @@ class BinaryShardDataset:
         sample_key=None,
         decode_categorical: bool = False,
     ):
-        """내부 `ArrayTrace`를 public `Trace` 모델로 변환한다."""
+        """내부 trace 객체를 public `Trace` dataclass로 감싼다."""
         return Trace(
             feature_id=int(feature_id),
             sample_id=int(sample_id),
@@ -279,7 +299,20 @@ class BinaryShardDataset:
         return result.traces[0]
 
     def get_traces(self, feature_id: int, sample_ids, strict: bool = False, decode_categorical: bool = False) -> FeatureTraces:
-        """feature 하나에 대해 여러 dense sample id의 trace를 읽는다."""
+        """feature 하나에 대해 여러 sample의 trace를 읽는다.
+
+        이 메서드는 public facade의 기본 배치 조회 경로다.
+
+        1. 입력 sample id를 dense id 리스트로 정규화한다.
+        2. 필요하면 strict 검증을 수행한다.
+        3. 저수준 reader에 위임해 `{sample_id: ArrayTrace}` dict를 받는다.
+        4. 각 trace를 public `Trace` 객체로 감싸고,
+           필요하면 categorical / temporal column 후처리를 적용한다.
+
+        Returns:
+            feature 하나와 sample id 목록 하나에 대응하는 `FeatureTraces` 객체다.
+            반환 순서는 입력 `sample_ids` 순서를 그대로 따른다.
+        """
         self._ensure_open()
         feature_id = int(feature_id)
         sample_id_list = [int(sample_id) for sample_id in sample_ids]
@@ -299,7 +332,12 @@ class BinaryShardDataset:
         )
 
     def get_traces_by_key(self, feature_key: str, sample_keys, strict: bool = True, decode_categorical: bool = False) -> FeatureTraces:
-        """feature 하나에 대해 여러 외부 sample key의 trace를 읽는다."""
+        """feature key와 여러 sample key로 trace를 읽는다.
+
+        내부적으로는 key를 먼저 dense id로 바꾼 뒤 `get_traces(...)`와 같은
+        읽기 경로를 탄다. 즉 key 기반 API는 lookup 편의층이고,
+        실제 block decode는 dense id 기준으로 수행된다.
+        """
         self._ensure_open()
         feature_id = self.resolve_feature_key(feature_key)
         sample_key_list = [str(sample_key) for sample_key in sample_keys]
@@ -329,7 +367,15 @@ class BinaryShardDataset:
         )
 
     def get_many(self, feature_ids, sample_ids, strict: bool = False, decode_categorical: bool = False) -> QueryResult:
-        """여러 feature를 공통 dense sample id 집합에 맞춰 읽는다."""
+        """여러 feature를 공통 sample 집합으로 읽는다.
+
+        현재 구현은 feature마다 `get_traces(...)`를 반복 호출하는 편의 API다.
+        따라서 핵심 의미는 "공통 sample 집합을 기준으로 여러 feature 결과를
+        한 번에 포장해 준다"는 것이고, 별도의 batch decode 최적화는 여기서 하지 않는다.
+
+        Returns:
+            feature 축 결과를 묶은 `QueryResult` 객체다.
+        """
         self._ensure_open()
         feature_id_list = [int(feature_id) for feature_id in feature_ids]
         sample_id_list = [int(sample_id) for sample_id in sample_ids]
@@ -349,7 +395,12 @@ class BinaryShardDataset:
         )
 
     def get_many_by_key(self, feature_keys, sample_keys, strict: bool = True, decode_categorical: bool = False) -> QueryResult:
-        """여러 외부 feature key와 sample key를 사용해 trace를 읽는다."""
+        """여러 feature key와 sample key를 사용해 trace를 읽는다.
+
+        key 기반 API지만 실제 읽기 경로는 dense id 기반과 같다.
+        먼저 모든 key를 dense id로 변환한 뒤, 각 feature에 대해
+        `get_traces_by_key(...)`를 반복 호출해 결과를 묶는다.
+        """
         self._ensure_open()
         feature_key_list = [str(feature_key) for feature_key in feature_keys]
         sample_key_list = [str(sample_key) for sample_key in sample_keys]
@@ -374,5 +425,13 @@ class BinaryShardDataset:
 
 
 def open_shard(manifest_path) -> BinaryShardDataset:
-    """manifest 경로로 binary shard dataset을 연다."""
+    """array binary shard manifest를 열어 package dataset facade를 만든다.
+
+    Args:
+        manifest_path:
+            `array_binary_shard_manifest.json` 경로다.
+
+    Returns:
+        `BinaryShardDataset` 인스턴스다. `with open_shard(...) as ds:` 형태로 쓸 수 있다.
+    """
     return BinaryShardDataset(manifest_path)

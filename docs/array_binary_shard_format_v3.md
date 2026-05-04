@@ -14,6 +14,252 @@ v3의 핵심 변화는 다음과 같다.
 
 ---
 
+## 큰 그림
+
+array binary shard v3는 **point-level array trace를 빠르게 조회하기 위한 standalone artifact 포맷**이다.
+
+이 포맷이 해결하려는 문제는 단순하다.
+
+- trace를 metadata와 함께 한 폴더에 묶어 배포하고 싶다.
+- feature 하나의 trace를 sample 몇 개 기준으로 빠르게 꺼내고 싶다.
+- manifest마다 다른 point schema를 허용하고 싶다.
+- Python/Java 양쪽에서 같은 규칙으로 읽고 싶다.
+
+이를 위해 v3는 dataset을 아래처럼 계층적으로 나눈다.
+
+```text
+dataset
+  -> shard
+    -> feature
+    -> block
+      -> sample trace slice
+```
+
+### shard는 무엇인가
+
+shard는 **feature들을 몇 개씩 묶어 담는 최종 저장 단위**다.
+
+- dataset 전체를 파일 하나에 다 넣으면 파일이 너무 커진다.
+- build와 배포, 캐시, 디버깅 단위도 적당히 나누기 어렵다.
+- 그래서 feature id 구간을 여러 shard로 나눈다.
+
+즉 shard는 "조회 알고리즘의 기본 단위"이면서 동시에 "파일 관리 단위"다.
+
+중요한 점은 shard 하나가 feature 하나를 담는 것이 아니라,
+**여러 feature의 여러 block을 함께 담는다**는 것이다.
+
+예를 들어:
+
+- `shard 0`은 `feature_id 0..999`
+- `shard 1`은 `feature_id 1000..1999`
+
+같은 식으로 feature 구간을 나눠 가진다.
+
+그리고 각 feature는 다시 sample 축으로 여러 block으로 나뉜다.
+즉 shard 안에는 개념적으로 아래 같은 2차원 격자가 있다.
+
+```text
+shard 0
+  feature 0  -> block 0, block 1, block 2, ...
+  feature 1  -> block 0, block 1, block 2, ...
+  feature 2  -> block 0, block 1, block 2, ...
+  ...
+```
+
+즉 shard는 "feature 여러 개의 block row를 한곳에 모아 둔 묶음"이다.
+
+### shard 파일은 실제로 무엇인가
+
+최종 artifact에서 shard 하나는 파일 하나가 아니라
+**`blocks.idx`와 `blocks.bin` 두 파일의 묶음**이다.
+
+예를 들어 `shard_0003`은 개념적으로 아래와 같다.
+
+```text
+shard_0003
+  -> shard_0003.blocks.idx
+  -> shard_0003.blocks.bin
+```
+
+- `blocks.idx`
+  - shard 안의 모든 block row에 대한 색인표
+- `blocks.bin`
+  - 그 block row들의 실제 payload 저장소
+
+manifest에는 shard별로 이 두 파일 이름이 함께 기록된다.
+즉 reader는 manifest의 shard entry 하나를 보고
+"이 shard는 어느 feature 구간을 담당하고, idx/bin 파일은 어디 있는지"를 안다.
+
+### block은 무엇인가
+
+block은 **feature 하나를 sample 축으로 일정 길이씩 잘라 놓은 묶음**이다.
+
+v3는 `samples_per_block` 값을 고정하고, feature 하나를 sample 축으로 여러 block으로 나눈다.
+
+예를 들어:
+
+- `samples_per_block = 16`
+- `sample_id = 0..15` -> `block_id = 0`
+- `sample_id = 16..31` -> `block_id = 1`
+
+이 구조를 쓰는 이유는:
+
+- feature 하나 전체를 항상 통째로 읽지 않아도 된다.
+- sample 몇 개만 필요할 때, 해당 sample이 속한 block만 읽으면 된다.
+- point trace 길이는 sample마다 달라도, block 단위 index는 dense하게 유지할 수 있다.
+
+즉 shard가 feature 축 분할이라면, block은 sample 축 분할이다.
+
+정리하면:
+
+- shard는 feature를 나누는 바깥 단위
+- block은 feature 내부에서 sample을 나누는 안쪽 단위
+
+이다.
+
+### `blocks.idx`와 `blocks.bin`은 어떻게 연결되는가
+
+각 shard는 두 파일로 이루어지고, 역할은 분명히 나뉜다.
+
+- `blocks.idx`
+  - block record table
+  - 각 block이 `blocks.bin`의 어디에 저장돼 있는지 가리킨다.
+- `blocks.bin`
+  - 실제 block payload bytes
+  - sample flags, sample offsets, point-column payload가 들어 있다.
+
+즉 `blocks.idx`는 **색인표**, `blocks.bin`은 **실제 데이터 저장소**다.
+
+여기서 중요한 것은 shard 안의 block들이 "feature별로 따로 파일이 있는 구조"가 아니라,
+**모든 feature의 block row가 한 `blocks.idx` / `blocks.bin` 쌍 안에 dense하게 들어 있다**는 점이다.
+
+reader는 `(feature_id, block_id)`를 직접 파일명으로 바꾸지 않는다.
+대신 shard 안에서의 **dense record index**를 계산해 해당 row를 찾는다.
+
+조회할 때는:
+
+1. `(feature_id, block_id)`를 안다.
+2. 그 값으로 shard 안의 `record_index`를 계산한다.
+3. `blocks.idx`에서 해당 record를 읽는다.
+4. record 안의 `data_offset`, `data_length`로 `blocks.bin`의 byte 구간을 찾는다.
+5. 그 payload를 디코드해 block을 복원한다.
+
+즉 연결고리는 항상:
+
+```text
+(feature_id, block_id)
+  -> record_index
+  -> blocks.idx[record_index]
+  -> (data_offset, data_length)
+  -> blocks.bin slice
+  -> decoded block
+```
+
+### `blocks_per_feature`와 `record_index`는 무엇인가
+
+reader가 shard 안에서 block row를 바로 찾을 수 있는 이유는
+각 feature가 shard 안에서 **같은 개수의 dense block slot**을 갖기 때문이다.
+
+이 개수를 `blocks_per_feature`라고 한다.
+
+예를 들어:
+
+- `n_samples = 50`
+- `samples_per_block = 16`
+
+이면 sample block은
+
+- block 0: sample 0..15
+- block 1: sample 16..31
+- block 2: sample 32..47
+- block 3: sample 48..49
+
+총 4개이므로 `blocks_per_feature = 4`다.
+
+그러면 shard 안에서 feature 하나는 항상 block row 4칸을 차지한다.
+이 규칙 덕분에 `(feature_id, block_id)`에서 `record_index`를 바로 계산할 수 있다.
+
+개념적으로는:
+
+```text
+record_index =
+  local_feature_index * blocks_per_feature + block_id
+```
+
+이다.
+
+즉 `blocks.idx`는 사실상
+"shard 안의 feature-block 격자를 1차원 dense row로 펼쳐 놓은 색인표"라고 이해하면 된다.
+
+### sample trace는 block 안에서 어떻게 찾는가
+
+block을 하나 디코드했다고 해서 sample trace가 바로 하나 나오는 것은 아니다.
+
+block 안에는:
+
+- 그 block에 포함된 sample 수
+- sample별 `flags`
+- sample별 `offsets`
+- 모든 point column을 이어 붙인 payload
+
+가 함께 들어 있다.
+
+여기서:
+
+- `sample_flags`
+  - 이 sample 위치에 trace가 있는지, 비어 있는지 같은 최소 상태를 담는다.
+- `sample_offsets`
+  - 각 sample trace가 point payload 안에서 시작/끝나는 위치를 담는다.
+
+reader는 `sample_offsets`를 이용해 "이 sample trace가 point payload의 어느 구간을 차지하는지"를 계산하고,
+그 slice를 잘라 최종 trace를 만든다.
+
+즉 block은 **여러 sample trace를 담는 컨테이너**이고,
+`sample_flags`가 sample 상태를, `sample_offsets`가 sample별 경계를 알려 준다.
+
+### 읽기 흐름
+
+feature 하나와 sample 몇 개를 읽는 흐름은 대략 이렇다.
+
+```text
+manifest 로드
+  -> feature_id가 속한 shard 찾기
+  -> sample_id로 block_id 계산
+  -> record_index 계산
+  -> blocks.idx에서 record 읽기
+  -> blocks.bin에서 payload slice 읽기
+  -> block 디코드
+  -> sample_offsets로 sample trace slice 추출
+  -> 필요하면 categorical code를 label로 복원
+```
+
+이 흐름 덕분에 전체 dataset이나 feature 전체를 스캔하지 않고,
+필요한 shard와 필요한 block만 바로 찾아갈 수 있다.
+
+### build 흐름
+
+build 쪽은 조회와 반대 방향이다.
+
+```text
+trace 입력
+  -> sample-major bundle 생성
+  -> feature별 예상 크기로 shard partition 계산
+  -> shard 내부 spill bucket 분배
+  -> (feature_id, sample_id) 순으로 정렬
+  -> sample들을 block으로 압축
+  -> blocks.idx / blocks.bin 작성
+  -> manifest 작성
+```
+
+여기서 중요한 점은:
+
+- build 중간에는 bundle과 spill을 쓴다.
+- 최종 artifact에는 shard 파일과 metadata만 남는다.
+- reader는 bundle이나 spill을 전혀 모른다.
+
+즉 build 경로와 read 경로는 다르지만,
+둘 다 최종적으로는 같은 `(feature_id, block_id) -> payload` 구조에 맞춰진다.
+
 ## 1. 전체 구조
 
 v3 dataset artifact는 보통 아래처럼 생긴다.

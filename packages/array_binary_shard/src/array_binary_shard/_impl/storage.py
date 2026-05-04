@@ -263,12 +263,52 @@ def _partition_feature_ids_by_target_bytes(feature_ids, estimated_feature_bytes,
 
 
 def _build_array_shard_partitions(feature_ids, estimated_feature_bytes, config: ArrayShardConfig):
+    """Feature 목록을 shard 단위 partition으로 나눈다.
+
+    이 함수의 역할은 "전체 feature를 몇 개의 shard로 어떤 기준으로 나눌지"
+    최종 결정하는 것이다. 실제 분할 로직 자체는 하위 helper에 있고,
+    여기서는 `ArrayShardConfig`를 보고 어떤 분할 방식을 사용할지만 고른다.
+
+    분기 기준은 두 가지다.
+
+    - `config.n_shards > 0`
+      - shard 개수를 사용자가 직접 지정한 경우다.
+      - feature 수를 기준으로 거의 균등하게 잘라서 shard를 만든다.
+    - 그 외
+      - `config.target_shard_bytes`를 기준으로 shard를 만든다.
+      - `estimated_feature_bytes`를 앞에서부터 누적하면서,
+        shard 하나의 예상 총량이 목표 바이트를 넘기기 직전에서 끊는다.
+
+    반환값은 shard별 feature id 배열 목록이다.
+    이후 단계에서는 이 결과를 바탕으로
+    - feature -> shard 매핑을 만들고
+    - 각 shard 내부에서 다시 spill bucket partition을 계산한다.
+    """
     if int(config.n_shards) > 0:
         return _partition_feature_ids_by_count(feature_ids, int(config.n_shards))
     return _partition_feature_ids_by_target_bytes(feature_ids, estimated_feature_bytes, int(config.target_shard_bytes))
 
 
 def _build_bucket_partitions(shard_partitions, feature_ids, estimated_feature_bytes, spill_bucket_target_bytes: int):
+    """Shard 내부 feature를 spill bucket 단위로 다시 나눈다.
+
+    이 함수의 목적은 한 shard 안에서도 임시 spill 파일이 너무 커지지 않게,
+    feature들을 여러 bucket으로 잘라 두는 것이다.
+
+    입력으로는 이미 shard 단위로 배정된 `shard_partitions`와
+    feature별 예상 바이트 수 `estimated_feature_bytes`를 받는다.
+    각 shard 안에서는 예상 바이트 합이 `spill_bucket_target_bytes`를 넘지 않도록
+    feature들을 순서대로 잘라서 bucket partition을 만든다.
+
+    반환값은 두 가지다.
+
+    - `feature_map_df`
+      - 각 `feature_id`가 어느 `(shard_id, bucket_id)`에 속하는지 나타내는 매핑 테이블
+      - 이후 bundle row를 읽을 때 이 테이블과 join해서 어느 spill 파일로 보낼지 결정한다.
+    - `shard_bucket_partitions`
+      - shard별 bucket 목록
+      - 이후 spill 파일을 다시 읽어 shard를 복원할 때 bucket 순회를 위해 사용한다.
+    """
     est_lookup = {
         int(feature_id): int(est_bytes)
         for feature_id, est_bytes in zip(feature_ids.tolist(), estimated_feature_bytes.tolist())
