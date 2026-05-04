@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from collections import OrderedDict
@@ -55,20 +56,15 @@ class _CategoricalRegistry:
             out[idx] = np.uint32(code)
         return out
 
-    def to_frame(self) -> pl.DataFrame:
-        """registry를 parquet로 기록할 수 있는 dictionary 테이블로 만든다.
-
-        Returns:
-            categorical dictionary sidecar로 저장할 수 있는 `code`, `label`
-            컬럼의 Polars dataframe을 반환한다.
-        """
-        codes = np.arange(1, len(self.code_to_label) + 1, dtype=np.uint32)
-        return pl.DataFrame(
-            {
-                "code": pl.Series("code", codes, dtype=pl.UInt32),
-                "label": pl.Series("label", list(self.code_to_label), dtype=pl.String),
-            }
-        )
+    def to_json_dict(self, column_name: str) -> dict:
+        """registry를 JSON dictionary sidecar로 기록할 수 있는 구조로 만든다."""
+        return {
+            "column": str(column_name),
+            "items": [
+                {"code": int(idx + 1), "label": str(label)}
+                for idx, label in enumerate(self.code_to_label)
+            ],
+        }
 
 
 class ArraySampleContext:
@@ -436,15 +432,16 @@ class ArrayDatasetBuilder:
         pl.DataFrame(data).write_parquet(self._feature_meta_path)
 
     def _write_categorical_dictionaries(self):
-        """생성된 categorical dictionary parquet 파일을 bundle artifact에 기록한다."""
+        """생성된 categorical dictionary JSON 파일을 bundle artifact에 기록한다."""
         dict_root = os.path.join(self.bundle_out_dir, "categorical_dictionaries")
         os.makedirs(dict_root, exist_ok=True)
         for idx, spec in enumerate(self.point_schema):
             if spec.logical_type != LogicalType.CATEGORICAL:
                 continue
             registry = self._categorical_registries[spec.name]
-            dict_path = os.path.join(dict_root, f"{spec.name}.parquet")
-            registry.to_frame().write_parquet(dict_path)
+            dict_path = os.path.join(dict_root, f"{spec.name}.json")
+            with open(dict_path, "w", encoding="utf-8") as f:
+                json.dump(registry.to_json_dict(spec.name), f, ensure_ascii=False, indent=2)
             spec.dictionary_path = dict_path
             self._bundle_writer.point_schema[idx].dictionary_path = dict_path
 

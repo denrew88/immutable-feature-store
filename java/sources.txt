@@ -12,6 +12,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayDatasetBuilde
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayFeatureFlags.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayFeatureIdIndex.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayFeatureLocatorIndex.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\JsonUtils.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayMetadataWriter.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArraySampleBundleWriter.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArraySampleIdIndex.java

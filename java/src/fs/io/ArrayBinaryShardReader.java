@@ -201,17 +201,22 @@ public class ArrayBinaryShardReader implements AutoCloseable {
         if (cached != null) {
             return cached;
         }
-        HashMap<Long, String> out = new HashMap<Long, String>();
-        try (Connection conn = DuckDBUtils.connect(null)) {
-            String sql = "SELECT code, label FROM read_parquet(" + DuckDBUtils.quotePath(dictionaryPath) + ") ORDER BY code";
-            try (Statement st = conn.createStatement();
-                 ResultSet rs = st.executeQuery(sql)) {
-                while (rs.next()) {
-                    out.put(rs.getLong(1), rs.getString(2));
+        HashMap<Long, String> out;
+        if (dictionaryPath.toLowerCase().endsWith(".json")) {
+            out = JsonUtils.readCategoricalDictionary(dictionaryPath);
+        } else {
+            out = new HashMap<Long, String>();
+            try (Connection conn = DuckDBUtils.connect(null)) {
+                String sql = "SELECT code, label FROM read_parquet(" + DuckDBUtils.quotePath(dictionaryPath) + ") ORDER BY code";
+                try (Statement st = conn.createStatement();
+                     ResultSet rs = st.executeQuery(sql)) {
+                    while (rs.next()) {
+                        out.put(rs.getLong(1), rs.getString(2));
+                    }
                 }
+            } catch (Exception e) {
+                throw new IOException("failed to load categorical dictionary: " + dictionaryPath, e);
             }
-        } catch (Exception e) {
-            throw new IOException("failed to load categorical dictionary: " + dictionaryPath, e);
         }
         dictionaryCache.put(dictionaryPath, out);
         return out;

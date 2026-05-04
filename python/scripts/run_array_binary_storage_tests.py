@@ -281,20 +281,37 @@ def main():
 
     dict_dir = root / "categorical_dictionaries_source"
     dict_dir.mkdir(parents=True, exist_ok=True)
-    state_dict_path = dict_dir / "state_code.parquet"
-    event_dict_path = dict_dir / "event_type.parquet"
-    pl.DataFrame(
-        {
-            "code": pl.Series("code", [1, 2, 3], dtype=pl.UInt32),
-            "label": pl.Series("label", ["OK", "WARN", "FAIL"], dtype=pl.String),
-        }
-    ).write_parquet(state_dict_path)
-    pl.DataFrame(
-        {
-            "code": pl.Series("code", [1, 2], dtype=pl.UInt32),
-            "label": pl.Series("label", ["START", "STOP"], dtype=pl.String),
-        }
-    ).write_parquet(event_dict_path)
+    state_dict_path = dict_dir / "state_code.json"
+    event_dict_path = dict_dir / "event_type.json"
+    state_dict_path.write_text(
+        json.dumps(
+            {
+                "column": "state_code",
+                "items": [
+                    {"code": 1, "label": "OK"},
+                    {"code": 2, "label": "WARN"},
+                    {"code": 3, "label": "FAIL"},
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    event_dict_path.write_text(
+        json.dumps(
+            {
+                "column": "event_type",
+                "items": [
+                    {"code": 1, "label": "START"},
+                    {"code": 2, "label": "STOP"},
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     custom_schema = [
         PointColumnSpec(name="phase", storage_type=StorageType.INT32, logical_type=LogicalType.INTEGER),
@@ -352,8 +369,8 @@ def main():
     assert binary_v3_manifest.time_dtype == ""
     assert binary_v3_manifest.value_dtype == ""
     assert [spec.name for spec in binary_v3_manifest.point_schema] == ["phase", "state_code", "event_type"]
-    assert (root / "binary_v3_shards" / "categorical_dictionaries" / "state_code.parquet").exists()
-    assert (root / "binary_v3_shards" / "categorical_dictionaries" / "event_type.parquet").exists()
+    assert (root / "binary_v3_shards" / "categorical_dictionaries" / "state_code.json").exists()
+    assert (root / "binary_v3_shards" / "categorical_dictionaries" / "event_type.json").exists()
     dictionaries = load_array_binary_categorical_dictionaries(binary_v3_manifest)
     assert dictionaries["state_code"][1] == "OK"
     assert dictionaries["event_type"][2] == "STOP"

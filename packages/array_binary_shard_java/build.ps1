@@ -41,6 +41,7 @@ $sources = @(
     "java\src\fs\io\ArrayFeatureFlags.java",
     "java\src\fs\io\ArrayFeatureIdIndex.java",
     "java\src\fs\io\ArrayFeatureLocatorIndex.java",
+    "java\src\fs\io\JsonUtils.java",
     "java\src\fs\io\ArrayMetadataWriter.java",
     "java\src\fs\io\ArraySampleBundleWriter.java",
     "java\src\fs\io\ArraySampleIdIndex.java",

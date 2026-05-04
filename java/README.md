@@ -144,7 +144,7 @@ direct-ingestion builder는 `fs.io.ArrayDatasetBuilder`입니다.
   - `array_binary_shard_manifest.json`
   - `sample_meta.parquet`
   - `feature_meta.parquet`
-  - 필요 시 `categorical_dictionaries/*.parquet`
+  - 필요 시 `categorical_dictionaries/*.json`
   - `array_binary_feature_shards/shard_XXXX.blocks.idx`
   - `array_binary_feature_shards/shard_XXXX.blocks.bin`
 - dense id

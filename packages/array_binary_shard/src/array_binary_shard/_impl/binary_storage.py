@@ -1407,13 +1407,31 @@ def load_array_binary_categorical_dictionaries(manifest):
         dictionary_path = str(spec.dictionary_path or "")
         if not dictionary_path:
             continue
-        df = pl.read_parquet(dictionary_path)
-        if "code" not in df.columns or "label" not in df.columns:
-            raise ValueError(f"categorical dictionary must contain code/label columns: {dictionary_path}")
-        out[spec.name] = {
-            int(code): None if label is None else str(label)
-            for code, label in zip(df["code"].to_list(), df["label"].to_list())
-        }
+        if str(dictionary_path).lower().endswith(".json"):
+            with open(dictionary_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, dict) and "labels" in payload and isinstance(payload["labels"], dict):
+                mapping = {
+                    int(code): None if label is None else str(label)
+                    for code, label in payload["labels"].items()
+                }
+            elif isinstance(payload, dict) and "items" in payload and isinstance(payload["items"], list):
+                mapping = {}
+                for row in payload["items"]:
+                    if not isinstance(row, dict) or "code" not in row or "label" not in row:
+                        raise ValueError(f"categorical dictionary items must contain code/label: {dictionary_path}")
+                    mapping[int(row["code"])] = None if row["label"] is None else str(row["label"])
+            else:
+                raise ValueError(f"unsupported categorical dictionary JSON structure: {dictionary_path}")
+        else:
+            df = pl.read_parquet(dictionary_path)
+            if "code" not in df.columns or "label" not in df.columns:
+                raise ValueError(f"categorical dictionary must contain code/label columns: {dictionary_path}")
+            mapping = {
+                int(code): None if label is None else str(label)
+                for code, label in zip(df["code"].to_list(), df["label"].to_list())
+            }
+        out[spec.name] = mapping
     return out
 
 

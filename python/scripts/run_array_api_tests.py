@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 
@@ -42,20 +43,37 @@ def main():
 
     dict_dir = root / "categorical_dictionaries_source"
     dict_dir.mkdir(parents=True, exist_ok=True)
-    state_dict_path = dict_dir / "state_code.parquet"
-    event_dict_path = dict_dir / "event_type.parquet"
-    pl.DataFrame(
-        {
-            "code": pl.Series("code", [1, 2, 3], dtype=pl.UInt32),
-            "label": pl.Series("label", ["OK", "WARN", "FAIL"], dtype=pl.String),
-        }
-    ).write_parquet(state_dict_path)
-    pl.DataFrame(
-        {
-            "code": pl.Series("code", [1, 2], dtype=pl.UInt32),
-            "label": pl.Series("label", ["START", "STOP"], dtype=pl.String),
-        }
-    ).write_parquet(event_dict_path)
+    state_dict_path = dict_dir / "state_code.json"
+    event_dict_path = dict_dir / "event_type.json"
+    state_dict_path.write_text(
+        json.dumps(
+            {
+                "column": "state_code",
+                "items": [
+                    {"code": 1, "label": "OK"},
+                    {"code": 2, "label": "WARN"},
+                    {"code": 3, "label": "FAIL"},
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    event_dict_path.write_text(
+        json.dumps(
+            {
+                "column": "event_type",
+                "items": [
+                    {"code": 1, "label": "START"},
+                    {"code": 2, "label": "STOP"},
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     custom_schema = [
         PointColumnSpec(name="phase", storage_type="int32", logical_type="integer"),
         PointColumnSpec(

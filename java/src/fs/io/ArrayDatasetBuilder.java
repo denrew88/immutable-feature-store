@@ -471,12 +471,8 @@ public class ArrayDatasetBuilder implements AutoCloseable {
                 continue;
             }
             CategoricalRegistry registry = categoricalRegistries.get(spec.name);
-            File dictPath = new File(dictRoot, spec.name + ".parquet");
-            ArrayMetadataWriter.writeRows(
-                    dictPath.getAbsolutePath(),
-                    registry.toRows(),
-                    registry.columns(),
-                    registry.columnTypes());
+            File dictPath = new File(dictRoot, spec.name + ".json");
+            JsonUtils.writeCategoricalDictionary(dictPath.getAbsolutePath(), spec.name, registry.codeToLabel);
             pointSchema.set(i, spec.withDictionaryPath(dictPath.getAbsolutePath()));
         }
     }
@@ -573,30 +569,6 @@ public class ArrayDatasetBuilder implements AutoCloseable {
             return encode(labels);
         }
 
-        List<LinkedHashMap<String, Object>> toRows() {
-            ArrayList<LinkedHashMap<String, Object>> rows = new ArrayList<LinkedHashMap<String, Object>>(codeToLabel.size());
-            for (int i = 0; i < codeToLabel.size(); i++) {
-                LinkedHashMap<String, Object> row = new LinkedHashMap<String, Object>();
-                row.put("code", Integer.valueOf(i + 1));
-                row.put("label", codeToLabel.get(i));
-                rows.add(row);
-            }
-            return rows;
-        }
-
-        List<String> columns() {
-            ArrayList<String> columns = new ArrayList<String>(2);
-            columns.add("code");
-            columns.add("label");
-            return columns;
-        }
-
-        LinkedHashMap<String, String> columnTypes() {
-            LinkedHashMap<String, String> types = new LinkedHashMap<String, String>();
-            types.put("code", "INTEGER");
-            types.put("label", "VARCHAR");
-            return types;
-        }
     }
 
     public static final class ArraySampleContext implements AutoCloseable {
