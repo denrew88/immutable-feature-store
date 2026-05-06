@@ -1,5 +1,6 @@
 package fs.io;
 
+import fs.config.ArrayBinaryBuildOptions;
 import fs.config.ArrayBundleConfig;
 import fs.config.ArrayShardConfig;
 import fs.io.array.ArrayBinaryFormat;
@@ -30,7 +31,7 @@ import java.util.Map;
  * 또는 sample-scoped context를 통해 trace를 추가한다. builder는
  * 1) bundle parquet 작성
  * 2) feature metadata/dictionary 정리
- * 3) bundle -> final shard build
+ * 3) bundle stage를 최종 shard로 변환
  * 흐름을 감춘다.
  */
 public class ArrayDatasetBuilder implements AutoCloseable {
@@ -39,6 +40,7 @@ public class ArrayDatasetBuilder implements AutoCloseable {
     private final String bundleOutDir;
     private final String bundleSampleMetaPath;
     private final String featureMetaPath;
+    private final ArrayBinaryBuildOptions buildOptions;
     private final ArrayShardConfig shardConfig;
     private final ArrayBundleConfig bundleConfig;
     private final List<PointColumnSpec> pointSchema;
@@ -68,7 +70,65 @@ public class ArrayDatasetBuilder implements AutoCloseable {
             String outDir,
             String sampleMetaPath,
             List<PointColumnSpec> pointSchema) throws Exception {
-        this(outDir, sampleMetaPath, pointSchema, "", null, null, null, "");
+        this(outDir, sampleMetaPath, pointSchema, "", null, null, null, null, "");
+    }
+
+    /**
+     * Python의 ArrayBinaryBuildOptions와 비슷한 고수준 build 옵션으로 builder를 생성한다.
+     *
+     * @param outDir 최종 출력 디렉터리
+     * @param sampleMetaPath dense sample metadata parquet 경로
+     * @param pointSchema point column schema
+     * @param buildOptions 고수준 binary shard build 옵션
+     */
+    public ArrayDatasetBuilder(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema,
+            ArrayBinaryBuildOptions buildOptions) throws Exception {
+        this(outDir, sampleMetaPath, pointSchema, "", null, buildOptions, null, null, "");
+    }
+
+    /**
+     * known-feature metadata와 고수준 build 옵션으로 builder를 생성한다.
+     *
+     * @param outDir 최종 출력 디렉터리
+     * @param sampleMetaPath dense sample metadata parquet 경로
+     * @param pointSchema point column schema
+     * @param featureMetaPath known-feature mode에서 사용할 feature metadata parquet 경로
+     * @param buildOptions 고수준 binary shard build 옵션
+     */
+    public ArrayDatasetBuilder(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema,
+            String featureMetaPath,
+            ArrayBinaryBuildOptions buildOptions) throws Exception {
+        this(outDir, sampleMetaPath, pointSchema, featureMetaPath, null, buildOptions, null, null, "");
+    }
+
+    /**
+     * 기존 생성자 시그니처를 유지하면서 shard/bundle config를 직접 받는 builder를 생성한다.
+     *
+     * @param outDir 최종 shard 출력 디렉터리
+     * @param sampleMetaPath dense sample metadata parquet 경로
+     * @param pointSchema point column schema
+     * @param featureMetaPath known-feature mode에서 사용할 feature metadata parquet 경로
+     * @param featureKeys known-feature mode에서 사용할 feature key 목록
+     * @param shardConfig 최종 shard build 설정
+     * @param bundleConfig 중간 bundle flush 설정
+     * @param bundleOutDir bundle stage 출력 디렉터리
+     */
+    public ArrayDatasetBuilder(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema,
+            String featureMetaPath,
+            List<String> featureKeys,
+            ArrayShardConfig shardConfig,
+            ArrayBundleConfig bundleConfig,
+            String bundleOutDir) throws Exception {
+        this(outDir, sampleMetaPath, pointSchema, featureMetaPath, featureKeys, null, shardConfig, bundleConfig, bundleOutDir);
     }
 
     /**
@@ -89,6 +149,7 @@ public class ArrayDatasetBuilder implements AutoCloseable {
             List<PointColumnSpec> pointSchema,
             String featureMetaPath,
             List<String> featureKeys,
+            ArrayBinaryBuildOptions buildOptions,
             ArrayShardConfig shardConfig,
             ArrayBundleConfig bundleConfig,
             String bundleOutDir) throws Exception {
@@ -98,7 +159,9 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         this.outDir = new File(outDir).getAbsolutePath();
         this.sampleMetaPath = new File(sampleMetaPath).getAbsolutePath();
         this.pointSchema = PointColumnSpec.normalizeList(pointSchema);
-        this.shardConfig = (shardConfig == null) ? new ArrayShardConfig() : shardConfig;
+        this.buildOptions = (buildOptions == null) ? new ArrayBinaryBuildOptions() : buildOptions;
+        validateBuildOptions(this.buildOptions);
+        this.shardConfig = (shardConfig == null) ? shardConfigFromOptions(this.buildOptions) : shardConfig;
         this.bundleConfig = (bundleConfig == null) ? new ArrayBundleConfig() : bundleConfig;
         this.closed = false;
         this.bundlesFinalized = false;
@@ -138,7 +201,7 @@ public class ArrayDatasetBuilder implements AutoCloseable {
             validateDenseIds(featureRows, "feature_id", "feature");
             this.knownFeatureCount = Integer.valueOf(featureRows.size());
             for (LinkedHashMap<String, Object> row : featureRows) {
-                Object featureKey = row.get(ArrayBinaryFormat.DEFAULT_FEATURE_KEY_COL);
+                Object featureKey = row.get(this.buildOptions.featureKeyCol);
                 if (featureKey != null) {
                     String key = featureKey.toString();
                     int id = ((Number) row.get("feature_id")).intValue();
@@ -238,7 +301,7 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         finishBundles();
         List<LinkedHashMap<String, Object>> baseRows = ArrayMetadataWriter.readRows(featureMetaPath);
         String joinCol = (on == null || on.isEmpty())
-                ? (containsMetadataColumn(baseRows, ArrayBinaryFormat.DEFAULT_FEATURE_KEY_COL) ? ArrayBinaryFormat.DEFAULT_FEATURE_KEY_COL : "feature_id")
+                ? (containsMetadataColumn(baseRows, this.buildOptions.featureKeyCol) ? this.buildOptions.featureKeyCol : "feature_id")
                 : on;
         if (!containsMetadataColumn(baseRows, joinCol)) {
             throw new IllegalArgumentException("feature metadata join column not found: " + joinCol);
@@ -311,7 +374,13 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         }
         ensureOpen();
         String bundleManifest = finishBundles();
-        manifestPath = ArrayShardBuilder.buildFromBundles(bundleManifest, outDir, shardConfig);
+        manifestPath = ArrayShardBuilder.buildFromBundles(
+                bundleManifest,
+                outDir,
+                shardConfig,
+                this.buildOptions.codec,
+                this.buildOptions.sampleKeyCol,
+                this.buildOptions.featureKeyCol);
         if (cleanupBundles) {
             deleteRecursively(new File(bundleOutDir));
         }
@@ -539,14 +608,14 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         for (int featureId = 0; featureId < featureKeysInOrder.size(); featureId++) {
             LinkedHashMap<String, Object> row = new LinkedHashMap<String, Object>();
             row.put("feature_id", featureId);
-            row.put(ArrayBinaryFormat.DEFAULT_FEATURE_KEY_COL, featureKeysInOrder.get(featureId));
+            row.put(this.buildOptions.featureKeyCol, featureKeysInOrder.get(featureId));
             records.add(row);
         }
         ArrayMetadataWriter.writeFeatureMeta(records, featureMetaPath);
     }
 
     /**
-     * categorical column별 string -> code registry를 JSON dictionary로 기록한다.
+     * categorical column별 string 값을 integer code로 바꾸는 registry를 JSON dictionary로 기록한다.
      */
     private void writeCategoricalDictionaries() throws Exception {
         if (categoricalRegistries.isEmpty()) {
@@ -584,6 +653,32 @@ public class ArrayDatasetBuilder implements AutoCloseable {
             }
         }
         return false;
+    }
+
+    private static void validateBuildOptions(ArrayBinaryBuildOptions options) {
+        if (options.samplesPerBlock <= 0) {
+            throw new IllegalArgumentException("samplesPerBlock must be > 0");
+        }
+        if (options.targetShardMb <= 0 && (options.nShards == null || options.nShards.intValue() <= 0)) {
+            throw new IllegalArgumentException("either targetShardMb or nShards must be > 0");
+        }
+        if (options.codec == null || !"none".equalsIgnoreCase(options.codec.trim())) {
+            throw new IllegalArgumentException("java array builder currently supports only codec='none'");
+        }
+        if (options.sampleKeyCol == null || options.sampleKeyCol.isEmpty()) {
+            throw new IllegalArgumentException("sampleKeyCol must not be empty");
+        }
+        if (options.featureKeyCol == null || options.featureKeyCol.isEmpty()) {
+            throw new IllegalArgumentException("featureKeyCol must not be empty");
+        }
+    }
+
+    private static ArrayShardConfig shardConfigFromOptions(ArrayBinaryBuildOptions options) {
+        ArrayShardConfig cfg = new ArrayShardConfig();
+        cfg.samplesPerBlock = options.samplesPerBlock;
+        cfg.targetShardBytes = (long) options.targetShardMb * 1024L * 1024L;
+        cfg.nShards = (options.nShards == null) ? 0 : options.nShards.intValue();
+        return cfg;
     }
 
     private static boolean containsMetadataColumn(List<LinkedHashMap<String, Object>> rows, String name) {

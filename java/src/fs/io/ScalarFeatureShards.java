@@ -14,10 +14,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * scalar shard 포맷을 다루는 자바용 facade다.
+ * scalar shard 작업을 한곳에서 시작할 수 있게 묶어 둔 자바 facade이다.
  *
  * <p>manifest 로드, reader 열기, metadata 작성, direct-ingestion builder 생성,
- * selection helper 호출을 한곳에서 제공한다.
+ * selection helper 호출을 상위 API에서 한 번에 제공한다.
  */
 public final class ScalarFeatureShards {
     private ScalarFeatureShards() {
@@ -52,14 +52,14 @@ public final class ScalarFeatureShards {
     }
 
     /**
-     * 기본 설정의 scalar direct-ingestion builder를 생성한다.
+     * 기본 설정의 scalar direct-ingestion builder를 만든다.
      */
     public static ScalarDatasetBuilder newBuilder(String outDir, String sampleMetaPath) throws Exception {
         return new ScalarDatasetBuilder(outDir, sampleMetaPath);
     }
 
     /**
-     * 모든 옵션을 지정해 scalar direct-ingestion builder를 생성한다.
+     * 모든 옵션을 지정해 scalar direct-ingestion builder를 만든다.
      */
     public static ScalarDatasetBuilder newBuilder(
             String outDir,
@@ -72,7 +72,11 @@ public final class ScalarFeatureShards {
     }
 
     /**
-     * selection 입력으로 쓸 candidate 목록만 생성한다.
+     * selection 후보 목록만 생성한다.
+     *
+     * <p>이 함수는 selection stats나 shard를 읽어 y와 관련 있는 feature 후보를 점수순으로 정리하지만,
+     * 후보들 사이의 상관관계를 다시 제거하는 최종 선택 단계는 수행하지 않는다.
+     * 즉 결과는 "최종 선택 직전의 후보 리스트"이다.
      */
     public static List<Candidate> buildCandidates(String manifestPath, String yCol, SelectionConfig config) throws Exception {
         ShardManifest manifest = ManifestIO.read(manifestPath);
@@ -83,7 +87,11 @@ public final class ScalarFeatureShards {
     }
 
     /**
-     * shard dataset에서 candidate를 만든 뒤 incremental selector를 실행한다.
+     * shard dataset에서 후보를 만든 뒤 incremental selector까지 실행한다.
+     *
+     * <p>즉 내부적으로는 먼저 {@link #buildCandidates(String, String, SelectionConfig)}와 같은 단계로
+     * 후보를 만든 다음, 그 후보들끼리의 중복성과 상관관계를 다시 계산해 최종 선택 집합만 남긴다.
+     * {@code buildCandidates(...)}가 "후보 생성"에 멈춘다면, 이 함수는 "최종 선택"까지 수행한다.
      */
     public static List<Candidate> selectFeatures(String manifestPath, String yCol, SelectionConfig config) throws Exception {
         ShardManifest manifest = ManifestIO.read(manifestPath);

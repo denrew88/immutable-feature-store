@@ -8,13 +8,16 @@ Java용 array binary shard 라이브러리 패키지다.
 ## 준비물
 
 - Java 8
-- DuckDB JDBC jar
+- Java runtime dependency jars
   - `java/lib/duckdb_jdbc-1.1.3.jar`
+  - `java/lib/jackson-core-2.20.0.jar`
+  - `java/lib/jackson-databind-2.20.0.jar`
+  - `java/lib/jackson-annotations-2.20.jar`
 
 jar가 없으면 먼저 내려받는다.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File java\download_duckdb_jdbc.ps1
+powershell -ExecutionPolicy Bypass -File java\download_java_libs.ps1
 ```
 
 ## 빌드
@@ -26,8 +29,15 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 출력:
 - `dist/array-binary-shard-java-0.3.0.jar`
+- `dist/array-binary-shard-java-0.3.0-sources.jar`
+- `dist/array-binary-shard-java-0.3.0-javadoc.jar`
 
-thin jar이므로 실행 시 `duckdb_jdbc-1.1.3.jar`를 classpath에 같이 넣어야 한다.
+thin jar이므로 실행 시 `java/lib/*` 아래의 DuckDB JDBC와 Jackson jar를 classpath에 같이 넣어야 한다.
+
+IDE에서 Javadoc과 소스 탐색을 같이 쓰려면:
+- binary jar: `array-binary-shard-java-0.3.0.jar`
+- source attachment: `array-binary-shard-java-0.3.0-sources.jar`
+- javadoc attachment: `array-binary-shard-java-0.3.0-javadoc.jar`
 
 ## Public API
 

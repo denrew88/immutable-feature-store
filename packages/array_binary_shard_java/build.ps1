@@ -4,33 +4,63 @@ $packageRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $packageRoot)
 $version = "0.3.0"
 $artifactName = "array-binary-shard-java-$version.jar"
+$sourcesArtifactName = "array-binary-shard-java-$version-sources.jar"
+$javadocArtifactName = "array-binary-shard-java-$version-javadoc.jar"
 
 $jdkBin = "C:\Program Files\Java\jdk-1.8\bin"
 $javac = Join-Path $jdkBin "javac.exe"
 $jar = Join-Path $jdkBin "jar.exe"
+$javadoc = Join-Path $jdkBin "javadoc.exe"
 
 $duckdbJar = Join-Path $repoRoot "java\lib\duckdb_jdbc-1.1.3.jar"
+$jacksonCoreJar = Join-Path $repoRoot "java\lib\jackson-core-2.20.0.jar"
+$jacksonDatabindJar = Join-Path $repoRoot "java\lib\jackson-databind-2.20.0.jar"
+$jacksonAnnotationsJar = Join-Path $repoRoot "java\lib\jackson-annotations-2.20.jar"
 if (-not (Test-Path $javac)) {
     throw "javac.exe not found at $javac"
 }
 if (-not (Test-Path $jar)) {
     throw "jar.exe not found at $jar"
 }
-if (-not (Test-Path $duckdbJar)) {
-    throw "duckdb jdbc jar not found at $duckdbJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_duckdb_jdbc.ps1"
+if (-not (Test-Path $javadoc)) {
+    throw "javadoc.exe not found at $javadoc"
 }
+if (-not (Test-Path $duckdbJar)) {
+    throw "duckdb jdbc jar not found at $duckdbJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $jacksonCoreJar)) {
+    throw "jackson-core jar not found at $jacksonCoreJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $jacksonDatabindJar)) {
+    throw "jackson-databind jar not found at $jacksonDatabindJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $jacksonAnnotationsJar)) {
+    throw "jackson-annotations jar not found at $jacksonAnnotationsJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+
+$classpath = @(
+    $duckdbJar
+    $jacksonCoreJar
+    $jacksonDatabindJar
+    $jacksonAnnotationsJar
+) -join ";"
 
 $buildDir = Join-Path $packageRoot "build"
 $classesDir = Join-Path $buildDir "classes"
+$sourcesDir = Join-Path $buildDir "sources"
+$javadocDir = Join-Path $buildDir "javadoc"
 $distDir = Join-Path $packageRoot "dist"
 $manifestFile = Join-Path $buildDir "jar-manifest.mf"
 
 Remove-Item -Recurse -Force $buildDir -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $distDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $classesDir | Out-Null
+New-Item -ItemType Directory -Path $sourcesDir | Out-Null
+New-Item -ItemType Directory -Path $javadocDir | Out-Null
 New-Item -ItemType Directory -Path $distDir | Out-Null
 
-$sources = @(
+$sourceSpecs = @(
+    "java\src\fs\config\ArrayBinaryBuildOptions.java",
     "java\src\fs\config\ArrayBundleConfig.java",
     "java\src\fs\config\ArrayShardConfig.java",
     "java\src\fs\io\array\ArrayBinaryFormat.java",
@@ -58,9 +88,11 @@ $sources = @(
     "java\src\fs\model\common\LogicalType.java",
     "java\src\fs\model\common\PointColumnSpec.java",
     "java\src\fs\model\common\StorageType.java"
-) | ForEach-Object { Join-Path $repoRoot $_ }
+)
 
-& $javac -encoding UTF-8 -cp $duckdbJar -d $classesDir $sources
+$sources = $sourceSpecs | ForEach-Object { Join-Path $repoRoot $_ }
+
+& $javac -encoding UTF-8 -cp $classpath -d $classesDir $sources
 if ($LASTEXITCODE -ne 0) {
     throw "javac failed with exit code $LASTEXITCODE"
 }
@@ -79,4 +111,40 @@ if ($LASTEXITCODE -ne 0) {
     throw "jar packaging failed with exit code $LASTEXITCODE"
 }
 
+foreach ($spec in $sourceSpecs) {
+    $relativeSourcePath = $spec.Substring("java\src\".Length)
+    $targetSourcePath = Join-Path $sourcesDir $relativeSourcePath
+    $targetSourceParent = Split-Path -Parent $targetSourcePath
+    if (-not (Test-Path $targetSourceParent)) {
+        New-Item -ItemType Directory -Path $targetSourceParent -Force | Out-Null
+    }
+    Copy-Item -Path (Join-Path $repoRoot $spec) -Destination $targetSourcePath -Force
+}
+
+$sourcesJarPath = Join-Path $distDir $sourcesArtifactName
+& $jar cf $sourcesJarPath -C $sourcesDir .
+if ($LASTEXITCODE -ne 0) {
+    throw "sources jar packaging failed with exit code $LASTEXITCODE"
+}
+
+& $javadoc `
+    -encoding UTF-8 `
+    -docencoding UTF-8 `
+    -charset UTF-8 `
+    -quiet `
+    -cp $classpath `
+    -d $javadocDir `
+    $sources
+if ($LASTEXITCODE -ne 0) {
+    throw "javadoc generation failed with exit code $LASTEXITCODE"
+}
+
+$javadocJarPath = Join-Path $distDir $javadocArtifactName
+& $jar cf $javadocJarPath -C $javadocDir .
+if ($LASTEXITCODE -ne 0) {
+    throw "javadoc jar packaging failed with exit code $LASTEXITCODE"
+}
+
 Write-Output $jarPath
+Write-Output $sourcesJarPath
+Write-Output $javadocJarPath

@@ -1,98 +1,70 @@
 package fs.io.array;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import fs.io.common.JsonUtils;
 import fs.model.array.ArrayBundleManifest;
 import fs.model.common.LogicalType;
 import fs.model.common.PointColumnSpec;
 import fs.model.common.StorageType;
 
-import javax.script.ScriptEngine;
-import javax.script.ScriptEngineManager;
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Array bundle manifest JSON을 읽고 쓰는 helper다.
  */
 public class ArrayBundleManifestIO {
     public static void write(ArrayBundleManifest manifest, String path) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{\n");
-        sb.append("  \"sample_meta_path\": \"").append(escapeJson(relativeTo(path, manifest.sampleMetaPath))).append("\",\n");
-        sb.append("  \"feature_meta_path\": \"").append(escapeJson(relativeTo(path, manifest.featureMetaPath))).append("\",\n");
-        sb.append("  \"n_samples\": ").append(manifest.nSamples).append(",\n");
-        sb.append("  \"bundle_path\": \"").append(escapeJson(relativeTo(path, manifest.bundlePath))).append("\",\n");
-        sb.append("  \"n_bundles\": ").append(manifest.nBundles).append(",\n");
-        sb.append("  \"feature_id_dtype\": \"").append(escapeJson(manifest.featureIdType)).append("\",\n");
-        sb.append("  \"flags_dtype\": \"").append(escapeJson(manifest.flagsType)).append("\",\n");
-        sb.append("  \"point_schema\": [\n");
-        for (int i = 0; i < manifest.pointSchema.size(); i++) {
-            PointColumnSpec spec = manifest.pointSchema.get(i);
-            sb.append("    {\n");
-            sb.append("      \"name\": \"").append(escapeJson(spec.name)).append("\",\n");
-            sb.append("      \"storage_type\": \"").append(escapeJson(spec.storageType.value)).append("\",\n");
-            sb.append("      \"logical_type\": \"").append(escapeJson(spec.logicalType.value)).append("\"");
+        ObjectNode root = JsonUtils.objectNode();
+        root.put("sample_meta_path", relativeTo(path, manifest.sampleMetaPath));
+        root.put("feature_meta_path", relativeTo(path, manifest.featureMetaPath));
+        root.put("n_samples", manifest.nSamples);
+        root.put("bundle_path", relativeTo(path, manifest.bundlePath));
+        root.put("n_bundles", manifest.nBundles);
+        root.put("feature_id_dtype", manifest.featureIdType);
+        root.put("flags_dtype", manifest.flagsType);
+
+        ArrayNode schema = root.putArray("point_schema");
+        for (PointColumnSpec spec : manifest.pointSchema) {
+            ObjectNode item = schema.addObject();
+            item.put("name", spec.name);
+            item.put("storage_type", spec.storageType.value);
+            item.put("logical_type", spec.logicalType.value);
             if (spec.dictionaryPath != null && !spec.dictionaryPath.isEmpty()) {
-                sb.append(",\n");
-                sb.append("      \"dictionary_path\": \"").append(escapeJson(relativeTo(path, spec.dictionaryPath))).append("\"\n");
-            } else {
-                sb.append("\n");
+                item.put("dictionary_path", relativeTo(path, spec.dictionaryPath));
             }
-            sb.append("    }");
-            if (i + 1 < manifest.pointSchema.size()) {
-                sb.append(",");
-            }
-            sb.append("\n");
         }
-        sb.append("  ]\n");
-        sb.append("}\n");
-        try (BufferedWriter bw = new BufferedWriter(new FileWriter(path))) {
-            bw.write(sb.toString());
-        }
+        JsonUtils.writeJson(path, root);
     }
 
-    @SuppressWarnings("unchecked")
     public static ArrayBundleManifest read(String path) throws IOException {
-        String json = readAll(path);
-        try {
-            ScriptEngine engine = new ScriptEngineManager().getEngineByName("javascript");
-            if (engine == null) {
-                throw new IOException("javascript engine is unavailable");
-            }
-            Object parsed = engine.eval("Java.asJSONCompatible(" + json + ")");
-            Map<String, Object> root = (Map<String, Object>) parsed;
-            return new ArrayBundleManifest(
-                    resolveAgainst(path, stringValue(root.get("sample_meta_path"))),
-                    resolveAgainst(path, stringValue(root.get("feature_meta_path"))),
-                    intValue(root.get("n_samples")),
-                    resolveAgainst(path, stringValue(root.get("bundle_path"))),
-                    intValue(root.get("n_bundles")),
-                    stringValue(root.get("feature_id_dtype")),
-                    stringValue(root.get("flags_dtype")),
-                    parsePointSchema(path, (List<Object>) root.get("point_schema")));
-        } catch (Exception e) {
-            throw new IOException("failed to parse array bundle manifest: " + path, e);
-        }
+        JsonNode root = JsonUtils.readJson(path);
+        return new ArrayBundleManifest(
+                resolveAgainst(path, textOrEmpty(root, "sample_meta_path")),
+                resolveAgainst(path, textOrEmpty(root, "feature_meta_path")),
+                intOrZero(root, "n_samples"),
+                resolveAgainst(path, textOrEmpty(root, "bundle_path")),
+                intOrZero(root, "n_bundles"),
+                textOrEmpty(root, "feature_id_dtype"),
+                textOrEmpty(root, "flags_dtype"),
+                parsePointSchema(path, root.get("point_schema")));
     }
 
-    private static List<PointColumnSpec> parsePointSchema(String manifestPath, List<Object> raw) {
-        if (raw == null || raw.isEmpty()) {
+    private static List<PointColumnSpec> parsePointSchema(String manifestPath, JsonNode raw) {
+        if (raw == null || !raw.isArray() || raw.size() == 0) {
             throw new IllegalArgumentException("array bundle manifest must include point_schema");
         }
         ArrayList<PointColumnSpec> out = new ArrayList<PointColumnSpec>(raw.size());
-        for (Object item : raw) {
-            Map<String, Object> data = (Map<String, Object>) item;
+        for (JsonNode item : raw) {
             out.add(new PointColumnSpec(
-                    stringValue(data.get("name")),
-                    StorageType.fromValue(stringValue(data.get("storage_type"))),
-                    LogicalType.fromValue(stringValue(data.get("logical_type"))),
-                    resolveAgainst(manifestPath, stringValue(data.get("dictionary_path")))));
+                    textOrEmpty(item, "name"),
+                    StorageType.fromValue(textOrEmpty(item, "storage_type")),
+                    LogicalType.fromValue(textOrEmpty(item, "logical_type")),
+                    resolveAgainst(manifestPath, textOrEmpty(item, "dictionary_path"))));
         }
         return PointColumnSpec.normalizeList(out);
     }
@@ -121,29 +93,13 @@ public class ArrayBundleManifestIO {
         return new File(manifestDir, storedPath).getAbsolutePath();
     }
 
-    private static int intValue(Object value) {
-        return (value == null) ? 0 : ((Number) value).intValue();
+    private static int intOrZero(JsonNode node, String fieldName) {
+        JsonNode child = node.get(fieldName);
+        return (child == null || child.isNull()) ? 0 : child.asInt();
     }
 
-    private static String stringValue(Object value) {
-        return (value == null) ? "" : value.toString();
-    }
-
-    private static String readAll(String path) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader br = new BufferedReader(new FileReader(path))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                sb.append(line).append("\n");
-            }
-        }
-        return sb.toString();
-    }
-
-    private static String escapeJson(String s) {
-        if (s == null) {
-            return "";
-        }
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    private static String textOrEmpty(JsonNode node, String fieldName) {
+        JsonNode child = node.get(fieldName);
+        return (child == null || child.isNull()) ? "" : child.asText();
     }
 }

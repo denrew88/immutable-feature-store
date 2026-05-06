@@ -1,5 +1,11 @@
 package fs.io;
 
+import fs.io.array.ArrayBinaryFormat;
+import fs.io.array.ArrayFeatureIdIndex;
+import fs.io.array.ArrayFeatureLocatorIndex;
+import fs.io.array.ArraySampleIdIndex;
+import fs.io.common.ArrayUtils;
+import fs.io.common.JsonUtils;
 import fs.model.array.ArrayBinaryShardInfo;
 import fs.model.array.ArrayBlockLocation;
 import fs.model.array.ArrayFeatureBlock;
@@ -7,12 +13,6 @@ import fs.model.array.ArrayShardManifest;
 import fs.model.array.ArrayTrace;
 import fs.model.common.LogicalType;
 import fs.model.common.PointColumnSpec;
-import fs.io.array.ArrayBinaryFormat;
-import fs.io.array.ArrayFeatureIdIndex;
-import fs.io.array.ArrayFeatureLocatorIndex;
-import fs.io.array.ArraySampleIdIndex;
-import fs.io.common.ArrayUtils;
-import fs.io.common.JsonUtils;
 
 import java.io.File;
 import java.io.IOException;
@@ -27,11 +27,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * array binary shard의 low-level reader다.
+ * array binary shard를 읽는 low-level reader이다.
  *
  * <p>이 reader는 shard manifest와 locator index를 바탕으로
- * {@code (feature_id, block_id)} -> blocks.idx record -> blocks.bin payload
- * 경로를 따라 block을 로드하고, 필요하면 block 안에서 sample trace를 다시 잘라 준다.
+ * {@code (feature_id, block_id)} 조합에서 blocks.idx record를 찾고,
+ * 그 record를 통해 blocks.bin payload를 찾는 경로를 따라 block을 로드한다.
+ * 필요하면 block 안에서 sample trace를 다시 잘라 public 객체로 돌려준다.
  */
 public class ArrayBinaryShardReader implements AutoCloseable {
     private final ArrayShardManifest manifest;
@@ -40,8 +41,6 @@ public class ArrayBinaryShardReader implements AutoCloseable {
 
     /**
      * manifest 기반 reader를 생성한다.
-     *
-     * @param manifest array binary shard manifest
      */
     public ArrayBinaryShardReader(ArrayShardManifest manifest) {
         this.manifest = manifest;
@@ -50,7 +49,7 @@ public class ArrayBinaryShardReader implements AutoCloseable {
     }
 
     /**
-     * reader가 해석할 point schema를 반환한다.
+     * reader가 해석 중인 point schema를 반환한다.
      */
     public List<PointColumnSpec> pointSchema() {
         return manifest.pointSchema;
@@ -58,10 +57,6 @@ public class ArrayBinaryShardReader implements AutoCloseable {
 
     /**
      * shard 안의 block row 하나를 로드한다.
-     *
-     * @param shardId shard id
-     * @param rowInShard shard 내부 block row index
-     * @return decoded block
      */
     public ArrayFeatureBlock loadBlock(int shardId, int rowInShard) throws IOException {
         return loadBlock(shardId, rowInShard, false);
@@ -70,15 +65,11 @@ public class ArrayBinaryShardReader implements AutoCloseable {
     /**
      * shard 안의 block row 하나를 로드한다.
      *
-     * <p>rowInShard는 shard 안의 선형 row index다. reader는 이를
+     * <p>{@code rowInShard}는 shard 안의 선형 row index이다.
+     * reader는 이 값을 다시
      * {@code localFeatureIndex = rowInShard / blocksPerFeature},
      * {@code blockId = rowInShard % blocksPerFeature}
-     * 로 다시 풀어서 payload header와 대조한다.
-     *
-     * @param shardId shard id
-     * @param rowInShard shard 내부 block row index
-     * @param decodeCategorical true면 categorical code를 dictionary label로 복원한다
-     * @return decoded block
+     * 로 해석해서 payload header와 대조한다.
      */
     public ArrayFeatureBlock loadBlock(int shardId, int rowInShard, boolean decodeCategorical) throws IOException {
         CachedShard shard = shard(shardId);
@@ -112,17 +103,20 @@ public class ArrayBinaryShardReader implements AutoCloseable {
     }
 
     /**
-     * dense sample id 목록에 대해 feature trace를 읽는다.
+     * dense feature id와 dense sample id 배열을 기준으로 trace를 읽는다.
+     *
+     * <p>이 계열에서 가장 직접적인 조회 경로이다.
+     * sample과 feature가 이미 내부 dense id 체계라고 가정하고, locator를 이용해 필요한 block만 읽는다.
      */
     public Map<Long, ArrayTrace> loadFeatureSamples(int featureId, long[] sampleIds, ArrayFeatureLocatorIndex locatorIndex) throws IOException {
         return loadFeatureSamples(featureId, sampleIds, locatorIndex, false);
     }
 
     /**
-     * dense sample id 목록에 대해 feature trace를 읽는다.
+     * dense feature id와 dense sample id 배열을 기준으로 trace를 읽는다.
      *
      * <p>reader는 먼저 요청 sample들을 block 단위로 묶고, block은 한 번만 로드한 뒤
-     * 그 안에서 sample trace를 다시 꺼낸다. 그래서 sample이 같은 block에 몰려 있을수록 유리하다.
+     * 그 안에서 sample trace를 다시 꺼낸다. 그래서 sample들이 같은 block에 모여 있을수록 유리하다.
      */
     public Map<Long, ArrayTrace> loadFeatureSamples(
             int featureId,
@@ -174,6 +168,9 @@ public class ArrayBinaryShardReader implements AutoCloseable {
 
     /**
      * 외부 sample id 목록을 dense sample id로 변환한 뒤 trace를 읽는다.
+     *
+     * <p>{@link #loadFeatureSamples(int, long[], ArrayFeatureLocatorIndex, boolean)}와 최종 동작은 같지만,
+     * 먼저 sample id index를 사용해 외부 id를 내부 dense sample id로 바꾸는 단계가 추가된다.
      */
     public Map<Long, ArrayTrace> loadFeatureSamplesBySampleIds(
             int featureId,
@@ -185,13 +182,6 @@ public class ArrayBinaryShardReader implements AutoCloseable {
 
     /**
      * 외부 sample id 목록을 dense sample id로 변환한 뒤 trace를 읽는다.
-     *
-     * @param featureId dense feature id
-     * @param sampleIds 외부 sample id 목록
-     * @param locatorIndex feature locator index
-     * @param sampleIdIndex sample id 변환 index. null이면 manifest의 sample_meta에서 로드한다.
-     * @param decodeCategorical true면 categorical code를 dictionary label로 복원한다
-     * @return 입력 sample id 순서를 유지한 trace map
      */
     public Map<Long, ArrayTrace> loadFeatureSamplesBySampleIds(
             int featureId,
@@ -240,6 +230,9 @@ public class ArrayBinaryShardReader implements AutoCloseable {
 
     /**
      * sample key 목록을 dense sample id로 변환한 뒤 trace를 읽는다.
+     *
+     * <p>{@code loadFeatureSamplesBySampleIds(...)}와 비슷하지만, sample 쪽 입력이 id가 아니라 key라는 점이 다르다.
+     * 즉 feature는 dense id로 받고, sample은 key를 dense id로 해석한 뒤 조회한다.
      */
     public Map<String, ArrayTrace> loadFeatureSamplesBySampleKeys(
             int featureId,
@@ -297,7 +290,11 @@ public class ArrayBinaryShardReader implements AutoCloseable {
     }
 
     /**
-     * feature key + sample key 조합으로 trace를 읽는다.
+     * feature key와 sample key 조합으로 trace를 읽는다.
+     *
+     * <p>이 계열에서 가장 바깥쪽 API이다.
+     * feature와 sample을 모두 key로 받기 때문에 외부 코드에서 쓰기 쉽고,
+     * 내부적으로는 feature key와 sample key를 각각 dense id로 해석한 뒤 lower-level 경로로 위임한다.
      */
     public Map<String, ArrayTrace> loadFeatureSamplesByKeys(
             String featureKey,
@@ -309,15 +306,7 @@ public class ArrayBinaryShardReader implements AutoCloseable {
     }
 
     /**
-     * feature key + sample key 조합으로 trace를 읽는다.
-     *
-     * @param featureKey 외부 feature key
-     * @param sampleKeys 외부 sample key 목록
-     * @param locatorIndex feature locator index
-     * @param featureIdIndex feature key -> dense feature id index. null이면 metadata에서 로드한다.
-     * @param sampleIdIndex sample key -> dense sample id index. null이면 metadata에서 로드한다.
-     * @param decodeCategorical true면 categorical code를 dictionary label로 복원한다
-     * @return 입력 sample key 순서를 유지한 trace map
+     * feature key와 sample key 조합으로 trace를 읽는다.
      */
     public Map<String, ArrayTrace> loadFeatureSamplesByKeys(
             String featureKey,
@@ -349,8 +338,8 @@ public class ArrayBinaryShardReader implements AutoCloseable {
     /**
      * blocks.bin payload를 block 객체로 디코드한다.
      *
-     * <p>payload header와 blocks.idx record가 서로 맞는지 먼저 검사한 뒤,
-     * sample flags, sample offsets, point column blob을 순서대로 풀어
+     * <p>payload header와 blocks.idx record가 서로 맞는지 먼저 검증한 뒤,
+     * sample flags, sample offsets, point column blob들을 순서대로 풀어서
      * {@link ArrayFeatureBlock}을 만든다.
      */
     private ArrayFeatureBlock decodePayload(
@@ -482,9 +471,9 @@ public class ArrayBinaryShardReader implements AutoCloseable {
     }
 
     /**
-     * shard id에 대응하는 blocks.idx / blocks.bin 파일 핸들을 연다.
+     * shard id에 해당하는 blocks.idx / blocks.bin 파일 핸들을 연다.
      *
-     * <p>한 번 연 shard는 cache에 남겨 두고 재사용한다.
+     * <p>첫 번째 호출 때 shard를 cache에 올리고, 이후에는 재사용한다.
      */
     private CachedShard shard(int shardId) throws IOException {
         CachedShard out = shardCache.get(shardId);

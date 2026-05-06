@@ -1,122 +1,136 @@
 package fs.io.common;
 
-import javax.script.ScriptEngine;
-import javax.script.ScriptEngineManager;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
- * Array categorical dictionary JSON을 읽고 쓰는 공통 helper다.
+ * 자바 쪽 JSON read/write를 모아 두는 공통 helper다.
+ *
+ * <p>manifest와 categorical dictionary는 구조가 작고 고정적이라 tree model만으로 충분하다.
+ * 이 helper는 ObjectMapper 생성, 파일 read/write, 기본 node 생성 같은 반복 코드를 한곳에 모은다.
  */
 public final class JsonUtils {
+    private static final ObjectMapper MAPPER = createMapper();
+
     private JsonUtils() {
     }
 
-    static Object readJsonFile(String path) throws IOException {
-        return parseJson(new String(Files.readAllBytes(new File(path).toPath()), StandardCharsets.UTF_8), path);
+    /**
+     * JSON 파일을 tree model로 읽는다.
+     *
+     * @param path JSON 파일 경로
+     * @return 파싱된 root node
+     */
+    public static JsonNode readJson(String path) throws IOException {
+        return MAPPER.readTree(new File(path));
     }
 
+    /**
+     * JSON tree를 UTF-8 파일로 쓴다.
+     *
+     * @param path 대상 파일 경로
+     * @param node 기록할 JSON tree
+     */
+    public static void writeJson(String path, JsonNode node) throws IOException {
+        File file = new File(path);
+        File parent = file.getAbsoluteFile().getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        MAPPER.writeValue(file, node);
+    }
+
+    /**
+     * 빈 object node를 만든다.
+     */
+    public static ObjectNode objectNode() {
+        return MAPPER.createObjectNode();
+    }
+
+    /**
+     * 빈 array node를 만든다.
+     */
+    public static ArrayNode arrayNode() {
+        return MAPPER.createArrayNode();
+    }
+
+    /**
+     * categorical dictionary JSON을 code와 label의 대응 map으로 읽는다.
+     *
+     * <p>현재 포맷은 {"column": ..., "items": [{"code": ..., "label": ...}, ...]}를 기본으로 쓰지만,
+     * 예전 {"labels": {"1": "A", ...}} 형태도 함께 받아들인다.
+     *
+     * @param path dictionary JSON 경로
+     * @return code와 label의 대응 map
+     */
     public static HashMap<Long, String> readCategoricalDictionary(String path) throws IOException {
-        Object parsed = readJsonFile(path);
-        if (!(parsed instanceof Map<?, ?>)) {
+        JsonNode root = readJson(path);
+        if (!root.isObject()) {
             throw new IOException("categorical dictionary root must be an object: " + path);
         }
-        Map<?, ?> root = (Map<?, ?>) parsed;
+
         HashMap<Long, String> out = new HashMap<Long, String>();
-        Object labels = root.get("labels");
-        if (labels instanceof Map<?, ?>) {
-            Map<?, ?> mapping = (Map<?, ?>) labels;
-            for (Map.Entry<?, ?> entry : mapping.entrySet()) {
-                out.put(Long.parseLong(String.valueOf(entry.getKey())), entry.getValue() == null ? null : String.valueOf(entry.getValue()));
+        JsonNode labels = root.get("labels");
+        if (labels != null && labels.isObject()) {
+            java.util.Iterator<String> fieldNames = labels.fieldNames();
+            while (fieldNames.hasNext()) {
+                String codeText = fieldNames.next();
+                JsonNode labelNode = labels.get(codeText);
+                out.put(Long.valueOf(codeText), labelNode == null || labelNode.isNull() ? null : labelNode.asText());
             }
             return out;
         }
-        Object items = root.get("items");
-        if (items instanceof List<?>) {
-            for (Object item : (List<?>) items) {
-                if (!(item instanceof Map<?, ?>)) {
-                    throw new IOException("categorical dictionary items must be objects: " + path);
-                }
-                Map<?, ?> row = (Map<?, ?>) item;
-                Object code = row.get("code");
-                if (code == null || !row.containsKey("label")) {
+
+        JsonNode items = root.get("items");
+        if (items != null && items.isArray()) {
+            for (JsonNode item : items) {
+                if (!item.isObject() || !item.has("code") || !item.has("label")) {
                     throw new IOException("categorical dictionary items must contain code/label: " + path);
                 }
-                Object label = row.get("label");
-                out.put(Long.valueOf(String.valueOf(code)), label == null ? null : String.valueOf(label));
+                JsonNode labelNode = item.get("label");
+                out.put(item.get("code").asLong(), labelNode == null || labelNode.isNull() ? null : labelNode.asText());
             }
             return out;
         }
+
         throw new IOException("unsupported categorical dictionary JSON structure: " + path);
     }
 
+    /**
+     * categorical dictionary JSON을 현재 표준 포맷으로 쓴다.
+     *
+     * @param path 대상 JSON 경로
+     * @param columnName categorical point column 이름
+     * @param labels code 1..N에 대응하는 label 목록
+     */
     public static void writeCategoricalDictionary(String path, String columnName, List<String> labels) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{\n");
-        sb.append("  \"column\": \"").append(escapeJson(columnName)).append("\",\n");
-        sb.append("  \"items\": [\n");
+        ObjectNode root = objectNode();
+        root.put("column", columnName);
+        ArrayNode items = root.putArray("items");
         for (int i = 0; i < labels.size(); i++) {
-            sb.append("    {\"code\": ").append(i + 1).append(", \"label\": ");
+            ObjectNode item = items.addObject();
+            item.put("code", i + 1);
             String label = labels.get(i);
             if (label == null) {
-                sb.append("null");
+                item.putNull("label");
             } else {
-                sb.append("\"").append(escapeJson(label)).append("\"");
+                item.put("label", label);
             }
-            sb.append("}");
-            if (i + 1 < labels.size()) {
-                sb.append(",");
-            }
-            sb.append("\n");
         }
-        sb.append("  ]\n");
-        sb.append("}\n");
-        Files.write(new File(path).toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+        writeJson(path, root);
     }
 
-    private static Object parseJson(String json, String label) throws IOException {
-        ScriptEngine engine = new ScriptEngineManager().getEngineByName("javascript");
-        if (engine == null) {
-            throw new IOException("javascript engine not available while parsing JSON: " + label);
-        }
-        try {
-            engine.put("__json_text__", json);
-            return engine.eval("Java.asJSONCompatible(JSON.parse(__json_text__))");
-        } catch (Exception e) {
-            throw new IOException("failed to parse JSON: " + label, e);
-        }
-    }
-
-    private static String escapeJson(String s) {
-        StringBuilder sb = new StringBuilder(s.length() + 8);
-        for (int i = 0; i < s.length(); i++) {
-            char ch = s.charAt(i);
-            switch (ch) {
-                case '\\':
-                    sb.append("\\\\");
-                    break;
-                case '"':
-                    sb.append("\\\"");
-                    break;
-                case '\n':
-                    sb.append("\\n");
-                    break;
-                case '\r':
-                    sb.append("\\r");
-                    break;
-                case '\t':
-                    sb.append("\\t");
-                    break;
-                default:
-                    sb.append(ch);
-                    break;
-            }
-        }
-        return sb.toString();
+    private static ObjectMapper createMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+        return mapper;
     }
 }

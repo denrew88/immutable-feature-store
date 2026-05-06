@@ -204,6 +204,14 @@
         },
         {
             "type": "java",
+            "name": "Run Current Java File",
+            "request": "launch",
+            "mainClass": "${file}",
+            "preLaunchTask": "Java: Compile (-g)",
+            "args": "${command:SpecifyProgramArgs}"
+        },
+        {
+            "type": "java",
             "name": "Run Tests",
             "request": "launch",
             "mainClass": "scripts.RunTestsMain",
@@ -223,6 +231,13 @@
             "name": "Run Scalar Builder Tests (java)",
             "request": "launch",
             "mainClass": "scripts.RunScalarBuilderTestsMain",
+            "preLaunchTask": "Java: Compile (-g)"
+        },
+        {
+            "type": "java",
+            "name": "Run Array V3 Tests (java)",
+            "request": "launch",
+            "mainClass": "scripts.RunArrayV3TestsMain",
             "preLaunchTask": "Java: Compile (-g)"
         },
         {

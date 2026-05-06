@@ -1,4 +1,5 @@
-﻿C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\config\ArrayBundleConfig.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\config\ArrayBinaryBuildOptions.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\config\ArrayBundleConfig.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\config\ArrayShardConfig.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\config\ArraySyntheticConfig.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\config\BuildShardConfig.java
@@ -67,9 +68,11 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildShardsMain.
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateArraySynthMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateArrayFeatureMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateFeatureMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayBuilderTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayStorageTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArraySyntheticTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayV3TestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarBuilderTestsMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarNotebookBuilderTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunSelectionMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunTestsMain.java

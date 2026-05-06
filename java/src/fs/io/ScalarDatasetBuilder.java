@@ -66,7 +66,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
      * @param sampleMetaPath dense sample metadata parquet 경로
      * @param featureMetaPath known-feature mode에서 사용할 feature metadata parquet 경로
      * @param featureKeys known-feature mode에서 사용할 feature key 목록
-     * @param buildConfig sample-major -> shard build 설정
+     * @param buildConfig sample-major stage를 shard로 변환할 때 사용할 build 설정
      * @param sampleMajorOutDir intermediate sample-major stage 디렉터리
      */
     public ScalarDatasetBuilder(
@@ -160,7 +160,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
      * sample 하나를 완결된 단위로 기록한다.
      *
      * @param sampleId dense sample id
-     * @param values feature -> value 매핑
+     * @param values feature별 scalar value 매핑
      */
     public void writeSample(long sampleId, Map<?, ?> values) throws Exception {
         beginSample(sampleId);

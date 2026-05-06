@@ -1,18 +1,14 @@
 package fs.io.scalar;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import fs.io.common.JsonUtils;
 import fs.model.scalar.ScalarSampleBundleManifest;
 
-import javax.script.ScriptEngine;
-import javax.script.ScriptEngineManager;
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 
 /**
  * Scalar sample-major bundle manifest JSON을 읽고 쓰는 helper다.
@@ -22,61 +18,42 @@ public final class ScalarSampleBundleManifestIO {
     }
 
     public static void write(ScalarSampleBundleManifest manifest, String path) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{\n");
-        sb.append("  \"format\": \"scalar-sample-bundles\",\n");
-        sb.append("  \"version\": 1,\n");
-        sb.append("  \"sample_meta_path\": \"").append(escapeJson(relativeTo(path, manifest.sampleMetaPath))).append("\",\n");
-        sb.append("  \"feature_meta_path\": \"").append(escapeJson(relativeTo(path, manifest.featureMetaPath))).append("\",\n");
-        sb.append("  \"bundle_paths\": [\n");
-        for (int i = 0; i < manifest.bundlePaths.size(); i++) {
-            sb.append("    \"").append(escapeJson(relativeTo(path, manifest.bundlePaths.get(i)))).append("\"");
-            if (i + 1 < manifest.bundlePaths.size()) {
-                sb.append(",");
-            }
-            sb.append("\n");
+        ObjectNode root = JsonUtils.objectNode();
+        root.put("format", "scalar-sample-bundles");
+        root.put("version", 1);
+        root.put("sample_meta_path", relativeTo(path, manifest.sampleMetaPath));
+        root.put("feature_meta_path", relativeTo(path, manifest.featureMetaPath));
+
+        ArrayNode bundlePaths = root.putArray("bundle_paths");
+        for (String bundlePath : manifest.bundlePaths) {
+            bundlePaths.add(relativeTo(path, bundlePath));
         }
-        sb.append("  ],\n");
-        sb.append("  \"sample_id_col\": \"").append(escapeJson(manifest.sampleIdCol)).append("\",\n");
-        sb.append("  \"feature_id_col\": \"").append(escapeJson(manifest.featureIdCol)).append("\",\n");
-        sb.append("  \"value_col\": \"").append(escapeJson(manifest.valueCol)).append("\"\n");
-        sb.append("}\n");
-        try (BufferedWriter bw = new BufferedWriter(new FileWriter(path))) {
-            bw.write(sb.toString());
-        }
+        root.put("sample_id_col", manifest.sampleIdCol);
+        root.put("feature_id_col", manifest.featureIdCol);
+        root.put("value_col", manifest.valueCol);
+        JsonUtils.writeJson(path, root);
     }
 
-    @SuppressWarnings("unchecked")
     public static ScalarSampleBundleManifest read(String path) throws IOException {
-        String json = readAll(path);
-        try {
-            ScriptEngine engine = new ScriptEngineManager().getEngineByName("javascript");
-            if (engine == null) {
-                throw new IOException("javascript engine is unavailable");
-            }
-            Object parsed = engine.eval("Java.asJSONCompatible(" + json + ")");
-            Map<String, Object> root = (Map<String, Object>) parsed;
-            String format = stringValue(root.get("format"));
-            if (!"scalar-sample-bundles".equals(format)) {
-                throw new IOException("unsupported sample-bundle manifest format: " + format);
-            }
-            List<Object> rawBundlePaths = (List<Object>) root.get("bundle_paths");
-            ArrayList<String> bundlePaths = new ArrayList<String>();
-            if (rawBundlePaths != null) {
-                for (Object item : rawBundlePaths) {
-                    bundlePaths.add(resolveAgainst(path, stringValue(item)));
-                }
-            }
-            return new ScalarSampleBundleManifest(
-                    resolveAgainst(path, stringValue(root.get("sample_meta_path"))),
-                    resolveAgainst(path, stringValue(root.get("feature_meta_path"))),
-                    bundlePaths,
-                    defaultString(root.get("sample_id_col"), "sample_id"),
-                    defaultString(root.get("feature_id_col"), "feature_id"),
-                    defaultString(root.get("value_col"), "value"));
-        } catch (Exception e) {
-            throw new IOException("failed to parse scalar sample-bundle manifest: " + path, e);
+        JsonNode root = JsonUtils.readJson(path);
+        String format = textOrEmpty(root, "format");
+        if (!"scalar-sample-bundles".equals(format)) {
+            throw new IOException("unsupported sample-bundle manifest format: " + format);
         }
+        JsonNode rawBundlePaths = root.get("bundle_paths");
+        ArrayList<String> bundlePaths = new ArrayList<String>();
+        if (rawBundlePaths != null && rawBundlePaths.isArray()) {
+            for (JsonNode item : rawBundlePaths) {
+                bundlePaths.add(resolveAgainst(path, item.asText()));
+            }
+        }
+        return new ScalarSampleBundleManifest(
+                resolveAgainst(path, textOrEmpty(root, "sample_meta_path")),
+                resolveAgainst(path, textOrEmpty(root, "feature_meta_path")),
+                bundlePaths,
+                defaultText(root, "sample_id_col", "sample_id"),
+                defaultText(root, "feature_id_col", "feature_id"),
+                defaultText(root, "value_col", "value"));
     }
 
     private static String relativeTo(String manifestPath, String targetPath) {
@@ -103,30 +80,13 @@ public final class ScalarSampleBundleManifestIO {
         return new File(manifestDir, storedPath).getAbsolutePath();
     }
 
-    private static String readAll(String path) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader br = new BufferedReader(new FileReader(path))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                sb.append(line).append("\n");
-            }
-        }
-        return sb.toString();
+    private static String textOrEmpty(JsonNode node, String fieldName) {
+        JsonNode child = node.get(fieldName);
+        return (child == null || child.isNull()) ? "" : child.asText();
     }
 
-    private static String stringValue(Object value) {
-        return (value == null) ? "" : value.toString();
-    }
-
-    private static String defaultString(Object value, String fallback) {
-        String out = stringValue(value);
+    private static String defaultText(JsonNode node, String fieldName, String fallback) {
+        String out = textOrEmpty(node, fieldName);
         return out.isEmpty() ? fallback : out;
-    }
-
-    private static String escapeJson(String s) {
-        if (s == null) {
-            return "";
-        }
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

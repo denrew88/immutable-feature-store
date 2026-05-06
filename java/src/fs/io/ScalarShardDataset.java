@@ -1,16 +1,16 @@
 package fs.io;
 
+import fs.io.scalar.DuckDBShardReader;
+import fs.io.scalar.FeatureIdIndex;
+import fs.io.scalar.FeatureLocatorIndex;
+import fs.io.scalar.ManifestIO;
+import fs.io.scalar.SampleIdIndex;
 import fs.model.common.Feature;
 import fs.model.common.FeatureLocation;
 import fs.model.scalar.RowBatch;
 import fs.model.scalar.ScalarFeatureValues;
 import fs.model.scalar.ScalarValue;
 import fs.model.scalar.ShardManifest;
-import fs.io.scalar.DuckDBShardReader;
-import fs.io.scalar.FeatureIdIndex;
-import fs.io.scalar.FeatureLocatorIndex;
-import fs.io.scalar.ManifestIO;
-import fs.io.scalar.SampleIdIndex;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -23,10 +23,10 @@ import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
- * scalar shard dataset을 읽는 high-level facade다.
+ * scalar shard dataset를 읽는 high-level facade이다.
  *
- * <p>단일 feature 조회와 batched iteration 둘 다 제공하며, 외부 sample/feature key를
- * dense id로 변환하는 책임도 이 클래스가 맡는다.
+ * <p>단일 feature 조회와 batched iteration을 모두 제공하고,
+ * 외부에서 받은 sample/feature key를 내부 dense id로 해석하는 책임도 이 계층이 맡는다.
  */
 public final class ScalarShardDataset implements AutoCloseable {
     private static final int DEFAULT_BATCH_SIZE = 128;
@@ -63,7 +63,10 @@ public final class ScalarShardDataset implements AutoCloseable {
     }
 
     /**
-     * dense sample id 목록에 대한 feature 값을 읽는다.
+     * dense feature id와 dense sample id 배열을 기준으로 값을 읽는다.
+     *
+     * <p>즉 입력이 이미 내부 표준 id 체계라고 가정하는 가장 직접적인 조회 경로이다.
+     * sample key나 feature key 해석이 필요 없을 때 가장 단순하게 사용한다.
      */
     public ScalarFeatureValues getValues(int featureId, long[] sampleIds) throws SQLException {
         FeatureRequest request = normalizeFeatureRequests(new int[]{featureId}, null, true).get(0);
@@ -73,7 +76,10 @@ public final class ScalarShardDataset implements AutoCloseable {
     }
 
     /**
-     * sample key 목록에 대한 feature 값을 읽는다.
+     * dense feature id와 sample key 배열을 기준으로 값을 읽는다.
+     *
+     * <p>{@link #getValues(int, long[])}와 달리 feature는 이미 dense id로 받지만,
+     * sample 쪽은 key를 내부 dense sample id로 변환한 뒤 조회한다.
      */
     public ScalarFeatureValues getValuesBySampleKeys(int featureId, String[] sampleKeys) throws SQLException {
         FeatureRequest request = normalizeFeatureRequests(new int[]{featureId}, null, true).get(0);
@@ -84,6 +90,9 @@ public final class ScalarShardDataset implements AutoCloseable {
 
     /**
      * feature key와 sample key 조합으로 값을 읽는다.
+     *
+     * <p>세 조회 메서드 중 가장 바깥쪽 API이다.
+     * feature와 sample을 모두 key로 받아 dense id로 해석한 뒤 조회하므로, 외부 사용자 코드에서 가장 쓰기 쉽다.
      */
     public ScalarFeatureValues getValuesByKeys(String featureKey, String[] sampleKeys) throws SQLException {
         ArrayList<FeatureRequest> requests = normalizeFeatureKeyRequests(new String[]{featureKey}, true);
@@ -100,24 +109,28 @@ public final class ScalarShardDataset implements AutoCloseable {
     }
 
     /**
-     * feature key + sample key 조합으로 값 하나만 읽는다.
+     * feature key와 sample key 조합으로 값 하나만 읽는다.
      */
     public ScalarValue getValueByKey(String featureKey, String sampleKey) throws SQLException {
         return getValuesByKeys(featureKey, new String[]{sampleKey}).values.get(0);
     }
 
     /**
-     * 여러 feature를 배치로 읽되, 결과는 feature 단위 객체를 하나씩 iteration하게 한다.
+     * 여러 feature를 배치로 읽되, 입력은 dense feature id / dense sample id 기준으로 받는다.
+     *
+     * <p>{@link #getValues(int, long[])}를 feature 여러 개에 대해 확장한 형태이며,
+     * 결과는 {@link ScalarFeatureValues}를 하나씩 순회하는 iterable로 돌려준다.
      */
     public Iterable<ScalarFeatureValues> iterMany(int[] requestedFeatureIds, long[] requestedSampleIds) throws SQLException {
         return iterMany(requestedFeatureIds, requestedSampleIds, DEFAULT_BATCH_SIZE, true);
     }
 
     /**
-     * 여러 feature를 배치로 읽되, 결과는 feature 단위 객체를 하나씩 iteration하게 한다.
+     * 여러 feature를 배치로 읽되, 입력은 dense feature id / dense sample id 기준으로 받는다.
      *
-     * <p>{@code maintainOrder=false}면 feature를 shard/offset 순으로 재정렬해서 locality를 높인다.
-     * 반환 순서도 이 재정렬된 순서를 따른다.
+     * <p>{@code maintainOrder=true}면 입력 feature 순서를 그대로 유지한다.
+     * {@code maintainOrder=false}면 feature를 shard/offset 순으로 재정렬해 locality를 높이고,
+     * 반환 순서도 그 재정렬된 순서를 따른다.
      */
     public Iterable<ScalarFeatureValues> iterMany(
             int[] requestedFeatureIds,
@@ -136,14 +149,20 @@ public final class ScalarShardDataset implements AutoCloseable {
     }
 
     /**
-     * feature key 목록을 기준으로 batched iteration을 수행한다.
+     * feature key / sample key 기준으로 batched iteration을 수행한다.
+     *
+     * <p>{@link #iterMany(int[], long[])}와 목적은 같지만, 입력을 dense id 대신 key로 받는다.
+     * 따라서 외부 호출자는 id index를 따로 준비하지 않아도 된다.
      */
     public Iterable<ScalarFeatureValues> iterManyByKey(String[] requestedFeatureKeys, String[] requestedSampleKeys) throws SQLException {
         return iterManyByKey(requestedFeatureKeys, requestedSampleKeys, DEFAULT_BATCH_SIZE, true);
     }
 
     /**
-     * feature key 목록을 기준으로 batched iteration을 수행한다.
+     * feature key / sample key 기준으로 batched iteration을 수행한다.
+     *
+     * <p>{@code maintainOrder} 의미는 {@link #iterMany(int[], long[], int, boolean)}와 동일하지만,
+     * 정렬과 batching 이전에 먼저 feature key와 sample key를 dense id로 해석한다는 점이 다르다.
      */
     public Iterable<ScalarFeatureValues> iterManyByKey(
             String[] requestedFeatureKeys,
@@ -230,6 +249,9 @@ public final class ScalarShardDataset implements AutoCloseable {
         return requests;
     }
 
+    /**
+     * feature key 요청을 dense feature id와 shard 위치가 붙은 내부 request 목록으로 바꾼다.
+     */
     private ArrayList<FeatureRequest> normalizeFeatureKeyRequests(String[] requestedFeatureKeys, boolean maintainOrder) {
         int[] featureIdsArray = new int[requestedFeatureKeys.length];
         String[] featureKeysOverride = new String[requestedFeatureKeys.length];
@@ -280,7 +302,7 @@ public final class ScalarShardDataset implements AutoCloseable {
     }
 
     /**
-     * feature batch를 shard별로 묶어 실제 row read를 수행하는 iterator 구현체다.
+     * feature batch를 shard별로 묶어 실제 row read를 수행하는 iterator 구현체이다.
      */
     private final class FeatureValuesIterator implements Iterator<ScalarFeatureValues> {
         private final List<FeatureRequest> requests;

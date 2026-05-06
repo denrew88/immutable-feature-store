@@ -1,14 +1,11 @@
 package fs.io.scalar;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import fs.io.common.JsonUtils;
 import fs.model.scalar.ShardManifest;
 
-import javax.script.ScriptEngine;
-import javax.script.ScriptEngineManager;
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -19,92 +16,67 @@ import java.util.Map;
  */
 public class ManifestIO {
     public static void write(ShardManifest manifest, String path) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{\n");
-        sb.append("  \"sample_meta_path\": \"").append(escapeJson(relativeTo(path, manifest.sampleMetaPath))).append("\",\n");
-        sb.append("  \"feature_meta_path\": \"").append(escapeJson(relativeTo(path, manifest.featureMetaPath))).append("\",\n");
-        sb.append("  \"n_samples\": ").append(manifest.nSamples).append(",\n");
-        sb.append("  \"n_features\": ").append(manifest.nFeatures).append(",\n");
-        sb.append("  \"shard_path\": \"").append(escapeJson(relativeTo(path, manifest.shardPath))).append("\",\n");
-        sb.append("  \"n_shards\": ").append(manifest.nShards).append(",\n");
-        sb.append("  \"feature_locator_path\": \"").append(escapeJson(relativeTo(path, manifest.featureLocatorPath))).append("\",\n");
-        sb.append("  \"feature_locator_format\": \"").append(escapeJson(manifest.featureLocatorFormat)).append("\",\n");
-        sb.append("  \"feature_id_dtype\": \"").append(escapeJson(manifest.featureIdType)).append("\",\n");
-        sb.append("  \"values_dtype\": \"").append(escapeJson(manifest.valuesType)).append("\",\n");
-        sb.append("  \"valid_dtype\": \"").append(escapeJson(manifest.validType)).append("\",\n");
-        sb.append("  \"id_scheme\": \"").append(escapeJson(manifest.idScheme)).append("\",\n");
-        sb.append("  \"sample_key_col\": \"").append(escapeJson(manifest.sampleKeyCol)).append("\",\n");
-        sb.append("  \"feature_key_col\": \"").append(escapeJson(manifest.featureKeyCol)).append("\"");
+        ObjectNode root = JsonUtils.objectNode();
+        root.put("sample_meta_path", relativeTo(path, manifest.sampleMetaPath));
+        root.put("feature_meta_path", relativeTo(path, manifest.featureMetaPath));
+        root.put("n_samples", manifest.nSamples);
+        root.put("n_features", manifest.nFeatures);
+        root.put("shard_path", relativeTo(path, manifest.shardPath));
+        root.put("n_shards", manifest.nShards);
+        root.put("feature_locator_path", relativeTo(path, manifest.featureLocatorPath));
+        root.put("feature_locator_format", manifest.featureLocatorFormat);
+        root.put("feature_id_dtype", manifest.featureIdType);
+        root.put("values_dtype", manifest.valuesType);
+        root.put("valid_dtype", manifest.validType);
+        root.put("id_scheme", manifest.idScheme);
+        root.put("sample_key_col", manifest.sampleKeyCol);
+        root.put("feature_key_col", manifest.featureKeyCol);
+
         if (manifest.targetShardBytes != null) {
-            sb.append(",\n");
-            sb.append("  \"target_shard_bytes\": ").append(manifest.targetShardBytes.longValue());
+            root.put("target_shard_bytes", manifest.targetShardBytes.longValue());
         }
         if (!manifest.selectionStats.isEmpty()) {
-            sb.append(",\n");
-            sb.append("  \"selection_stats\": {\n");
-            int i = 0;
+            ObjectNode selectionStats = root.putObject("selection_stats");
             for (Map.Entry<String, String> entry : manifest.selectionStats.entrySet()) {
-                sb.append("    \"").append(escapeJson(entry.getKey())).append("\": ");
-                sb.append("\"").append(escapeJson(relativeTo(path, entry.getValue()))).append("\"");
-                if (i + 1 < manifest.selectionStats.size()) {
-                    sb.append(",");
-                }
-                sb.append("\n");
-                i++;
+                selectionStats.put(entry.getKey(), relativeTo(path, entry.getValue()));
             }
-            sb.append("  }");
         } else if (manifest.statsYCol != null) {
-            sb.append(",\n");
-            sb.append("  \"stats_y_col\": \"").append(escapeJson(manifest.statsYCol)).append("\"");
+            root.put("stats_y_col", manifest.statsYCol);
         }
-        sb.append("\n");
-        sb.append("}\n");
-        try (BufferedWriter bw = new BufferedWriter(new FileWriter(path))) {
-            bw.write(sb.toString());
-        }
+        JsonUtils.writeJson(path, root);
     }
 
-    @SuppressWarnings("unchecked")
     public static ShardManifest read(String path) throws IOException {
-        String json = readAll(path);
-        try {
-            ScriptEngine engine = new ScriptEngineManager().getEngineByName("javascript");
-            if (engine == null) {
-                throw new IOException("javascript engine is unavailable");
-            }
-            Object parsed = engine.eval("Java.asJSONCompatible(" + json + ")");
-            Map<String, Object> root = (Map<String, Object>) parsed;
-            return new ShardManifest(
-                    resolveAgainst(path, stringValue(root.get("sample_meta_path"))),
-                    resolveAgainst(path, stringValue(root.get("feature_meta_path"))),
-                    intValue(root.get("n_samples")),
-                    intValue(root.get("n_features")),
-                    resolveAgainst(path, stringValue(root.get("shard_path"))),
-                    intValue(root.get("n_shards")),
-                    resolveAgainst(path, stringValue(root.get("feature_locator_path"))),
-                    stringValue(root.get("feature_locator_format")),
-                    stringValue(root.get("feature_id_dtype")),
-                    stringValue(root.get("values_dtype")),
-                    stringValue(root.get("valid_dtype")),
-                    defaultString(root.get("id_scheme"), "legacy"),
-                    defaultString(root.get("sample_key_col"), "sample_key"),
-                    defaultString(root.get("feature_key_col"), "feature_key"),
-                    longObject(root.get("target_shard_bytes")),
-                    parseSelectionStats(path, (Map<String, Object>) root.get("selection_stats")),
-                    optionalString(root.get("stats_y_col"))
-            );
-        } catch (Exception e) {
-            throw new IOException("failed to parse shard manifest: " + path, e);
-        }
+        JsonNode root = JsonUtils.readJson(path);
+        return new ShardManifest(
+                resolveAgainst(path, textOrEmpty(root, "sample_meta_path")),
+                resolveAgainst(path, textOrEmpty(root, "feature_meta_path")),
+                intOrZero(root, "n_samples"),
+                intOrZero(root, "n_features"),
+                resolveAgainst(path, textOrEmpty(root, "shard_path")),
+                intOrZero(root, "n_shards"),
+                resolveAgainst(path, textOrEmpty(root, "feature_locator_path")),
+                textOrEmpty(root, "feature_locator_format"),
+                textOrEmpty(root, "feature_id_dtype"),
+                textOrEmpty(root, "values_dtype"),
+                textOrEmpty(root, "valid_dtype"),
+                defaultText(root, "id_scheme", "legacy"),
+                defaultText(root, "sample_key_col", "sample_key"),
+                defaultText(root, "feature_key_col", "feature_key"),
+                longOrNull(root, "target_shard_bytes"),
+                parseSelectionStats(path, root.get("selection_stats")),
+                textOrNull(root, "stats_y_col"));
     }
 
-    private static Map<String, String> parseSelectionStats(String manifestPath, Map<String, Object> raw) {
-        if (raw == null || raw.isEmpty()) {
+    private static Map<String, String> parseSelectionStats(String manifestPath, JsonNode raw) {
+        if (raw == null || raw.isNull() || !raw.isObject() || raw.size() == 0) {
             return Collections.emptyMap();
         }
         LinkedHashMap<String, String> out = new LinkedHashMap<String, String>();
-        for (Map.Entry<String, Object> entry : raw.entrySet()) {
-            out.put(entry.getKey(), resolveAgainst(manifestPath, stringValue(entry.getValue())));
+        java.util.Iterator<String> fieldNames = raw.fieldNames();
+        while (fieldNames.hasNext()) {
+            String key = fieldNames.next();
+            out.put(key, resolveAgainst(manifestPath, raw.get(key).asText()));
         }
         return out;
     }
@@ -133,42 +105,28 @@ public class ManifestIO {
         return new File(manifestDir, storedPath).getAbsolutePath();
     }
 
-    private static int intValue(Object value) {
-        return (value == null) ? 0 : ((Number) value).intValue();
+    private static int intOrZero(JsonNode node, String fieldName) {
+        JsonNode child = node.get(fieldName);
+        return (child == null || child.isNull()) ? 0 : child.asInt();
     }
 
-    private static Long longObject(Object value) {
-        return (value == null) ? null : Long.valueOf(((Number) value).longValue());
+    private static Long longOrNull(JsonNode node, String fieldName) {
+        JsonNode child = node.get(fieldName);
+        return (child == null || child.isNull()) ? null : Long.valueOf(child.asLong());
     }
 
-    private static String stringValue(Object value) {
-        return (value == null) ? "" : value.toString();
+    private static String textOrEmpty(JsonNode node, String fieldName) {
+        JsonNode child = node.get(fieldName);
+        return (child == null || child.isNull()) ? "" : child.asText();
     }
 
-    private static String optionalString(Object value) {
-        return (value == null) ? null : value.toString();
+    private static String textOrNull(JsonNode node, String fieldName) {
+        JsonNode child = node.get(fieldName);
+        return (child == null || child.isNull()) ? null : child.asText();
     }
 
-    private static String defaultString(Object value, String fallback) {
-        String out = optionalString(value);
+    private static String defaultText(JsonNode node, String fieldName, String fallback) {
+        String out = textOrNull(node, fieldName);
         return (out == null || out.isEmpty()) ? fallback : out;
-    }
-
-    private static String readAll(String path) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader br = new BufferedReader(new FileReader(path))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                sb.append(line).append("\n");
-            }
-        }
-        return sb.toString();
-    }
-
-    private static String escapeJson(String s) {
-        if (s == null) {
-            return "";
-        }
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

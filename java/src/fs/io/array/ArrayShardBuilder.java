@@ -47,8 +47,45 @@ public class ArrayShardBuilder {
      * @return 생성된 shard manifest 경로
      */
     public static String buildFromBundles(String bundleManifestPath, String outDir, ArrayShardConfig config) throws Exception {
+        return buildFromBundles(
+                bundleManifestPath,
+                outDir,
+                config,
+                ArrayBinaryFormat.DEFAULT_CODEC_NAME,
+                ArrayBinaryFormat.DEFAULT_SAMPLE_KEY_COL,
+                ArrayBinaryFormat.DEFAULT_FEATURE_KEY_COL);
+    }
+
+    /**
+     * bundle manifest를 읽어 최종 array binary shard dataset을 만든다.
+     *
+     * @param bundleManifestPath bundle manifest 경로
+     * @param outDir 최종 artifact 출력 디렉터리
+     * @param config shard 크기와 block 크기를 정하는 설정
+     * @param codec 최종 manifest에 기록할 codec 이름. 현재는 none만 지원한다.
+     * @param sampleKeyCol sample metadata에서 사용할 외부 key 컬럼 이름
+     * @param featureKeyCol feature metadata에서 사용할 외부 key 컬럼 이름
+     * @return 생성된 shard manifest 경로
+     */
+    public static String buildFromBundles(
+            String bundleManifestPath,
+            String outDir,
+            ArrayShardConfig config,
+            String codec,
+            String sampleKeyCol,
+            String featureKeyCol) throws Exception {
         ArrayBundleManifest bundleManifest = ArrayBundleManifestIO.read(bundleManifestPath);
         ArrayShardConfig cfg = (config == null) ? new ArrayShardConfig() : config;
+        String codecName = (codec == null || codec.isEmpty()) ? ArrayBinaryFormat.DEFAULT_CODEC_NAME : codec.trim().toLowerCase();
+        if (!ArrayBinaryFormat.DEFAULT_CODEC_NAME.equals(codecName)) {
+            throw new IllegalArgumentException("java array shard builder currently supports only codec='none'");
+        }
+        String manifestSampleKeyCol = (sampleKeyCol == null || sampleKeyCol.isEmpty())
+                ? ArrayBinaryFormat.DEFAULT_SAMPLE_KEY_COL
+                : sampleKeyCol;
+        String manifestFeatureKeyCol = (featureKeyCol == null || featureKeyCol.isEmpty())
+                ? ArrayBinaryFormat.DEFAULT_FEATURE_KEY_COL
+                : featureKeyCol;
         if (cfg.samplesPerBlock <= 0) {
             throw new IllegalArgumentException("samplesPerBlock must be > 0");
         }
@@ -101,10 +138,10 @@ public class ArrayShardBuilder {
                     "INT32",
                     "UINT8",
                     "INT64",
-                    ArrayBinaryFormat.DEFAULT_CODEC_NAME,
+                    codecName,
                     ArrayBinaryFormat.FILE_ENDIANNESS,
-                    ArrayBinaryFormat.DEFAULT_SAMPLE_KEY_COL,
-                    ArrayBinaryFormat.DEFAULT_FEATURE_KEY_COL,
+                    manifestSampleKeyCol,
+                    manifestFeatureKeyCol,
                     shardInfos,
                     pointSchema);
             ArrayShardManifestIO.write(manifest, manifestPath);
