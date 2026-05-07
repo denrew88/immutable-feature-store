@@ -59,6 +59,13 @@ public final class ScalarFeatureShards {
     }
 
     /**
+     * resumable scalar build session을 열거나 같은 stage 디렉터리에서 자동으로 이어받는다.
+     */
+    public static ScalarDatasetBuilder openSession(String outDir, String sampleMetaPath) throws Exception {
+        return ScalarDatasetBuilder.openSession(outDir, sampleMetaPath);
+    }
+
+    /**
      * 모든 옵션을 지정해 scalar direct-ingestion builder를 만든다.
      */
     public static ScalarDatasetBuilder newBuilder(
@@ -69,6 +76,22 @@ public final class ScalarFeatureShards {
             BuildShardConfig buildConfig,
             String sampleMajorOutDir) throws Exception {
         return new ScalarDatasetBuilder(outDir, sampleMetaPath, featureMetaPath, featureKeys, buildConfig, sampleMajorOutDir);
+    }
+
+    /**
+     * 모든 옵션을 지정해 resumable scalar build session을 열거나 같은 stage 디렉터리에서 이어받는다.
+     *
+     * <p>새 session을 시작할 수도 있고, 기존 {@code state.json}과 committed bundle 로그가 있으면
+     * 마지막 committed sample 다음부터 다시 쓸 수 있는 상태로 복원한다.
+     */
+    public static ScalarDatasetBuilder openSession(
+            String outDir,
+            String sampleMetaPath,
+            String featureMetaPath,
+            List<String> featureKeys,
+            BuildShardConfig buildConfig,
+            String sampleMajorOutDir) throws Exception {
+        return ScalarDatasetBuilder.openSession(outDir, sampleMetaPath, featureMetaPath, featureKeys, buildConfig, sampleMajorOutDir);
     }
 
     /**

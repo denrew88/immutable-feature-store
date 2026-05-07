@@ -90,6 +90,7 @@ $sourceSpecs = @(
     "java\src\fs\model\common\PointColumnSpec.java",
     "java\src\fs\model\scalar\RowBatch.java",
     "java\src\fs\model\common\SampleMeta.java",
+    "java\src\fs\model\scalar\ScalarBuildSessionStatus.java",
     "java\src\fs\model\scalar\ScalarFeatureValues.java",
     "java\src\fs\model\scalar\ScalarSampleBundleManifest.java",
     "java\src\fs\model\scalar\ScalarValue.java",

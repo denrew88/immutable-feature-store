@@ -1,13 +1,13 @@
 """scalar feature 저장 서브패키지."""
 
-from .builder import ScalarDatasetBuilder, ScalarSampleContext
+from .builder import ScalarBuildSessionStatus, ScalarDatasetBuilder
 from .metadata import write_feature_meta, write_sample_meta
 from .reader import FeatureValues, QueryResult, ScalarShardDataset, ScalarValue, open_shard
 
 __all__ = [
     "ScalarDatasetBuilder",
     "ScalarShardDataset",
-    "ScalarSampleContext",
+    "ScalarBuildSessionStatus",
     "ScalarValue",
     "FeatureValues",
     "QueryResult",

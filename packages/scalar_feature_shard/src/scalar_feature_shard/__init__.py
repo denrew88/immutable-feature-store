@@ -1,6 +1,6 @@
 """Public reader/writer facade for standalone scalar feature shards."""
 
-from .builder import ScalarDatasetBuilder, ScalarSampleContext
+from .builder import ScalarBuildSessionStatus, ScalarDatasetBuilder
 from .exceptions import (
     FeatureNotFoundError,
     ManifestFormatError,
@@ -30,7 +30,7 @@ __all__ = [
     "SampleNotFoundError",
     "ScalarDatasetBuilder",
     "ScalarFeatureShardError",
-    "ScalarSampleContext",
+    "ScalarBuildSessionStatus",
     "ScalarShardDataset",
     "ScalarValue",
     "SelectionCandidate",

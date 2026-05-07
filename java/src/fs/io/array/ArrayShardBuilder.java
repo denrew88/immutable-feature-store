@@ -33,7 +33,7 @@ import java.util.Map;
  * 2) 예상 바이트 수를 기준으로 feature를 shard별 연속 구간으로 나눈다.
  * 3) bundle row를 다시 읽어 block 단위로 조립한 뒤 각 shard의 {@code blocks.idx}/{@code blocks.bin}에 기록한다.
  *
- * <p>즉 이 클래스는 "bundle parquet -> shard partition -> binary block 파일" 전체를 담당하는
+ * <p>즉 이 클래스는 "bundle parquet를 읽고 shard partition을 계산한 뒤 binary block 파일로 내리는"
  * array binary 전용 build 엔진이다.
  */
 public class ArrayShardBuilder {
@@ -447,7 +447,7 @@ public class ArrayShardBuilder {
     }
 
     /**
-     * feature_id -> shard_id lookup map을 만든다.
+     * feature_id에서 shard_id를 찾는 lookup map을 만든다.
      *
      * <p>입력 row를 읽을 때 각 feature가 어느 shard로 가야 하는지 O(1)로 찾기 위해 사용한다.
      */

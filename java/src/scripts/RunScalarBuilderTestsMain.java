@@ -35,21 +35,29 @@ public class RunScalarBuilderTestsMain {
         cfg.statsYCols = java.util.Arrays.asList("y", "y_alt");
 
         String discoveredManifestPath;
-        try (ScalarDatasetBuilder builder = ScalarFeatureShards.newBuilder(
+        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
                 new File(root, "discovered_shards").getAbsolutePath(),
                 sampleMetaPath,
                 "",
                 null,
                 cfg,
                 new File(root, "discovered_stage").getAbsolutePath())) {
+            require(builder.status().nextExpectedSampleId == 0L, "new scalar session should start from sample 0");
             builder.writeSample(0L, values("feature_a", 1.0, "feature_b", 0.1));
-            try (ScalarDatasetBuilder.ScalarSampleContext sample1 = builder.openSample(1L)) {
-                sample1.writeValue("feature_b", 1.0);
-                sample1.writeValue("feature_c", 0.2);
-            }
+            builder.writeSample(1L, values("feature_b", 1.0, "feature_c", 0.2));
+        }
+
+        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
+                new File(root, "discovered_shards").getAbsolutePath(),
+                sampleMetaPath,
+                "",
+                null,
+                cfg,
+                new File(root, "discovered_stage").getAbsolutePath())) {
+            require(builder.status().nextExpectedSampleId == 2L, "resumed scalar session should continue from sample 2");
             builder.writeSample(2L, values("feature_a", 0.0, "feature_c", 1.0));
             builder.writeSample(3L, values("feature_a", 0.8, "feature_b", 0.2, "feature_c", 0.9));
-            String stageManifestPath = builder.finishSampleMajor();
+            String stageManifestPath = builder.finishStage();
             require(new File(stageManifestPath).exists(), "missing sample-major manifest");
             builder.updateFeatureMeta(featureRows(), "feature_key", true);
             discoveredManifestPath = builder.buildShards(true);

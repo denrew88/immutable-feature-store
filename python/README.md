@@ -1,53 +1,50 @@
 # Python 구현 안내
 
-이 디렉터리는 array/scalar shard의 기준 Python 구현과 서버, 테스트 스크립트를 담고 있다.
+이 디렉터리는 array/scalar shard의 Python 구현, 테스트 스크립트, 그리고 예제 서버 코드를 담고 있습니다.
+
+최근 builder는 array/scalar 모두 **resumable session** 모델로 정리되어 있습니다.
+
+- 자동 chunking은 내부 구현입니다.
+- committed bundle parquet 하나가 durable checkpoint 하나입니다.
+- resume는 `status().next_expected_sample_id`를 기준으로 합니다.
 
 ## 주요 진입점
 
-- scalar shard 빌드
+- scalar
+  - `fs.scalar`
   - `scripts/build_shards.py`
-- scalar selection
   - `scripts/run_selection.py`
-- scalar synthetic 생성
-  - `scripts/generate_synth.py`
-- array shard 빌드
+- array
+  - `fs.array`
   - `scripts/build_array_shards.py`
   - `scripts/build_array_binary_shards.py`
-- array synthetic 생성
-  - `scripts/generate_array_synth.py`
-- FastAPI 서버
-  - `scripts/serve_array_api.py`
 - 테스트
-  - `scripts/run_tests.py`
-  - `scripts/run_scalar_api_tests.py`
-  - `scripts/run_selection_api_tests.py`
-  - `scripts/run_array_storage_tests.py`
-  - `scripts/run_array_binary_storage_tests.py`
-  - `scripts/run_array_api_tests.py`
   - `scripts/run_scalar_builder_tests.py`
   - `scripts/run_scalar_package_tests.py`
+  - `scripts/run_array_binary_storage_tests.py`
   - `scripts/run_array_binary_package_tests.py`
 
 ## 실행 위치
 
-패키지 import가 맞도록 보통 `python/`에서 실행한다.
+보통 `python/` 아래에서 실행합니다.
 
 ```powershell
 cd python
 ```
 
-## Scalar 파이프라인
+## Scalar 사용법
 
-### 기본 예시
+### builder session
 
-```powershell
-python -m scripts.generate_synth --out-dir ..\data\synth_py\samples --sample-meta ..\data\synth_py\sample_meta.parquet --feature-meta ..\data\synth_py\feature_meta.parquet
-python -m scripts.build_shards --sample-meta ..\data\synth_py\sample_meta.parquet --feature-meta ..\data\synth_py\feature_meta.parquet --out-dir ..\data\synth_py\shards --target-shard-mb 32 --stats-y-col y --stats-y-col y_alt
-python -m scripts.run_selection --manifest ..\data\synth_py\shards\shard_manifest.json --top-m 30
-python -m scripts.locate_feature --manifest ..\data\synth_py\shards\shard_manifest.json --feature-id 12
-```
+scalar는 public write 단위를 sample 하나로 고정합니다.
 
-### direct-ingestion builder
+- `ScalarDatasetBuilder.open_session(...)`
+- `status()`
+- `write_sample(sample_id, values)`
+- `finish_stage()`
+- `build_shards(...)`
+
+예:
 
 ```python
 from fs.config import ScalarShardBuildOptions
@@ -68,7 +65,7 @@ feature_meta_path = write_feature_meta(
     "..\\data\\scalar_feature_meta.parquet",
 )
 
-builder = ScalarDatasetBuilder(
+session = ScalarDatasetBuilder.open_session(
     out_dir="..\\data\\scalar_shards",
     sample_meta_path=sample_meta_path,
     feature_meta_path=feature_meta_path,
@@ -78,58 +75,53 @@ builder = ScalarDatasetBuilder(
     ),
 )
 
-builder.write_sample(0, {"feature_a": 1.23, "feature_b": 4.56})
-builder.write_sample(1, {"feature_a": 7.89})
-manifest_path = builder.build_shards()
+st = session.status()
+for sample_id in range(st.next_expected_sample_id, 2):
+    if sample_id == 0:
+        session.write_sample(sample_id, {"feature_a": 1.23, "feature_b": 4.56})
+    else:
+        session.write_sample(sample_id, {"feature_a": 7.89})
+
+session.finish_stage()
+manifest_path = session.build_shards(keep_sample_major=False)
 ```
 
-discovered-feature mode:
+중요:
+
+- `open_sample()` public path는 비활성화되어 있습니다.
+- 같은 sample을 다시 쓰지 않고, 항상 `next_expected_sample_id`부터 이어서 넣습니다.
+- `finish_sample_major()`는 legacy alias로 남아 있지만 새 코드는 `finish_stage()`를 권장합니다.
+
+### reader / selection
 
 ```python
-from fs.config import ScalarShardBuildOptions
-from fs.scalar import ScalarDatasetBuilder
+from fs.scalar import open_shard, select_features
 
-with ScalarDatasetBuilder(
-    out_dir="..\\data\\scalar_shards",
-    sample_meta_path="..\\data\\scalar_sample_meta.parquet",
-    build_options=ScalarShardBuildOptions(target_shard_mb=32, stats_y_cols=("y",)),
-) as builder:
-    with builder.open_sample(0) as sample:
-        sample.write_value("feature_x", 1.23)
-        sample.write_value("feature_y", 4.56)
+with open_shard("..\\data\\scalar_shards\\shard_manifest.json") as ds:
+    value = ds.get_value(feature_id=0, sample_id=0)
+    batch = ds.get_values(feature_id=0, sample_ids=[0, 1])
 
-    with builder.open_sample(1) as sample:
-        sample.write_values({"feature_y": 7.89, "feature_z": 0.12})
-
-    builder.finish_sample_major()
-    builder.update_feature_meta(
-        [
-            {"feature_key": "feature_x", "group": "alpha"},
-            {"feature_key": "feature_y", "group": "beta"},
-            {"feature_key": "feature_z", "group": "gamma"},
-        ],
-        require_all=True,
-    )
-    manifest_path = builder.build_shards(keep_sample_major=True)
+result = select_features(
+    manifest_path="..\\data\\scalar_shards\\shard_manifest.json",
+    y_col="y",
+    top_m=100,
+)
 ```
 
-주의:
+## Array 사용법
 
-- primary API는 sample 단위입니다.
-- 같은 `sample_id`를 두 번 쓰면 에러입니다.
-- intermediate sample-major stage는 bundle 기반입니다.
+### builder session
 
-## Array 파이프라인
+array는 sample context 안에서 trace를 추가합니다.
 
-### bundle/shard 예시
+- `ArrayDatasetBuilder.open_session(...)`
+- `status()`
+- `sample(sample_id=...)`
+- sample context 안에서 `add_trace(...)`
+- `finish_stage()`
+- `build_shards(...)`
 
-```powershell
-python -m scripts.generate_array_synth --bundle-out-dir ..\data\array_bundles --sample-meta ..\data\array_sample_meta.parquet --shard-out-dir ..\data\array_shards --n-samples 256 --n-features 64 --seed 7 --target-shard-mb 256 --samples-per-block 8 --row-group-size 64
-python -m scripts.build_array_shards --bundle-manifest ..\data\array_bundle_manifest.json --out-dir ..\data\array_shards --target-shard-mb 256 --samples-per-block 8 --row-group-size 64
-python -m scripts.build_array_binary_shards --bundle-manifest ..\data\array_bundle_manifest.json --out-dir ..\data\array_binary_shards --target-shard-mb 32 --samples-per-block 16 --codec none
-```
-
-### direct-ingestion builder
+예:
 
 ```python
 from fs.array import (
@@ -147,18 +139,17 @@ sample_meta_path = write_sample_meta(
         {"sample_key": "sample_000000", "split": "train"},
         {"sample_key": "sample_000001", "split": "test"},
     ],
-    "..\\data\\sample_meta.parquet",
+    "..\\data\\array_sample_meta.parquet",
 )
 feature_meta_path = write_feature_meta(
     [
         {"feature_key": "feature_a", "group": "alpha"},
-        {"feature_key": "feature_b", "group": "beta"},
     ],
-    "..\\data\\feature_meta.parquet",
+    "..\\data\\array_feature_meta.parquet",
 )
 
-with ArrayDatasetBuilder(
-    out_dir="..\\data\\array_binary_shards",
+session = ArrayDatasetBuilder.open_session(
+    out_dir="..\\data\\array_shards",
     sample_meta_path=sample_meta_path,
     point_schema=[
         PointColumnSpec(name="phase", storage_type=StorageType.INT32, logical_type=LogicalType.INTEGER),
@@ -166,34 +157,38 @@ with ArrayDatasetBuilder(
     ],
     feature_meta_path=feature_meta_path,
     build_options=ArrayBinaryBuildOptions(samples_per_block=16, target_shard_mb=32, codec="none"),
-) as builder:
-    builder.add_trace(
-        sample_id=0,
-        feature_key="feature_a",
-        columns={
-            "phase": [10, 11, 12],
-            "state_code": ["OK", "OK", "WARN"],
-        },
-    )
-    manifest_path = builder.build_shards()
+)
+
+st = session.status()
+for sample_id in range(st.next_expected_sample_id, 2):
+    with session.sample(sample_id=sample_id) as sample:
+        sample.add_trace(
+            feature_key="feature_a",
+            columns={
+                "phase": [10, 11, 12],
+                "state_code": ["OK", "OK", "WARN"],
+            },
+        )
+
+session.finish_stage()
+manifest_path = session.build_shards(cleanup_bundles=False)
 ```
 
-known-feature mode와 discovered-feature mode를 모두 지원한다.
+중요:
 
-## 서버
+- array는 sample 경계에서만 checkpoint가 생깁니다.
+- top-level `add_trace(...)`는 같은 sample 안에서만 연속 호출해야 합니다.
+- `finish_bundles()`는 legacy alias로 남아 있지만 새 코드는 `finish_stage()`를 권장합니다.
 
-서버 실행:
+### reader
 
-```powershell
-python -m scripts.serve_array_api
+```python
+from fs.array import open_shard
+
+with open_shard("..\\data\\array_shards\\array_binary_shard_manifest.json") as ds:
+    trace = ds.get_trace(feature_id=0, sample_id=0)
+    traces = ds.get_traces(feature_id=0, sample_ids=[0, 1])
 ```
-
-주요 엔드포인트:
-
-- `POST /array-schema`
-- `POST /array-feature`
-- `POST /scalar-feature`
-- `POST /run-selection`
 
 ## 테스트
 
@@ -208,3 +203,11 @@ python -m scripts.run_scalar_builder_tests
 python -m scripts.run_scalar_package_tests
 python -m scripts.run_array_binary_package_tests
 ```
+
+## 참고
+
+- array 포맷: [../docs/array_binary_shard_format_v3.md](../docs/array_binary_shard_format_v3.md)
+- scalar 포맷: [../docs/scalar_parquet_shard_format.md](../docs/scalar_parquet_shard_format.md)
+- Python wheel/package 사용법:
+  - [../packages/array_binary_shard/README.md](../packages/array_binary_shard/README.md)
+  - [../packages/scalar_feature_shard/README.md](../packages/scalar_feature_shard/README.md)

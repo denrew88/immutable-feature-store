@@ -80,6 +80,7 @@ $sourceSpecs = @(
     "java\src\fs\io\common\ArrayUtils.java",
     "java\src\fs\io\common\DuckDBUtils.java",
     "java\src\fs\model\array\ArrayBinaryShardInfo.java",
+    "java\src\fs\model\array\ArrayBuildSessionStatus.java",
     "java\src\fs\model\array\ArrayBlockLocation.java",
     "java\src\fs\model\array\ArrayBundleManifest.java",
     "java\src\fs\model\array\ArrayFeatureBlock.java",

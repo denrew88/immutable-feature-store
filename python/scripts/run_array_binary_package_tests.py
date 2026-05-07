@@ -294,24 +294,24 @@ def main():
         feature_keys=["feature_temporal"],
         build_options=BuildOptions(samples_per_block=4, target_shard_mb=8, codec="none"),
     )
-    ts_builder.add_trace(
-        sample_id=0,
-        feature_key="feature_temporal",
-        columns={
-            "ts": np.asarray(["2024-01-01T00:00:00", "2024-01-01T00:00:01"], dtype="datetime64[ns]"),
-            "dt": np.asarray([0, 1_000_000_000], dtype="timedelta64[ns]"),
-        },
-    )
-    try:
-        ts_builder.add_trace(
-            sample_id=1,
+    with ts_builder.sample(sample_id=0) as sample:
+        sample.add_trace(
             feature_key="feature_temporal",
             columns={
-                "ts": np.asarray(["2024-01-01T00:00:02"], dtype="datetime64[ns]"),
-                "dt": np.asarray([2_000_000_000], dtype="timedelta64[ns]"),
-                "extra_column": [123],
+                "ts": np.asarray(["2024-01-01T00:00:00", "2024-01-01T00:00:01"], dtype="datetime64[ns]"),
+                "dt": np.asarray([0, 1_000_000_000], dtype="timedelta64[ns]"),
             },
         )
+    try:
+        with ts_builder.sample(sample_id=1) as sample:
+            sample.add_trace(
+                feature_key="feature_temporal",
+                columns={
+                    "ts": np.asarray(["2024-01-01T00:00:02"], dtype="datetime64[ns]"),
+                    "dt": np.asarray([2_000_000_000], dtype="timedelta64[ns]"),
+                    "extra_column": [123],
+                },
+            )
     except ValueError:
         pass
     else:  # pragma: no cover - sanity guard
@@ -357,14 +357,23 @@ def main():
                 "state_code": ["FAIL"],
             },
         )
-    known_builder.add_trace(
-        sample_key="sample_000003",
-        feature_id=0,
-        columns={
-            "phase": [7, 8, 9],
-            "state_code": ["WARN", "WARN", "OK"],
-        },
-    )
+    with known_builder.sample(sample_key="sample_000001"):
+        pass
+    with known_builder.sample(sample_key="sample_000002"):
+        pass
+    with known_builder.sample(sample_key="sample_000003") as sample:
+        sample.add_trace(
+            feature_id=0,
+            columns={
+                "phase": [7, 8, 9],
+                "state_code": ["WARN", "WARN", "OK"],
+            },
+        )
+    known_status = known_builder.status()
+    assert known_status.last_committed_sample_id is None
+    assert known_status.next_expected_sample_id == 0
+    assert known_status.buffered_through_sample_id == 3
+    assert known_status.in_progress_sample_id is None
     known_manifest_path = known_builder.finish()
     with open_shard(known_manifest_path) as ds:
         assert tuple(ds.feature_keys()) == ("feature_alpha", "feature_beta")
@@ -385,42 +394,42 @@ def main():
         build_options=BuildOptions(samples_per_block=4, target_shard_mb=8, codec="none"),
     )
     try:
-        discovered_builder.add_trace(
-            sample_id=0,
-            feature_id=0,
-            columns={
-                "phase": [1],
-                "state_code": ["OK"],
-            },
-        )
+        with discovered_builder.sample(sample_id=0) as sample:
+            sample.add_trace(
+                feature_id=0,
+                columns={
+                    "phase": [1],
+                    "state_code": ["OK"],
+                },
+            )
     except ValueError:
         pass
     else:  # pragma: no cover - sanity guard
         raise AssertionError("expected discovered-feature mode to require feature_key")
-    discovered_builder.add_trace(
-        sample_id=0,
-        feature_key="feature_zeta",
-        columns={
-            "phase": [4, 5],
-            "state_code": ["WARN", "FAIL"],
-        },
-    )
-    discovered_builder.add_trace(
-        sample_id=1,
-        feature_key="feature_alpha",
-        columns={
-            "phase": [3],
-            "state_code": ["OK"],
-        },
-    )
-    discovered_builder.add_trace(
-        sample_id=2,
-        feature_key="feature_zeta",
-        columns={
-            "phase": [6],
-            "state_code": ["OK"],
-        },
-    )
+    with discovered_builder.sample(sample_id=0) as sample:
+        sample.add_trace(
+            feature_key="feature_zeta",
+            columns={
+                "phase": [4, 5],
+                "state_code": ["WARN", "FAIL"],
+            },
+        )
+    with discovered_builder.sample(sample_id=1) as sample:
+        sample.add_trace(
+            feature_key="feature_alpha",
+            columns={
+                "phase": [3],
+                "state_code": ["OK"],
+            },
+        )
+    with discovered_builder.sample(sample_id=2) as sample:
+        sample.add_trace(
+            feature_key="feature_zeta",
+            columns={
+                "phase": [6],
+                "state_code": ["OK"],
+            },
+        )
     updated_feature_meta_path = Path(
         discovered_builder.update_feature_meta(
             [

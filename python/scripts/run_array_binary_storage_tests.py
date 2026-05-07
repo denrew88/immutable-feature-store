@@ -349,11 +349,20 @@ def main():
             feature_key="feature_alpha",
             columns={"phase": [1, 2], "state_code": ["OK", "WARN"]},
         )
-    known_builder.add_trace(
-        sample_key="sample_003",
-        feature_id=1,
-        columns={"phase": [9], "state_code": ["FAIL"]},
-    )
+    with known_builder.sample(sample_key="sample_001"):
+        pass
+    with known_builder.sample(sample_key="sample_002"):
+        pass
+    with known_builder.sample(sample_key="sample_003") as sample:
+        sample.add_trace(
+            feature_id=1,
+            columns={"phase": [9], "state_code": ["FAIL"]},
+        )
+    known_status = known_builder.status()
+    assert known_status.last_committed_sample_id is None
+    assert known_status.next_expected_sample_id == 0
+    assert known_status.buffered_through_sample_id == 3
+    assert known_status.in_progress_sample_id is None
     known_builder_manifest_path = known_builder.finish()
     with open_shard(known_builder_manifest_path) as ds:
         known_trace = ds.get_trace_by_key(
@@ -372,25 +381,25 @@ def main():
         build_options=ArrayBinaryBuildOptions(samples_per_block=4, target_shard_mb=8, codec="none"),
     )
     try:
-        discovered_builder.add_trace(
-            sample_id=0,
-            feature_id=0,
-            columns={"phase": [1], "state_code": ["OK"]},
-        )
+        with discovered_builder.sample(sample_id=0) as sample:
+            sample.add_trace(
+                feature_id=0,
+                columns={"phase": [1], "state_code": ["OK"]},
+            )
     except ValueError:
         pass
     else:
         raise AssertionError("expected discovered-feature mode to require feature_key")
-    discovered_builder.add_trace(
-        sample_id=0,
-        feature_key="feature_zeta",
-        columns={"phase": [4, 5], "state_code": ["WARN", "FAIL"]},
-    )
-    discovered_builder.add_trace(
-        sample_id=1,
-        feature_key="feature_alpha",
-        columns={"phase": [3], "state_code": ["OK"]},
-    )
+    with discovered_builder.sample(sample_id=0) as sample:
+        sample.add_trace(
+            feature_key="feature_zeta",
+            columns={"phase": [4, 5], "state_code": ["WARN", "FAIL"]},
+        )
+    with discovered_builder.sample(sample_id=1) as sample:
+        sample.add_trace(
+            feature_key="feature_alpha",
+            columns={"phase": [3], "state_code": ["OK"]},
+        )
     updated_feature_meta_path = Path(
         discovered_builder.update_feature_meta(
             [
@@ -423,11 +432,11 @@ def main():
         build_options=ArrayBinaryBuildOptions(samples_per_block=4, target_shard_mb=8, codec="none"),
     )
     try:
-        strict_builder.add_trace(
-            sample_id=0,
-            feature_key="feature_only",
-            columns={"phase": [1], "state_code": ["OK"], "extra_column": [99]},
-        )
+        with strict_builder.sample(sample_id=0) as sample:
+            sample.add_trace(
+                feature_key="feature_only",
+                columns={"phase": [1], "state_code": ["OK"], "extra_column": [99]},
+            )
     except ValueError:
         pass
     else:

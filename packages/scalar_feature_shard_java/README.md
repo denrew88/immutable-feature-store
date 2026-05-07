@@ -1,20 +1,28 @@
-Java용 scalar feature shard 라이브러리 패키지다.
+# scalar-feature-shard-java
 
-이 패키지는 dense-id scalar shard reader facade, bundled sample-major stage 기반 direct-ingestion builder, selection facade, metadata helper를 담는다.
+Java 8용 scalar feature shard reader/builder/selection 패키지입니다.
 
-진입점:
+## 포함 내용
+
 - `fs.io.ScalarFeatureShards`
+- `fs.io.ScalarShardDataset`
+- `fs.io.ScalarDatasetBuilder`
 
-## 준비물
+이 패키지는 다음 작업을 지원합니다.
+
+- dense metadata parquet 작성
+- resumable scalar build session 실행
+- 최종 scalar shard 읽기
+- selection 후보 생성과 최종 선택
+
+## 준비
 
 - Java 8
-- Java runtime dependency jars
+- runtime dependency jars
   - `java/lib/duckdb_jdbc-1.1.3.jar`
   - `java/lib/jackson-core-2.20.0.jar`
   - `java/lib/jackson-databind-2.20.0.jar`
   - `java/lib/jackson-annotations-2.20.jar`
-
-jar가 없으면 먼저 내려받는다.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File java\download_java_libs.ps1
@@ -23,84 +31,60 @@ powershell -ExecutionPolicy Bypass -File java\download_java_libs.ps1
 ## 빌드
 
 ```powershell
-cd packages\scalar_feature_shard_java
-powershell -ExecutionPolicy Bypass -File .\build.ps1
+powershell -ExecutionPolicy Bypass -File packages\scalar_feature_shard_java\build.ps1
 ```
 
-출력:
+산출물:
+
 - `dist/scalar-feature-shard-java-0.1.0.jar`
 - `dist/scalar-feature-shard-java-0.1.0-sources.jar`
 - `dist/scalar-feature-shard-java-0.1.0-javadoc.jar`
 
-thin jar이므로 실행 시 `java/lib/*` 아래의 DuckDB JDBC와 Jackson jar를 classpath에 같이 넣어야 한다.
-
-IDE에서 Javadoc과 소스 탐색을 같이 쓰려면:
-- binary jar: `scalar-feature-shard-java-0.1.0.jar`
-- source attachment: `scalar-feature-shard-java-0.1.0-sources.jar`
-- javadoc attachment: `scalar-feature-shard-java-0.1.0-javadoc.jar`
+thin jar이므로 실행 시 DuckDB JDBC와 Jackson jars를 classpath에 같이 넣어야 합니다.
 
 ## Public API
 
-### `fs.io.ScalarFeatureShards`
+### `ScalarFeatureShards`
 
-정적 facade다. manifest 로드, metadata 작성, builder 생성, selection entrypoint를 묶는다.
-
-- `loadManifest(...)`
-  - `ShardManifest`를 읽는다.
-- `open(...)`
-  - `ScalarShardDataset`을 연다.
-- `writeSampleMeta(...)`
-  - sample metadata parquet를 쓴다.
-- `writeFeatureMeta(...)`
-  - feature metadata parquet를 쓴다.
+- `openSession(...)`
+  - resumable scalar build session을 연다
 - `newBuilder(...)`
-  - direct-ingestion builder를 만든다.
+  - legacy alias 역할을 한다
+- `open(...)`
+  - 최종 scalar shard reader를 연다
+- `writeSampleMeta(...)`, `writeFeatureMeta(...)`
+  - dense metadata parquet를 쓴다
 - `buildCandidates(...)`
-  - selection 후보 목록을 만든다.
+  - selection 후보만 만든다
 - `selectFeatures(...)`
-  - 최종 선택 결과를 만든다.
+  - 후보를 만든 뒤 최종 선택까지 진행한다
 
-### `fs.io.ScalarShardDataset`
+### `ScalarDatasetBuilder`
 
-scalar shard를 읽는 reader facade다.
+공통 lifecycle:
 
-- `manifest()`
-  - 현재 dataset의 manifest를 돌려준다.
-- `getValue(featureId, sampleId)`
-  - 값 하나를 읽는다.
-- `getValueByKey(featureKey, sampleKey)`
-  - 외부 키 기준으로 값 하나를 읽는다.
-- `getValues(featureId, sampleIds)`
-  - feature 하나에 대해 sample 여러 개를 읽는다.
-- `getValuesBySampleKeys(featureId, sampleKeys)`
-  - feature id + sample key 기준 조회다.
-- `getValuesByKeys(featureKey, sampleKeys)`
-  - feature key + sample key 기준 조회다.
-- `iterMany(featureIds, sampleIds[, batchSize, maintainOrder])`
-  - feature 여러 개를 batch로 읽고 `ScalarFeatureValues`를 하나씩 돌려준다.
-- `iterManyByKey(featureKeys, sampleKeys[, batchSize, maintainOrder])`
-  - key 기반 batched iteration이다.
-
-`maintainOrder=false`를 쓰면 feature를 shard locality 기준으로 재정렬해서 더 빠르게 읽을 수 있다.
-
-### `fs.io.ScalarDatasetBuilder`
-
-sample 단위 입력을 받아 sample-major stage를 만든 뒤 최종 shard를 빌드한다.
-
+- `openSession(...)`
+- `status()`
 - `writeSample(sampleId, values)`
-  - sample 하나를 한 번에 기록한다.
-- `openSample(sampleId)`
-  - context를 열고 `writeValue(...)`, `writeValues(...)`를 호출한다.
-- `finishSampleMajor()`
-  - intermediate sample-major stage를 마무리한다.
-- `updateFeatureMeta(records, on, requireAll)`
-  - discovered-feature mode 뒤에 feature metadata를 보강한다.
-- `buildShards([keepSampleMajor])`
-  - sample-major stage를 최종 shard artifact로 변환한다.
+- `finishStage()`
+- `buildShards(...)`
 
-## 사용 예제
+중요:
+
+- scalar public write 단위는 sample 하나입니다.
+- `writeValue(...)` 같은 per-value public path는 제공하지 않습니다.
+- resume는 `status().nextExpectedSampleId`를 기준으로 합니다.
+
+### `ScalarShardDataset`
+
+- `getValue(...)`, `getValueByKey(...)`
+- `getValues(...)`, `getValuesByKeys(...)`
+- `iterMany(...)`, `iterManyByKey(...)`
+
+## 예제
 
 ```java
+import fs.config.BuildShardConfig;
 import fs.io.ScalarDatasetBuilder;
 import fs.io.ScalarFeatureShards;
 import fs.io.ScalarShardDataset;
@@ -114,32 +98,51 @@ public class ScalarPackageExample {
     public static void main(String[] args) throws Exception {
         ScalarFeatureShards.writeSampleMeta(
                 Arrays.asList(
-                        row("sample_key", "sample_000000", "y", 1.0),
-                        row("sample_key", "sample_000001", "y", 2.0)
+                        row("sample_key", "sample_000000", "y", 1.0, "y_alt", 1.5),
+                        row("sample_key", "sample_000001", "y", 2.0, "y_alt", 2.5)
                 ),
                 "C:\\data\\sample_meta.parquet"
         );
 
         ScalarFeatureShards.writeFeatureMeta(
                 Arrays.asList(
-                        row("feature_key", "feature_a"),
-                        row("feature_key", "feature_b")
+                        row("feature_key", "feature_a", "group", "alpha"),
+                        row("feature_key", "feature_b", "group", "beta")
                 ),
                 "C:\\data\\feature_meta.parquet"
         );
 
-        try (ScalarDatasetBuilder builder = ScalarFeatureShards.newBuilder(
+        BuildShardConfig cfg = new BuildShardConfig();
+        cfg.targetShardBytes = 32L * 1024L * 1024L;
+        cfg.statsYCols = Arrays.asList("y", "y_alt");
+
+        try (ScalarDatasetBuilder session = ScalarFeatureShards.openSession(
                 "C:\\data\\scalar_shards",
                 "C:\\data\\sample_meta.parquet",
-                "C:\\data\\feature_meta.parquet")) {
-            builder.writeSample(0L, row("feature_a", 1.23, "feature_b", 4.56));
-            builder.writeSample(1L, row("feature_a", 7.89));
-            builder.buildShards(false);
+                "C:\\data\\feature_meta.parquet",
+                null,
+                cfg,
+                "C:\\data\\scalar_stage")) {
+
+            long next = session.status().nextExpectedSampleId;
+            for (long sampleId = next; sampleId < 2; sampleId++) {
+                if (sampleId == 0L) {
+                    session.writeSample(sampleId, row("feature_a", 1.23, "feature_b", 4.56));
+                } else {
+                    session.writeSample(sampleId, row("feature_a", 7.89));
+                }
+            }
+
+            session.finishStage();
+            session.buildShards(false);
         }
 
         try (ScalarShardDataset ds = ScalarFeatureShards.open("C:\\data\\scalar_shards\\shard_manifest.json")) {
-            ScalarFeatureValues values = ds.getValues(0, new long[]{0L, 1L});
-            System.out.println(values.values().size());
+            ScalarFeatureValues values = ds.getValuesByKeys(
+                    "feature_a",
+                    new String[]{"sample_000000", "sample_000001"}
+            );
+            System.out.println(values.values.size());
         }
     }
 
@@ -155,7 +158,5 @@ public class ScalarPackageExample {
 
 ## 참고
 
-- 최종 scalar artifact는 standalone 구조다.
-- `selection_stats/<y>.parquet`를 통해 selection fast path를 지원한다.
-- intermediate sample-major stage는 file-per-sample이 아니라 bundle 기반이다.
-- 포맷 설명은 `docs/scalar_parquet_shard_format.md`를 본다.
+- 포맷 상세: [docs/scalar_parquet_shard_format.md](../../docs/scalar_parquet_shard_format.md)
+- 전체 Java 사용법: [java/README.md](../../java/README.md)

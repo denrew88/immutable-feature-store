@@ -76,6 +76,11 @@ public class RunArrayV3TestsMain {
                         new String[]{"WARN"},
                         new String[]{"STOP"}));
             }
+            try (fs.io.ArrayDatasetBuilder.ArraySampleContext sample1 = builder.sample(1L)) {
+                // Intentionally leave sample_000001 empty so the reader path can
+                // verify missing-vs-empty handling without breaking sequential
+                // sample ingestion.
+            }
             try (fs.io.ArrayDatasetBuilder.ArraySampleContext sample2 = builder.sample(2L)) {
                 sample2.addTrace(null, "feature_a", columns(
                         new Instant[]{Instant.ofEpochSecond(4L, 7L)},

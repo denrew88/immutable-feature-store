@@ -1,14 +1,17 @@
 package fs.io;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import fs.config.ArrayBinaryBuildOptions;
 import fs.config.ArrayBundleConfig;
 import fs.config.ArrayShardConfig;
-import fs.io.array.ArrayBinaryFormat;
 import fs.io.array.ArraySampleBundleWriter;
 import fs.io.array.ArrayShardBuilder;
 import fs.io.common.ArrayMetadataWriter;
 import fs.io.common.ArrayUtils;
 import fs.io.common.JsonUtils;
+import fs.model.array.ArrayBuildSessionStatus;
 import fs.model.common.LogicalType;
 import fs.model.common.PointColumnSpec;
 import fs.model.common.StorageType;
@@ -25,46 +28,58 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * trace를 직접 받아 array bundle stage와 최종 binary shard artifact를 만드는 builder다.
+ * trace를 sample 단위로 받아 resumable array bundle stage를 만들고,
+ * 그 stage를 최종 array binary shard artifact로 변환하는 builder다.
  *
- * <p>사용자는 sample/feature metadata와 point schema를 주고 {@link #addTrace(long, Integer, String, Map)}
- * 또는 sample-scoped context를 통해 trace를 추가한다. builder는
- * 1) bundle parquet 작성
- * 2) feature metadata/dictionary 정리
- * 3) bundle stage를 최종 shard로 변환
- * 흐름을 감춘다.
+ * <p>자동 chunking은 내부 구현으로 숨겨지고, 커밋 단위는 seal된 bundle parquet
+ * 하나다. 사용자는 {@link #status()}를 보고 마지막 committed sample 다음부터
+ * 다시 넣으면 된다.
  */
 public class ArrayDatasetBuilder implements AutoCloseable {
+    private static final int STATE_VERSION = 1;
+
     private final String outDir;
     private final String sampleMetaPath;
     private final String bundleOutDir;
     private final String bundleSampleMetaPath;
+    private final String bundleManifestPath;
     private final String featureMetaPath;
+    private final String statePath;
+    private final String bundleLogPath;
+    private final String categoricalDictDir;
     private final ArrayBinaryBuildOptions buildOptions;
     private final ArrayShardConfig shardConfig;
     private final ArrayBundleConfig bundleConfig;
     private final List<PointColumnSpec> pointSchema;
-    private final boolean knownFeatureMode;
-    private final boolean writesFeatureMeta;
+    private final int nSamples;
+    private final ArrayList<String> sampleKeys;
+    private final HashMap<String, Long> sampleKeyToId;
     private final HashMap<String, Integer> featureKeyToId;
     private final ArrayList<String> featureKeysInOrder;
-    private final Integer knownFeatureCount;
     private final HashMap<String, CategoricalRegistry> categoricalRegistries;
+    private final boolean knownFeatureMode;
+    private final boolean writesFeatureMeta;
+    private final Integer knownFeatureCount;
+    private final String featureMetaSourcePath;
     private final ArraySampleBundleWriter bundleWriter;
-    private final int nSamples;
 
     private boolean closed;
     private boolean bundlesFinalized;
     private boolean finished;
     private String manifestPath;
-    private String bundleManifestPath;
+
+    private Long lastCommittedSampleId;
+    private int committedBundleCount;
+    private long cursorSampleId;
+    private Long pendingBundleFirstSampleId;
+    private Long pendingBundleLastSampleId;
+    private int pendingBundleSampleCount;
+    private int pendingBundleTraceCount;
+    private Long openSampleId;
+    private int currentSampleTraceCount;
 
     /**
-     * 기본 builder를 생성한다.
-     *
-     * @param outDir 최종 출력 디렉터리
-     * @param sampleMetaPath dense sample metadata parquet 경로
-     * @param pointSchema point column schema
+     * 기본 설정으로 새 세션을 열거나 기존 세션을 이어받는다.
      */
     public ArrayDatasetBuilder(
             String outDir,
@@ -74,12 +89,7 @@ public class ArrayDatasetBuilder implements AutoCloseable {
     }
 
     /**
-     * Python의 ArrayBinaryBuildOptions와 비슷한 고수준 build 옵션으로 builder를 생성한다.
-     *
-     * @param outDir 최종 출력 디렉터리
-     * @param sampleMetaPath dense sample metadata parquet 경로
-     * @param pointSchema point column schema
-     * @param buildOptions 고수준 binary shard build 옵션
+     * build 옵션을 지정해서 세션을 연다.
      */
     public ArrayDatasetBuilder(
             String outDir,
@@ -90,13 +100,7 @@ public class ArrayDatasetBuilder implements AutoCloseable {
     }
 
     /**
-     * known-feature metadata와 고수준 build 옵션으로 builder를 생성한다.
-     *
-     * @param outDir 최종 출력 디렉터리
-     * @param sampleMetaPath dense sample metadata parquet 경로
-     * @param pointSchema point column schema
-     * @param featureMetaPath known-feature mode에서 사용할 feature metadata parquet 경로
-     * @param buildOptions 고수준 binary shard build 옵션
+     * known-feature metadata와 build 옵션을 같이 주고 세션을 연다.
      */
     public ArrayDatasetBuilder(
             String outDir,
@@ -108,16 +112,7 @@ public class ArrayDatasetBuilder implements AutoCloseable {
     }
 
     /**
-     * 기존 생성자 시그니처를 유지하면서 shard/bundle config를 직접 받는 builder를 생성한다.
-     *
-     * @param outDir 최종 shard 출력 디렉터리
-     * @param sampleMetaPath dense sample metadata parquet 경로
-     * @param pointSchema point column schema
-     * @param featureMetaPath known-feature mode에서 사용할 feature metadata parquet 경로
-     * @param featureKeys known-feature mode에서 사용할 feature key 목록
-     * @param shardConfig 최종 shard build 설정
-     * @param bundleConfig 중간 bundle flush 설정
-     * @param bundleOutDir bundle stage 출력 디렉터리
+     * shard/bundle config를 직접 주고 세션을 연다.
      */
     public ArrayDatasetBuilder(
             String outDir,
@@ -132,16 +127,7 @@ public class ArrayDatasetBuilder implements AutoCloseable {
     }
 
     /**
-     * builder를 전체 옵션과 함께 생성한다.
-     *
-     * @param outDir 최종 shard 출력 디렉터리
-     * @param sampleMetaPath dense sample metadata parquet 경로
-     * @param pointSchema point column schema
-     * @param featureMetaPath known-feature mode에서 사용할 feature metadata parquet 경로
-     * @param featureKeys known-feature mode에서 사용할 feature key 목록
-     * @param shardConfig 최종 shard build 설정
-     * @param bundleConfig 중간 bundle flush 설정
-     * @param bundleOutDir bundle stage 출력 디렉터리
+     * 모든 옵션을 직접 주고 세션을 연다.
      */
     public ArrayDatasetBuilder(
             String outDir,
@@ -167,22 +153,32 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         this.bundlesFinalized = false;
         this.finished = false;
         this.manifestPath = "";
-        this.bundleManifestPath = "";
 
         List<LinkedHashMap<String, Object>> sampleRows = ArrayMetadataWriter.readRows(this.sampleMetaPath);
         validateDenseIds(sampleRows, "sample_id", "sample");
         this.nSamples = sampleRows.size();
+        this.sampleKeys = new ArrayList<String>(this.nSamples);
+        this.sampleKeyToId = new HashMap<String, Long>();
+        for (int sampleId = 0; sampleId < sampleRows.size(); sampleId++) {
+            Object sampleKey = sampleRows.get(sampleId).get(this.buildOptions.sampleKeyCol);
+            String key = (sampleKey == null) ? null : sampleKey.toString();
+            sampleKeys.add(key);
+            if (key != null) {
+                sampleKeyToId.put(key, Long.valueOf(sampleId));
+            }
+        }
 
         File bundleRoot = (bundleOutDir == null || bundleOutDir.isEmpty())
                 ? new File(this.outDir, "bundle_stage")
                 : new File(bundleOutDir);
         this.bundleOutDir = bundleRoot.getAbsolutePath();
-        prepareEmptyDir(bundleRoot);
-
         this.bundleSampleMetaPath = new File(bundleRoot, "sample_meta.parquet").getAbsolutePath();
-        Files.copy(new File(this.sampleMetaPath).toPath(), new File(this.bundleSampleMetaPath).toPath(), StandardCopyOption.REPLACE_EXISTING);
-
+        this.bundleManifestPath = new File(bundleRoot, "array_bundle_manifest.json").getAbsolutePath();
         this.featureMetaPath = new File(bundleRoot, "feature_meta.parquet").getAbsolutePath();
+        this.statePath = new File(bundleRoot, "state.json").getAbsolutePath();
+        this.bundleLogPath = new File(bundleRoot, "bundles.jsonl").getAbsolutePath();
+        this.categoricalDictDir = new File(bundleRoot, "categorical_dictionaries").getAbsolutePath();
+
         this.featureKeyToId = new HashMap<String, Integer>();
         this.featureKeysInOrder = new ArrayList<String>();
         this.categoricalRegistries = new HashMap<String, CategoricalRegistry>();
@@ -192,113 +188,159 @@ public class ArrayDatasetBuilder implements AutoCloseable {
             }
         }
 
-        if (featureMetaPath != null && !featureMetaPath.isEmpty()) {
-            this.knownFeatureMode = true;
-            this.writesFeatureMeta = false;
-            File src = new File(featureMetaPath).getAbsoluteFile();
-            Files.copy(src.toPath(), new File(this.featureMetaPath).toPath(), StandardCopyOption.REPLACE_EXISTING);
-            List<LinkedHashMap<String, Object>> featureRows = ArrayMetadataWriter.readRows(this.featureMetaPath);
-            validateDenseIds(featureRows, "feature_id", "feature");
-            this.knownFeatureCount = Integer.valueOf(featureRows.size());
-            for (LinkedHashMap<String, Object> row : featureRows) {
-                Object featureKey = row.get(this.buildOptions.featureKeyCol);
-                if (featureKey != null) {
-                    String key = featureKey.toString();
-                    int id = ((Number) row.get("feature_id")).intValue();
-                    featureKeyToId.put(key, Integer.valueOf(id));
-                    featureKeysInOrder.add(key);
-                }
+        if (new File(this.statePath).exists()) {
+            SessionState state = resumeStage(featureMetaPath, featureKeys);
+            this.knownFeatureMode = state.knownFeatureMode;
+            this.writesFeatureMeta = state.writesFeatureMeta;
+            this.knownFeatureCount = state.knownFeatureCount;
+            this.featureMetaSourcePath = state.featureMetaSourcePath;
+            restoreCategoricalState(state.categoricalLabelsByColumn);
+            this.lastCommittedSampleId = state.lastCommittedSampleId;
+            this.committedBundleCount = state.committedBundleCount;
+            this.cursorSampleId = state.nextExpectedSampleId;
+            this.pendingBundleFirstSampleId = null;
+            this.pendingBundleLastSampleId = null;
+            this.pendingBundleSampleCount = 0;
+            this.pendingBundleTraceCount = 0;
+            this.openSampleId = null;
+            this.currentSampleTraceCount = 0;
+            this.bundlesFinalized = state.finishedStage;
+            if (bundlesFinalized) {
+                this.manifestPath = bundleManifestPath;
             }
-        } else if (featureKeys != null) {
-            this.knownFeatureMode = true;
-            this.writesFeatureMeta = true;
-            int nextId = 0;
-            for (String featureKey : featureKeys) {
-                if (featureKeyToId.containsKey(featureKey)) {
-                    throw new IllegalArgumentException("duplicate feature key: " + featureKey);
-                }
-                featureKeyToId.put(featureKey, Integer.valueOf(nextId++));
-                featureKeysInOrder.add(featureKey);
-            }
-            this.knownFeatureCount = Integer.valueOf(featureKeysInOrder.size());
+            this.bundleWriter = new ArraySampleBundleWriter(
+                    this.bundleOutDir,
+                    this.bundleSampleMetaPath,
+                    this.featureMetaPath,
+                    this.nSamples,
+                    this.bundleConfig,
+                    this.pointSchema,
+                    state.nextBundleId,
+                    false);
         } else {
-            this.knownFeatureMode = false;
-            this.writesFeatureMeta = true;
-            this.knownFeatureCount = null;
+            SessionState state = initializeNewStage(bundleRoot, featureMetaPath, featureKeys);
+            this.knownFeatureMode = state.knownFeatureMode;
+            this.writesFeatureMeta = state.writesFeatureMeta;
+            this.knownFeatureCount = state.knownFeatureCount;
+            this.featureMetaSourcePath = state.featureMetaSourcePath;
+            this.lastCommittedSampleId = null;
+            this.committedBundleCount = 0;
+            this.cursorSampleId = 0L;
+            this.pendingBundleFirstSampleId = null;
+            this.pendingBundleLastSampleId = null;
+            this.pendingBundleSampleCount = 0;
+            this.pendingBundleTraceCount = 0;
+            this.openSampleId = null;
+            this.currentSampleTraceCount = 0;
+            this.bundleWriter = new ArraySampleBundleWriter(
+                    this.bundleOutDir,
+                    this.bundleSampleMetaPath,
+                    this.featureMetaPath,
+                    this.nSamples,
+                    this.bundleConfig,
+                    this.pointSchema,
+                    0,
+                    false);
+            saveState();
         }
-
-        this.bundleWriter = new ArraySampleBundleWriter(
-                this.bundleOutDir,
-                this.bundleSampleMetaPath,
-                this.featureMetaPath,
-                this.nSamples,
-                this.bundleConfig,
-                this.pointSchema);
     }
 
     /**
-     * sample 단위로 trace를 추가하는 context를 연다.
-     *
-     * @param sampleId dense sample id
-     * @return sample-scoped helper
+     * 기본 설정으로 세션을 연다.
      */
-    public ArraySampleContext sample(long sampleId) {
+    public static ArrayDatasetBuilder openSession(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema) throws Exception {
+        return new ArrayDatasetBuilder(outDir, sampleMetaPath, pointSchema);
+    }
+
+    /**
+     * build 옵션을 직접 지정해서 세션을 연다.
+     */
+    public static ArrayDatasetBuilder openSession(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema,
+            ArrayBinaryBuildOptions buildOptions) throws Exception {
+        return new ArrayDatasetBuilder(outDir, sampleMetaPath, pointSchema, buildOptions);
+    }
+
+    /**
+     * known-feature metadata와 build 옵션을 같이 주고 세션을 연다.
+     */
+    public static ArrayDatasetBuilder openSession(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema,
+            String featureMetaPath,
+            ArrayBinaryBuildOptions buildOptions) throws Exception {
+        return new ArrayDatasetBuilder(outDir, sampleMetaPath, pointSchema, featureMetaPath, buildOptions);
+    }
+
+    /**
+     * 현재 세션의 resume-safe 상태를 돌려준다.
+     */
+    public ArrayBuildSessionStatus status() {
+        long nextExpected = resumeNextSampleId();
+        return new ArrayBuildSessionStatus(
+                lastCommittedSampleId,
+                sampleKeyForId(lastCommittedSampleId),
+                nextExpected,
+                sampleKeyForId(Long.valueOf(nextExpected)),
+                committedBundleCount,
+                bundlesFinalized,
+                bundlesFinalized ? bundleManifestPath : "",
+                pendingBundleLastSampleId,
+                sampleKeyForId(pendingBundleLastSampleId),
+                openSampleId,
+                sampleKeyForId(openSampleId));
+    }
+
+    /**
+     * sample id 기준으로 trace를 묶어 쓰는 context를 연다.
+     */
+    public ArraySampleContext sample(long sampleId) throws Exception {
         ensureTraceStageOpen();
         return new ArraySampleContext(this, sampleId);
     }
 
     /**
-     * trace 하나를 바로 builder에 추가한다.
+     * sample key 기준으로 trace를 묶어 쓰는 context를 연다.
+     */
+    public ArraySampleContext sample(String sampleKey) throws Exception {
+        ensureTraceStageOpen();
+        return new ArraySampleContext(this, resolveSampleId(null, sampleKey));
+    }
+
+    /**
+     * trace 하나를 현재 sample에 추가한다.
      *
-     * <p>feature는 id 또는 key로 지정할 수 있고, column map은 point schema와 정확히 일치해야 한다.
-     * categorical column은 필요하면 code array로 변환한 뒤 bundle writer로 전달한다.
-     *
-     * @param sampleId dense sample id
-     * @param featureId known-feature mode에서 직접 줄 feature id
-     * @param featureKey known/discovered mode에서 사용할 feature key
-     * @param columns point schema와 일치하는 column map
+     * <p>top-level addTrace는 같은 sample 안에서만 연속 호출할 수 있다.
+     * sample 경계를 넘기려면 {@link #sample(long)} 또는 {@link #sample(String)}
+     * context를 써서 이전 sample을 명시적으로 닫아야 한다.
      */
     public void addTrace(long sampleId, Integer featureId, String featureKey, Map<String, Object> columns) throws Exception {
         ensureTraceStageOpen();
-        if (sampleId < 0L || sampleId >= nSamples) {
-            throw new IllegalArgumentException("sample_id out of range: " + sampleId);
+        long resolvedSampleId = resolveSampleId(Long.valueOf(sampleId), null);
+        if (openSampleId == null) {
+            beginSample(resolvedSampleId);
+        } else if (openSampleId.longValue() != resolvedSampleId) {
+            throw new IllegalStateException(
+                    "addTrace(...) crossed a sample boundary without closing the previous sample. "
+                            + "Use sample(...) contexts or process traces for each sample together.");
         }
         int resolvedFeatureId = resolveFeatureId(featureId, featureKey);
         LinkedHashMap<String, Object> normalizedColumns = normalizeColumns(columns);
-        bundleWriter.appendTrace(sampleId, resolvedFeatureId, normalizedColumns);
+        bundleWriter.appendTrace(resolvedSampleId, resolvedFeatureId, normalizedColumns);
+        currentSampleTraceCount += 1;
     }
 
     /**
-     * bundle stage를 finalize하고 bundle manifest를 반환한다.
-     *
-     * <p>feature metadata 자동 생성, categorical dictionary JSON 작성, point schema 확정이
-     * 이 단계에서 함께 일어난다.
-     *
-     * @return bundle manifest 경로
-     */
-    public String finishBundles() throws Exception {
-        if (bundlesFinalized) {
-            return bundleManifestPath;
-        }
-        ensureOpen();
-        writeFeatureMeta();
-        writeCategoricalDictionaries();
-        bundleWriter.updatePointSchema(pointSchema);
-        bundleManifestPath = bundleWriter.finish();
-        bundlesFinalized = true;
-        return bundleManifestPath;
-    }
-
-    /**
-     * 자동 생성된 feature metadata에 새 컬럼을 merge한다.
-     *
-     * @param records 추가할 metadata row 목록
-     * @param on 조인 키 컬럼. 비어 있으면 feature_key 또는 feature_id를 자동 선택한다.
-     * @param requireAll 모든 feature가 새 컬럼 값을 가져야 하는지 여부
-     * @return 갱신된 feature metadata parquet 경로
+     * finalized stage의 feature metadata에 새 컬럼을 merge한다.
      */
     public String updateFeatureMeta(List<Map<String, Object>> records, String on, boolean requireAll) throws Exception {
-        finishBundles();
+        finishStage();
         List<LinkedHashMap<String, Object>> baseRows = ArrayMetadataWriter.readRows(featureMetaPath);
         String joinCol = (on == null || on.isEmpty())
                 ? (containsMetadataColumn(baseRows, this.buildOptions.featureKeyCol) ? this.buildOptions.featureKeyCol : "feature_id")
@@ -354,39 +396,84 @@ public class ArrayDatasetBuilder implements AutoCloseable {
     }
 
     /**
-     * bundle stage를 바탕으로 최종 binary shard dataset을 만든다.
-     *
-     * @return 최종 shard manifest 경로
+     * committed bundle들과 metadata를 바탕으로 stage manifest를 materialize한다.
+     */
+    public String finishStage() throws Exception {
+        if (bundlesFinalized) {
+            return bundleManifestPath;
+        }
+        ensureOpen();
+        endSample(false);
+        commitPendingBundle(true);
+        writeFeatureMeta();
+        writeCategoricalDictionaries();
+        bundleWriter.updatePointSchema(pointSchema);
+        bundleWriter.finish();
+        bundlesFinalized = true;
+        manifestPath = bundleManifestPath;
+        saveState();
+        return bundleManifestPath;
+    }
+
+    /**
+     * legacy alias.
+     */
+    public String finishBundles() throws Exception {
+        return finishStage();
+    }
+
+    /**
+     * finalized stage를 바탕으로 최종 array binary shard를 만든다.
      */
     public String buildShards() throws Exception {
         return buildShards(false);
     }
 
     /**
-     * bundle stage를 바탕으로 최종 binary shard dataset을 만든다.
-     *
-     * @param cleanupBundles true면 build 후 bundle stage를 삭제한다
-     * @return 최종 shard manifest 경로
+     * finalized stage를 바탕으로 최종 array binary shard를 만든다.
      */
     public String buildShards(boolean cleanupBundles) throws Exception {
+        return buildShards(cleanupBundles, false);
+    }
+
+    /**
+     * build stats가 필요하면 같이 반환한다.
+     */
+    public String buildShards(boolean cleanupBundles, boolean returnStats) throws Exception {
         if (finished) {
+            if (returnStats) {
+                throw new IllegalStateException("array dataset builder has already built shards; build stats are no longer available");
+            }
             return manifestPath;
         }
         ensureOpen();
-        String bundleManifest = finishBundles();
-        manifestPath = ArrayShardBuilder.buildFromBundles(
-                bundleManifest,
+        String stageManifestPath = finishStage();
+        Object buildResult = ArrayShardBuilder.buildFromBundles(
+                stageManifestPath,
                 outDir,
                 shardConfig,
                 this.buildOptions.codec,
                 this.buildOptions.sampleKeyCol,
                 this.buildOptions.featureKeyCol);
+        if (!(buildResult instanceof String)) {
+            // current Java path always returns just the manifest path
+            manifestPath = String.valueOf(buildResult);
+        } else {
+            manifestPath = (String) buildResult;
+        }
         if (cleanupBundles) {
             deleteRecursively(new File(bundleOutDir));
         }
         finished = true;
-        closed = true;
+        close();
         return manifestPath;
+    }
+
+    /**
+     * legacy convenience alias.
+     */
+    public String finish() throws Exception {
+        return buildShards(false);
     }
 
     @Override
@@ -396,15 +483,16 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         }
         try {
             if (!bundlesFinalized) {
-                try {
-                    bundleWriter.close();
-                } catch (Exception ignored) {
-                    // best-effort cleanup path
-                }
-                deleteRecursively(new File(bundleOutDir));
+                endSample(false);
+                commitPendingBundle(true);
+                saveState();
             }
         } finally {
-            closed = true;
+            try {
+                bundleWriter.close();
+            } finally {
+                closed = true;
+            }
         }
     }
 
@@ -419,14 +507,372 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         if (bundlesFinalized) {
             throw new IllegalStateException("bundle stage has already been finalized");
         }
+        if (finished) {
+            throw new IllegalStateException("array shards have already been built");
+        }
     }
 
-    /**
-     * feature id/key 입력을 dense feature id 하나로 정규화한다.
-     *
-     * <p>known-feature mode에서는 기존 metadata 안에서만 해석하고,
-     * discovered-feature mode에서는 처음 본 key에 새 dense id를 붙인다.
-     */
+    private long resolveSampleId(Long sampleId, String sampleKey) {
+        if (sampleId == null && (sampleKey == null || sampleKey.isEmpty())) {
+            throw new IllegalArgumentException("provide either sample_id or sample_key");
+        }
+        if (sampleId != null && sampleKey != null && !sampleKey.isEmpty()) {
+            long resolved = resolveSampleId(null, sampleKey);
+            if (sampleId.longValue() != resolved) {
+                throw new IllegalArgumentException("sample_id/sample_key mismatch: " + sampleId + " != " + sampleKey);
+            }
+            return sampleId.longValue();
+        }
+        if (sampleId != null) {
+            if (sampleId.longValue() < 0L || sampleId.longValue() >= nSamples) {
+                throw new IllegalArgumentException("sample_id out of range: " + sampleId);
+            }
+            return sampleId.longValue();
+        }
+        Long resolved = sampleKeyToId.get(sampleKey);
+        if (resolved == null) {
+            throw new IllegalArgumentException("unknown sample key: " + sampleKey);
+        }
+        return resolved.longValue();
+    }
+
+    private void beginSample(long sampleId) {
+        ensureTraceStageOpen();
+        if (sampleId != cursorSampleId) {
+            throw new IllegalArgumentException(
+                    "array session expects sample_id " + cursorSampleId + "; got " + sampleId
+                            + ". Resume from status().nextExpectedSampleId and process samples sequentially.");
+        }
+        if (openSampleId != null) {
+            if (openSampleId.longValue() == sampleId) {
+                return;
+            }
+            throw new IllegalStateException("another sample context is already open");
+        }
+        openSampleId = Long.valueOf(sampleId);
+        currentSampleTraceCount = 0;
+    }
+
+    private void endSample(boolean abort) throws Exception {
+        if (openSampleId == null) {
+            return;
+        }
+        long sampleId = openSampleId.longValue();
+        int traceCount = currentSampleTraceCount;
+        openSampleId = null;
+        currentSampleTraceCount = 0;
+        if (abort) {
+            return;
+        }
+        recordProcessedSample(sampleId, traceCount);
+        commitPendingBundle(false);
+        saveState();
+    }
+
+    private void recordProcessedSample(long sampleId, int traceCount) {
+        if (pendingBundleFirstSampleId == null) {
+            pendingBundleFirstSampleId = Long.valueOf(sampleId);
+        }
+        pendingBundleLastSampleId = Long.valueOf(sampleId);
+        pendingBundleSampleCount += 1;
+        pendingBundleTraceCount += traceCount;
+        cursorSampleId = sampleId + 1L;
+    }
+
+    private void commitPendingBundle(boolean force) throws Exception {
+        if (!force && !bundleWriter.shouldFlushBundle()) {
+            return;
+        }
+        ArraySampleBundleWriter.BundleCommit commit = bundleWriter.flushBundle();
+        if (commit == null) {
+            return;
+        }
+        ObjectNode record = JsonUtils.objectNode();
+        record.put("bundle_id", commit.bundleId);
+        record.put("path", relativeTo(bundleOutDir, commit.path));
+        record.put("first_sample_id", pendingBundleFirstSampleId.longValue());
+        record.put("last_sample_id", pendingBundleLastSampleId.longValue());
+        record.put("first_sample_key", sampleKeyForId(pendingBundleFirstSampleId));
+        record.put("last_sample_key", sampleKeyForId(pendingBundleLastSampleId));
+        record.put("sample_count", pendingBundleSampleCount);
+        record.put("trace_count", pendingBundleTraceCount);
+        record.put("row_count", commit.rowCount);
+        record.put("byte_size", commit.byteSize);
+        JsonUtils.appendJsonLine(bundleLogPath, record);
+
+        lastCommittedSampleId = pendingBundleLastSampleId;
+        committedBundleCount += 1;
+        pendingBundleFirstSampleId = null;
+        pendingBundleLastSampleId = null;
+        pendingBundleSampleCount = 0;
+        pendingBundleTraceCount = 0;
+        saveState();
+    }
+
+    private long resumeNextSampleId() {
+        if (lastCommittedSampleId == null) {
+            return 0L;
+        }
+        return lastCommittedSampleId.longValue() + 1L;
+    }
+
+    private String sampleKeyForId(Long sampleId) {
+        if (sampleId == null) {
+            return "";
+        }
+        long idx = sampleId.longValue();
+        if (idx < 0L || idx >= sampleKeys.size()) {
+            return "";
+        }
+        String key = sampleKeys.get((int) idx);
+        return (key == null) ? "" : key;
+    }
+
+    private void saveState() throws Exception {
+        JsonUtils.writeJsonAtomic(statePath, statePayload());
+    }
+
+    private ObjectNode statePayload() {
+        ObjectNode root = JsonUtils.objectNode();
+        root.put("format_version", STATE_VERSION);
+        root.put("stage_type", "array_bundle_stage_v1");
+        root.put("sample_meta_path", sampleMetaPath);
+        root.put("feature_meta_source_path", featureMetaSourcePath);
+        root.set("build_options", buildOptionsPayload());
+        ArrayNode schemaNode = root.putArray("point_schema");
+        for (PointColumnSpec spec : pointSchema) {
+            ObjectNode item = schemaNode.addObject();
+            item.put("name", spec.name);
+            item.put("storage_type", spec.storageType.value);
+            item.put("logical_type", spec.logicalType.value);
+        }
+        root.put("known_feature_mode", knownFeatureMode);
+        root.put("writes_feature_meta", writesFeatureMeta);
+        if (knownFeatureCount == null) {
+            root.putNull("known_feature_count");
+        } else {
+            root.put("known_feature_count", knownFeatureCount.intValue());
+        }
+        ArrayNode featureKeysNode = root.putArray("feature_keys_in_order");
+        for (String featureKey : featureKeysInOrder) {
+            featureKeysNode.add(featureKey);
+        }
+        ObjectNode categoricalNode = root.putObject("categorical_labels");
+        for (Map.Entry<String, CategoricalRegistry> entry : categoricalRegistries.entrySet()) {
+            ArrayNode labels = categoricalNode.putArray(entry.getKey());
+            for (String label : entry.getValue().codeToLabel) {
+                labels.add(label);
+            }
+        }
+        root.put("next_bundle_id", bundleWriter.nextBundleId());
+        if (lastCommittedSampleId == null) {
+            root.putNull("last_committed_sample_id");
+        } else {
+            root.put("last_committed_sample_id", lastCommittedSampleId.longValue());
+        }
+        root.put("last_committed_sample_key", sampleKeyForId(lastCommittedSampleId));
+        root.put("next_expected_sample_id", resumeNextSampleId());
+        root.put("next_expected_sample_key", sampleKeyForId(Long.valueOf(resumeNextSampleId())));
+        root.put("committed_bundle_count", committedBundleCount);
+        root.put("finished_stage", bundlesFinalized);
+        if (bundlesFinalized) {
+            root.put("bundle_manifest_path", bundleManifestPath);
+        } else {
+            root.putNull("bundle_manifest_path");
+        }
+        if (pendingBundleLastSampleId == null) {
+            root.putNull("buffered_through_sample_id");
+            root.putNull("buffered_through_sample_key");
+        } else {
+            root.put("buffered_through_sample_id", pendingBundleLastSampleId.longValue());
+            root.put("buffered_through_sample_key", sampleKeyForId(pendingBundleLastSampleId));
+        }
+        if (openSampleId == null) {
+            root.putNull("in_progress_sample_id");
+            root.putNull("in_progress_sample_key");
+        } else {
+            root.put("in_progress_sample_id", openSampleId.longValue());
+            root.put("in_progress_sample_key", sampleKeyForId(openSampleId));
+        }
+        return root;
+    }
+
+    private ObjectNode buildOptionsPayload() {
+        ObjectNode root = JsonUtils.objectNode();
+        root.put("target_shard_mb", buildOptions.targetShardMb);
+        if (buildOptions.nShards == null) {
+            root.putNull("n_shards");
+        } else {
+            root.put("n_shards", buildOptions.nShards.intValue());
+        }
+        root.put("samples_per_block", buildOptions.samplesPerBlock);
+        root.put("codec", buildOptions.codec);
+        root.put("zstd_level", buildOptions.zstdLevel);
+        root.put("sample_key_col", buildOptions.sampleKeyCol);
+        root.put("feature_key_col", buildOptions.featureKeyCol);
+        return root;
+    }
+
+    private SessionState initializeNewStage(File bundleRoot, String featureMetaPath, List<String> featureKeys) throws Exception {
+        prepareEmptyDir(bundleRoot);
+        Files.copy(new File(this.sampleMetaPath).toPath(), new File(this.bundleSampleMetaPath).toPath(), StandardCopyOption.REPLACE_EXISTING);
+
+        boolean localKnownFeatureMode;
+        boolean localWritesFeatureMeta;
+        Integer localKnownFeatureCount;
+        String localFeatureMetaSourcePath = "";
+
+        if (featureMetaPath != null && !featureMetaPath.isEmpty()) {
+            localKnownFeatureMode = true;
+            localWritesFeatureMeta = false;
+            File src = new File(featureMetaPath).getAbsoluteFile();
+            localFeatureMetaSourcePath = src.getAbsolutePath();
+            Files.copy(src.toPath(), new File(this.featureMetaPath).toPath(), StandardCopyOption.REPLACE_EXISTING);
+            List<LinkedHashMap<String, Object>> featureRows = ArrayMetadataWriter.readRows(this.featureMetaPath);
+            validateDenseIds(featureRows, "feature_id", "feature");
+            localKnownFeatureCount = Integer.valueOf(featureRows.size());
+            for (LinkedHashMap<String, Object> row : featureRows) {
+                Object featureKey = row.get(this.buildOptions.featureKeyCol);
+                if (featureKey != null) {
+                    String key = featureKey.toString();
+                    int id = ((Number) row.get("feature_id")).intValue();
+                    featureKeyToId.put(key, Integer.valueOf(id));
+                    featureKeysInOrder.add(key);
+                }
+            }
+        } else if (featureKeys != null) {
+            localKnownFeatureMode = true;
+            localWritesFeatureMeta = true;
+            int nextId = 0;
+            for (String featureKey : featureKeys) {
+                if (featureKeyToId.containsKey(featureKey)) {
+                    throw new IllegalArgumentException("duplicate feature key: " + featureKey);
+                }
+                featureKeyToId.put(featureKey, Integer.valueOf(nextId++));
+                featureKeysInOrder.add(featureKey);
+            }
+            localKnownFeatureCount = Integer.valueOf(featureKeysInOrder.size());
+        } else {
+            localKnownFeatureMode = false;
+            localWritesFeatureMeta = true;
+            localKnownFeatureCount = null;
+        }
+        return new SessionState(localKnownFeatureMode, localWritesFeatureMeta, localKnownFeatureCount, localFeatureMetaSourcePath, 0, null, 0, 0L, false, new HashMap<String, ArrayList<String>>());
+    }
+
+    private SessionState resumeStage(String featureMetaPath, List<String> featureKeys) throws Exception {
+        JsonNode state = JsonUtils.readJson(statePath);
+        validateResumeState(state, featureMetaPath, featureKeys);
+        cleanupTmpFiles(new File(bundleOutDir));
+        cleanupTmpFiles(new File(new File(bundleOutDir), "array_sample_bundles"));
+
+        JsonNode featureKeysNode = state.get("feature_keys_in_order");
+        if (featureKeysNode != null && featureKeysNode.isArray()) {
+            for (JsonNode node : featureKeysNode) {
+                String featureKey = node.asText();
+                featureKeyToId.put(featureKey, Integer.valueOf(featureKeysInOrder.size()));
+                featureKeysInOrder.add(featureKey);
+            }
+        }
+
+        HashMap<String, ArrayList<String>> categoricalLabels = new HashMap<String, ArrayList<String>>();
+        JsonNode categoricalNode = state.get("categorical_labels");
+        if (categoricalNode != null && categoricalNode.isObject()) {
+            java.util.Iterator<String> names = categoricalNode.fieldNames();
+            while (names.hasNext()) {
+                String name = names.next();
+                JsonNode labelsNode = categoricalNode.get(name);
+                ArrayList<String> labels = new ArrayList<String>();
+                if (labelsNode != null && labelsNode.isArray()) {
+                    for (JsonNode labelNode : labelsNode) {
+                        labels.add(labelNode.asText());
+                    }
+                }
+                categoricalLabels.put(name, labels);
+            }
+        }
+
+        List<JsonNode> bundleRecords = JsonUtils.readJsonLines(bundleLogPath);
+        Long localLastCommitted = bundleRecords.isEmpty()
+                ? null
+                : Long.valueOf(bundleRecords.get(bundleRecords.size() - 1).get("last_sample_id").asLong());
+        long nextExpected = (localLastCommitted == null) ? 0L : localLastCommitted.longValue() + 1L;
+        return new SessionState(
+                state.path("known_feature_mode").asBoolean(false),
+                state.path("writes_feature_meta").asBoolean(false),
+                state.path("known_feature_count").isNumber() ? Integer.valueOf(state.path("known_feature_count").asInt()) : null,
+                textOrEmpty(state, "feature_meta_source_path"),
+                state.path("next_bundle_id").asInt(bundleRecords.size()),
+                localLastCommitted,
+                bundleRecords.size(),
+                nextExpected,
+                state.path("finished_stage").asBoolean(false),
+                categoricalLabels);
+    }
+
+    private void validateResumeState(JsonNode state, String featureMetaPath, List<String> featureKeys) {
+        if (!"array_bundle_stage_v1".equals(textOrEmpty(state, "stage_type"))) {
+            throw new IllegalArgumentException("unsupported array build session type: " + textOrEmpty(state, "stage_type"));
+        }
+        if (!sampleMetaPath.equals(textOrEmpty(state, "sample_meta_path"))) {
+            throw new IllegalArgumentException("sampleMetaPath does not match existing array build session");
+        }
+        if (!buildOptionsPayload().equals(state.get("build_options"))) {
+            throw new IllegalArgumentException("buildOptions do not match existing array build session");
+        }
+        if (!pointSchemaEquals(state.get("point_schema"))) {
+            throw new IllegalArgumentException("pointSchema does not match existing array build session");
+        }
+        String storedSource = textOrEmpty(state, "feature_meta_source_path");
+        if (featureMetaPath != null && !featureMetaPath.isEmpty() && !storedSource.isEmpty()) {
+            String normalized = new File(featureMetaPath).getAbsolutePath();
+            if (!normalized.equals(storedSource)) {
+                throw new IllegalArgumentException("featureMetaPath does not match existing array build session");
+            }
+        }
+        if (featureKeys != null) {
+            JsonNode raw = state.get("feature_keys_in_order");
+            if (raw == null || !raw.isArray() || raw.size() != featureKeys.size()) {
+                throw new IllegalArgumentException("featureKeys do not match existing array build session");
+            }
+            for (int i = 0; i < featureKeys.size(); i++) {
+                if (!featureKeys.get(i).equals(raw.get(i).asText())) {
+                    throw new IllegalArgumentException("featureKeys do not match existing array build session");
+                }
+            }
+        }
+    }
+
+    private boolean pointSchemaEquals(JsonNode raw) {
+        if (raw == null || !raw.isArray() || raw.size() != pointSchema.size()) {
+            return false;
+        }
+        for (int i = 0; i < pointSchema.size(); i++) {
+            PointColumnSpec spec = pointSchema.get(i);
+            JsonNode item = raw.get(i);
+            if (!spec.name.equals(textOrEmpty(item, "name"))) {
+                return false;
+            }
+            if (!spec.storageType.value.equals(textOrEmpty(item, "storage_type"))) {
+                return false;
+            }
+            if (!spec.logicalType.value.equals(textOrEmpty(item, "logical_type"))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void restoreCategoricalState(HashMap<String, ArrayList<String>> categoricalLabels) {
+        for (Map.Entry<String, ArrayList<String>> entry : categoricalLabels.entrySet()) {
+            CategoricalRegistry registry = categoricalRegistries.get(entry.getKey());
+            if (registry == null) {
+                continue;
+            }
+            registry.restore(entry.getValue());
+        }
+    }
+
     private int resolveFeatureId(Integer featureId, String featureKey) {
         if (featureId == null && (featureKey == null || featureKey.isEmpty())) {
             throw new IllegalArgumentException("provide either feature_id or feature_key");
@@ -464,9 +910,6 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         return nextId;
     }
 
-    /**
-     * column map을 point schema 순서와 타입 규칙에 맞게 정규화한다.
-     */
     private LinkedHashMap<String, Object> normalizeColumns(Map<String, Object> columns) {
         if (columns == null) {
             throw new IllegalArgumentException("columns is required");
@@ -508,44 +951,35 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         if (spec.logicalType == LogicalType.TIMEDELTA_NS) {
             return normalizeTimedelta(values, spec.name);
         }
-        if (spec.storageType == StorageType.FLOAT64) {
-            return ArrayUtils.toDoubleArray(values, spec.name);
+        switch (spec.storageType) {
+            case FLOAT64:
+                return ArrayUtils.toDoubleArray(values, spec.name);
+            case INT64:
+            case UINT64:
+                return ArrayUtils.toLongArray(values, spec.name);
+            case INT32:
+            case UINT32:
+                return ArrayUtils.toIntArray(values, spec.name);
+            default:
+                throw new IllegalArgumentException("unsupported storage type: " + spec.storageType);
         }
-        if (spec.storageType == StorageType.INT32) {
-            return ArrayUtils.toIntArray(values, spec.name);
-        }
-        return ArrayUtils.toLongArray(values, spec.name);
     }
 
-    private long[] encodeCategorical(String columnName, Object values) {
+    private Object encodeCategorical(String columnName, Object values) {
         CategoricalRegistry registry = categoricalRegistries.get(columnName);
+        if (registry == null) {
+            throw new IllegalStateException("missing categorical registry for column: " + columnName);
+        }
         if (values == null) {
             return new long[0];
-        }
-        if (values instanceof long[] || values instanceof int[] || values instanceof Number[] || values instanceof List<?>) {
-            if (values instanceof List<?>) {
-                List<?> list = (List<?>) values;
-                boolean allNumbers = true;
-                for (Object item : list) {
-                    if (item != null && !(item instanceof Number)) {
-                        allNumbers = false;
-                        break;
-                    }
-                }
-                if (allNumbers) {
-                    return ArrayUtils.toLongArray(values, columnName);
-                }
-                return registry.encode(list);
-            }
-            if (values instanceof Number[]) {
-                return ArrayUtils.toLongArray(values, columnName);
-            }
-            return ArrayUtils.toLongArray(values, columnName);
         }
         if (values instanceof String[]) {
             return registry.encode((String[]) values);
         }
-        throw new IllegalArgumentException("unsupported categorical values for column " + columnName + ": " + values.getClass().getName());
+        if (values instanceof List<?>) {
+            return registry.encode((List<?>) values);
+        }
+        throw new IllegalArgumentException("categorical point column must be String[] or List<String>: " + columnName);
     }
 
     private long[] normalizeTimestamp(Object values, String columnName) {
@@ -614,14 +1048,11 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         ArrayMetadataWriter.writeFeatureMeta(records, featureMetaPath);
     }
 
-    /**
-     * categorical column별 string 값을 integer code로 바꾸는 registry를 JSON dictionary로 기록한다.
-     */
     private void writeCategoricalDictionaries() throws Exception {
         if (categoricalRegistries.isEmpty()) {
             return;
         }
-        File dictRoot = new File(bundleOutDir, "categorical_dictionaries");
+        File dictRoot = new File(categoricalDictDir);
         if (!dictRoot.exists() && !dictRoot.mkdirs()) {
             throw new IllegalStateException("failed to create categorical dictionary dir: " + dictRoot.getAbsolutePath());
         }
@@ -718,6 +1149,73 @@ public class ArrayDatasetBuilder implements AutoCloseable {
         }
     }
 
+    private static void cleanupTmpFiles(File dir) {
+        if (dir == null || !dir.exists() || !dir.isDirectory()) {
+            return;
+        }
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File child : children) {
+            if (child.isFile() && child.getName().endsWith(".tmp")) {
+                child.delete();
+            }
+        }
+    }
+
+    private static String relativeTo(String baseDir, String targetPath) {
+        if (targetPath == null || targetPath.isEmpty()) {
+            return "";
+        }
+        File target = new File(targetPath);
+        if (!target.isAbsolute()) {
+            return targetPath.replace("\\", "/");
+        }
+        return new File(baseDir).toPath().relativize(target.getAbsoluteFile().toPath()).toString().replace("\\", "/");
+    }
+
+    private static String textOrEmpty(JsonNode node, String fieldName) {
+        JsonNode child = node.get(fieldName);
+        return (child == null || child.isNull()) ? "" : child.asText();
+    }
+
+    private static final class SessionState {
+        final boolean knownFeatureMode;
+        final boolean writesFeatureMeta;
+        final Integer knownFeatureCount;
+        final String featureMetaSourcePath;
+        final int nextBundleId;
+        final Long lastCommittedSampleId;
+        final int committedBundleCount;
+        final long nextExpectedSampleId;
+        final boolean finishedStage;
+        final HashMap<String, ArrayList<String>> categoricalLabelsByColumn;
+
+        SessionState(
+                boolean knownFeatureMode,
+                boolean writesFeatureMeta,
+                Integer knownFeatureCount,
+                String featureMetaSourcePath,
+                int nextBundleId,
+                Long lastCommittedSampleId,
+                int committedBundleCount,
+                long nextExpectedSampleId,
+                boolean finishedStage,
+                HashMap<String, ArrayList<String>> categoricalLabelsByColumn) {
+            this.knownFeatureMode = knownFeatureMode;
+            this.writesFeatureMeta = writesFeatureMeta;
+            this.knownFeatureCount = knownFeatureCount;
+            this.featureMetaSourcePath = (featureMetaSourcePath == null) ? "" : featureMetaSourcePath;
+            this.nextBundleId = nextBundleId;
+            this.lastCommittedSampleId = lastCommittedSampleId;
+            this.committedBundleCount = committedBundleCount;
+            this.nextExpectedSampleId = nextExpectedSampleId;
+            this.finishedStage = finishedStage;
+            this.categoricalLabelsByColumn = categoricalLabelsByColumn;
+        }
+    }
+
     private static final class CategoricalRegistry {
         private final HashMap<String, Integer> labelToCode = new HashMap<String, Integer>();
         private final ArrayList<String> codeToLabel = new ArrayList<String>();
@@ -755,34 +1253,43 @@ public class ArrayDatasetBuilder implements AutoCloseable {
             return encode(labels);
         }
 
+        void restore(List<String> labels) {
+            labelToCode.clear();
+            codeToLabel.clear();
+            if (labels == null) {
+                return;
+            }
+            for (int i = 0; i < labels.size(); i++) {
+                String label = labels.get(i);
+                labelToCode.put(label, Integer.valueOf(i + 1));
+                codeToLabel.add(label);
+            }
+        }
     }
 
     /**
-     * sample 하나에 속한 trace를 묶어서 쓰는 convenience context다.
+     * sample 하나에 속한 trace들을 묶어 쓰는 convenience context다.
      */
     public static final class ArraySampleContext implements AutoCloseable {
         private final ArrayDatasetBuilder builder;
         private final long sampleId;
 
-        ArraySampleContext(ArrayDatasetBuilder builder, long sampleId) {
+        ArraySampleContext(ArrayDatasetBuilder builder, long sampleId) throws Exception {
             this.builder = builder;
             this.sampleId = sampleId;
+            this.builder.beginSample(sampleId);
         }
 
         /**
          * 현재 sample에 trace 하나를 추가한다.
-         *
-         * @param featureId known-feature mode에서 직접 줄 feature id
-         * @param featureKey known/discovered mode에서 사용할 feature key
-         * @param columns point schema와 일치하는 column map
          */
         public void addTrace(Integer featureId, String featureKey, Map<String, Object> columns) throws Exception {
             builder.addTrace(sampleId, featureId, featureKey, columns);
         }
 
         @Override
-        public void close() {
-            // sample-scoped helper does not own resources
+        public void close() throws Exception {
+            builder.endSample(false);
         }
     }
 }

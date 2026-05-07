@@ -38,6 +38,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ShardBuilde
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ShardReader.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\math\Pearson.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayBinaryShardInfo.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayBuildSessionStatus.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayBlockLocation.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayBundleManifest.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayFeatureBlock.java
@@ -51,6 +52,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\common\PointCol
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\common\SampleMeta.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\common\StorageType.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\RowBatch.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarBuildSessionStatus.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarFeatureValues.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarSampleBundleManifest.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarValue.java
@@ -65,6 +67,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\validate\Validation.j
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BenchmarkArrayReaderModesMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildArrayShardsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildShardsMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateArrayShardTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateArraySynthMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateArrayFeatureMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateFeatureMain.java

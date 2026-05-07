@@ -1,6 +1,6 @@
 """Public reader/writer facade for custom array binary shards."""
 
-from .builder import ArrayDatasetBuilder, SampleContext
+from .builder import ArrayBuildSessionStatus, ArrayDatasetBuilder, SampleContext
 from ._impl.types import LogicalType, PointColumnSpec, StorageType
 from .exceptions import (
     ArrayBinaryShardError,
@@ -15,6 +15,7 @@ from .writer import build_shard
 
 __all__ = [
     "ArrayBinaryShardError",
+    "ArrayBuildSessionStatus",
     "ArrayDatasetBuilder",
     "BinaryShardDataset",
     "BuildOptions",

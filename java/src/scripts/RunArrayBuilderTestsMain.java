@@ -38,6 +38,7 @@ public final class RunArrayBuilderTestsMain {
     private static final int FEATURES_PER_SENSOR = 4;
     private static final int N_CH_STEPS = 10;
     private static final String STEP_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    private static final int RESUME_SPLIT_SAMPLE = 40;
 
     private RunArrayBuilderTestsMain() {
     }
@@ -75,36 +76,26 @@ public final class RunArrayBuilderTestsMain {
         Random rng = new Random(10L);
         String manifestPath;
 
-        try (ArrayDatasetBuilder builder = ArrayBinaryShards.newBuilder(
+        try (ArrayDatasetBuilder builder = ArrayBinaryShards.openSession(
                 outDir,
                 sampleMetaPath,
                 pointSchema,
                 featureMetaPath,
                 buildOptions)) {
-            for (int sampleId = 0; sampleId < N_SAMPLES; sampleId++) {
-                for (int featureBase = 0; featureBase < N_FEATURES; featureBase += FEATURES_PER_SENSOR) {
-                    int signalLength = 300 + rng.nextInt(200);
-                    double amplitude = -1.0 + rng.nextDouble() * 2.0;
-                    double frequency = 0.1 + rng.nextDouble() * 9.9;
+            require(builder.status().nextExpectedSampleId == 0L, "new array session should start from sample 0");
+            writeSamples(builder, rng, answers, 0, RESUME_SPLIT_SAMPLE);
+        }
 
-                    double[] time = buildTime(signalLength);
-                    double[] baseSignal = buildBaseSignal(signalLength, amplitude, frequency);
-                    String[] chSteps = buildChSteps(signalLength, rng);
-
-                    for (int featureTail = 0; featureTail < FEATURES_PER_SENSOR; featureTail++) {
-                        int featureId = featureBase + featureTail;
-                        double[] values = buildSignalVariant(baseSignal, time, amplitude, frequency, featureTail);
-
-                        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
-                        columns.put("time", time.clone());
-                        columns.put("value", values.clone());
-                        columns.put("ch_step", chSteps.clone());
-                        builder.addTrace((long) sampleId, Integer.valueOf(featureId), null, columns);
-
-                        answers.put(key(sampleId, featureId), new ExpectedTrace(time, values, chSteps));
-                    }
-                }
-            }
+        try (ArrayDatasetBuilder builder = ArrayBinaryShards.openSession(
+                outDir,
+                sampleMetaPath,
+                pointSchema,
+                featureMetaPath,
+                buildOptions)) {
+            require(
+                    builder.status().nextExpectedSampleId == RESUME_SPLIT_SAMPLE,
+                    "resumed array session should continue from sample " + RESUME_SPLIT_SAMPLE);
+            writeSamples(builder, rng, answers, RESUME_SPLIT_SAMPLE, N_SAMPLES);
             manifestPath = builder.buildShards(false);
         }
 
@@ -264,6 +255,40 @@ public final class RunArrayBuilderTestsMain {
 
     private static String key(int sampleId, int featureId) {
         return sampleId + ":" + featureId;
+    }
+
+    private static void writeSamples(
+            ArrayDatasetBuilder builder,
+            Random rng,
+            Map<String, ExpectedTrace> answers,
+            int startSampleId,
+            int endSampleId) throws Exception {
+        for (int sampleId = startSampleId; sampleId < endSampleId; sampleId++) {
+            try (ArrayDatasetBuilder.ArraySampleContext sample = builder.sample((long) sampleId)) {
+                for (int featureBase = 0; featureBase < N_FEATURES; featureBase += FEATURES_PER_SENSOR) {
+                    int signalLength = 300 + rng.nextInt(200);
+                    double amplitude = -1.0 + rng.nextDouble() * 2.0;
+                    double frequency = 0.1 + rng.nextDouble() * 9.9;
+
+                    double[] time = buildTime(signalLength);
+                    double[] baseSignal = buildBaseSignal(signalLength, amplitude, frequency);
+                    String[] chSteps = buildChSteps(signalLength, rng);
+
+                    for (int featureTail = 0; featureTail < FEATURES_PER_SENSOR; featureTail++) {
+                        int featureId = featureBase + featureTail;
+                        double[] values = buildSignalVariant(baseSignal, time, amplitude, frequency, featureTail);
+
+                        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
+                        columns.put("time", time.clone());
+                        columns.put("value", values.clone());
+                        columns.put("ch_step", chSteps.clone());
+                        sample.addTrace(Integer.valueOf(featureId), null, columns);
+
+                        answers.put(key(sampleId, featureId), new ExpectedTrace(time, values, chSteps));
+                    }
+                }
+            }
+        }
     }
 
     private static void assertDoubleArray(double[] actual, double[] expected, String column, String sampleKey, String featureKey) {

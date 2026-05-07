@@ -1,39 +1,13 @@
 # scalar-feature-shard
 
-scalar feature shard를 만들고 읽고 selection까지 돌릴 수 있는 독립 Python 패키지입니다.
+dense-id 기반 scalar shard를 만들고 읽고 selection까지 수행하는 Python 패키지입니다.
 
-## 개요
-
-이 패키지는 dense id 기반 scalar shard를 다룹니다.
-
-핵심 규칙:
-
-- `sample_id`는 `sample_meta.parquet`의 dense row index
-- `feature_id`는 `feature_meta.parquet`의 dense row index
-
-external key는 metadata에 둡니다.
-
-- `sample_key`
-- `feature_key`
-
-최종 artifact는 standalone 폴더 하나로 이동할 수 있다.
-
-```text
-scalar_shard_dataset/
-  shard_manifest.json
-  sample_meta.parquet
-  feature_meta.parquet
-  feature_locator.parquet
-  selection_stats/
-  feature_shards/
-```
-
-## public API
+## 포함 API
 
 - reader
   - `open_shard(...)`
   - `ScalarShardDataset`
-- writer
+- builder
   - `ScalarDatasetBuilder`
   - `build_shard(...)`
 - selection
@@ -43,6 +17,14 @@ scalar_shard_dataset/
   - `write_sample_meta(...)`
   - `write_feature_meta(...)`
 
+## 핵심 규칙
+
+- `sample_id == sample_meta.parquet` row index
+- `feature_id == feature_meta.parquet` row index
+- builder는 **resumable session** 모델을 사용합니다.
+- 자동 chunking은 내부 구현입니다.
+- resume는 `status().next_expected_sample_id`를 기준으로 합니다.
+
 ## 빌드
 
 ```bash
@@ -50,9 +32,17 @@ cd packages/scalar_feature_shard
 python -m pip wheel . -w wheelhouse --no-deps --no-build-isolation
 ```
 
-## direct-ingestion builder
+## builder session
 
-known-feature mode:
+scalar는 public write 단위를 sample 하나로 고정합니다.
+
+- `ScalarDatasetBuilder.open_session(...)`
+- `status()`
+- `write_sample(sample_id, values)`
+- `finish_stage()`
+- `build_shards(...)`
+
+예:
 
 ```python
 from scalar_feature_shard import (
@@ -77,70 +67,31 @@ feature_meta_path = write_feature_meta(
     ".../feature_meta.parquet",
 )
 
-builder = ScalarDatasetBuilder(
+session = ScalarDatasetBuilder.open_session(
     out_dir=".../scalar_shards",
     sample_meta_path=sample_meta_path,
     feature_meta_path=feature_meta_path,
     build_options=BuildOptions(target_shard_mb=32, stats_y_cols=("y", "y_alt")),
 )
 
-builder.write_sample(0, {"feature_a": 1.23, "feature_b": 4.56})
-builder.write_sample(1, {"feature_a": 7.89})
-manifest_path = builder.build_shards()
+st = session.status()
+for sample_id in range(st.next_expected_sample_id, 2):
+    if sample_id == 0:
+        session.write_sample(sample_id, {"feature_a": 1.23, "feature_b": 4.56})
+    else:
+        session.write_sample(sample_id, {"feature_a": 7.89})
+
+session.finish_stage()
+manifest_path = session.build_shards(keep_sample_major=False)
 ```
 
-discovered-feature mode:
+중요:
 
-```python
-from scalar_feature_shard import BuildOptions, ScalarDatasetBuilder
+- `open_sample()`, `write_value()` 같은 per-value public path는 비활성화되어 있습니다.
+- 같은 sample을 다시 쓰지 말고, 항상 `status().next_expected_sample_id`부터 이어서 넣습니다.
+- `finish_sample_major()`는 legacy alias로 남아 있지만 새 코드는 `finish_stage()`를 권장합니다.
 
-with ScalarDatasetBuilder(
-    out_dir=".../scalar_shards",
-    sample_meta_path=".../sample_meta.parquet",
-    build_options=BuildOptions(target_shard_mb=32, stats_y_cols=("y",)),
-) as builder:
-    with builder.open_sample(0) as sample:
-        sample.write_value("feature_x", 1.23)
-        sample.write_value("feature_y", 4.56)
-
-    with builder.open_sample(1) as sample:
-        sample.write_values({"feature_y": 7.89, "feature_z": 0.12})
-
-    builder.finish_sample_major()
-    builder.update_feature_meta(
-        [
-            {"feature_key": "feature_x", "group": "alpha"},
-            {"feature_key": "feature_y", "group": "beta"},
-            {"feature_key": "feature_z", "group": "gamma"},
-        ],
-        require_all=True,
-    )
-    manifest_path = builder.build_shards(keep_sample_major=True)
-```
-
-## sample-major stage
-
-public builder는 intermediate sample-major stage를 명시적으로 노출한다.
-
-- `finish_sample_major()`
-- `build_shards(keep_sample_major=False)`
-
-현재 intermediate 표현은 file-per-sample이 아니라 bundle 기반입니다.
-
-```text
-sample_major_stage/
-  sample_meta.parquet
-  feature_meta.parquet
-  sample_major_manifest.json
-  sample_bundles/
-    bundle_000000.parquet
-    bundle_000001.parquet
-    ...
-```
-
-기본값은 `keep_sample_major=False`라서 최종 shard를 만든 뒤 intermediate stage를 지웁니다.
-
-## 조회
+## reader
 
 ```python
 from scalar_feature_shard import open_shard
@@ -148,15 +99,7 @@ from scalar_feature_shard import open_shard
 with open_shard(".../shard_manifest.json") as ds:
     value = ds.get_value(feature_id=123, sample_id=10)
     batch = ds.get_values(feature_id=123, sample_ids=[10, 11, 12])
-```
-
-key 기반 조회도 가능하다.
-
-```python
-from scalar_feature_shard import open_shard
-
-with open_shard(".../shard_manifest.json") as ds:
-    value = ds.get_value_by_key("feature_000123", "sample_000010")
+    by_key = ds.get_value_by_key("feature_000123", "sample_000010")
 ```
 
 ## selection
@@ -171,4 +114,7 @@ result = select_features(
 )
 ```
 
-manifest에 해당 `y_col`의 `selection_stats/<y>.parquet`가 있으면 fast path를 쓰고, 없으면 shard를 다시 읽는 fallback을 탑니다.
+## 참고
+
+- 포맷 상세: [../../docs/scalar_parquet_shard_format.md](../../docs/scalar_parquet_shard_format.md)
+- core 사용법: [../../python/README.md](../../python/README.md)

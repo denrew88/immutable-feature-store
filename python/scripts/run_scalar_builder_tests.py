@@ -51,14 +51,14 @@ def main():
             stats_y_cols=("y", "y_alt"),
         ),
     )
-    known_builder.write_sample(2, {"feature_b": 20.0})
     known_builder.write_sample(0, {"feature_a": 10.0, "feature_c": float("nan")})
     known_builder.write_sample(1, {"feature_a": 11.0, "feature_b": 21.0})
+    known_builder.write_sample(2, {"feature_b": 20.0})
     try:
         known_builder.write_sample(1, {"feature_c": 31.0})
         raise AssertionError("expected duplicate sample write to fail")
     except ValueError as exc:
-        assert "already been written" in str(exc)
+        assert "expects sample_id" in str(exc)
 
     known_stage_manifest = Path(known_builder.finish_sample_major())
     assert known_stage_manifest.exists()
@@ -66,6 +66,9 @@ def main():
     assert known_stage_payload["format"] == "scalar-sample-bundles"
     assert len(known_stage_payload["bundle_paths"]) >= 1
     assert (known_out / "sample_major_stage" / "sample_bundles").exists()
+    known_status = known_builder.status()
+    assert known_status.last_committed_sample_id == 2
+    assert known_status.next_expected_sample_id == 3
 
     known_manifest_path = known_builder.build_shards()
     known_manifest = load_manifest(known_manifest_path)
@@ -103,11 +106,8 @@ def main():
             stats_y_cols=("y",),
         ),
     ) as discovered_builder:
-        with discovered_builder.open_sample(1) as sample:
-            sample.write_value("feature_x", 101.0)
-            sample.write_value("feature_y", None)
-        with discovered_builder.open_sample(0) as sample:
-            sample.write_values({"feature_y": 202.0, "feature_x": 102.0})
+        discovered_builder.write_sample(0, {"feature_x": 102.0, "feature_y": 202.0})
+        discovered_builder.write_sample(1, {"feature_x": 101.0, "feature_y": None})
 
         discovered_builder.finish_sample_major()
         discovered_builder.update_feature_meta(

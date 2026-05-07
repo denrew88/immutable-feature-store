@@ -72,13 +72,14 @@ public final class RunScalarNotebookBuilderTestsMain {
         String outDir = new File(root, "scalar_shards").getAbsolutePath();
         String stageDir = new File(root, "sample_major_stage").getAbsolutePath();
         String manifestPath;
-        try (ScalarDatasetBuilder builder = ScalarFeatureShards.newBuilder(
+        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
                 outDir,
                 sampleMetaPath,
                 featureMetaPath,
                 null,
                 buildConfig,
                 stageDir)) {
+            require(builder.status().nextExpectedSampleId == 0L, "new session should start from sample 0");
             for (int sampleId = 0; sampleId < N_SAMPLES; sampleId++) {
                 LinkedHashMap<Object, Object> values = new LinkedHashMap<Object, Object>(N_FEATURES);
                 for (int featureId = 0; featureId < N_FEATURES; featureId++) {
@@ -86,6 +87,8 @@ public final class RunScalarNotebookBuilderTestsMain {
                 }
                 builder.writeSample((long) sampleId, values);
             }
+            String stageManifestPath = builder.finishStage();
+            require(new File(stageManifestPath).exists(), "missing sample-major stage manifest");
             manifestPath = builder.buildShards(true);
         }
 

@@ -115,6 +115,16 @@ public final class ArrayBinaryShards {
     }
 
     /**
+     * resumable array build session을 열거나 같은 stage 디렉터리에서 자동으로 이어받는다.
+     */
+    public static ArrayDatasetBuilder openSession(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema) throws Exception {
+        return ArrayDatasetBuilder.openSession(outDir, sampleMetaPath, pointSchema);
+    }
+
+    /**
      * direct-ingestion builder를 만들되 build 옵션을 직접 지정한다.
      *
      * <p>위 오버로드와 달리 shard 크기, block 크기, key 컬럼명 같은
@@ -127,6 +137,17 @@ public final class ArrayBinaryShards {
             List<PointColumnSpec> pointSchema,
             ArrayBinaryBuildOptions buildOptions) throws Exception {
         return new ArrayDatasetBuilder(outDir, sampleMetaPath, pointSchema, buildOptions);
+    }
+
+    /**
+     * build 옵션을 지정해 resumable array build session을 열거나 기존 stage를 이어받는다.
+     */
+    public static ArrayDatasetBuilder openSession(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema,
+            ArrayBinaryBuildOptions buildOptions) throws Exception {
+        return ArrayDatasetBuilder.openSession(outDir, sampleMetaPath, pointSchema, buildOptions);
     }
 
     /**
@@ -143,5 +164,17 @@ public final class ArrayBinaryShards {
             String featureMetaPath,
             ArrayBinaryBuildOptions buildOptions) throws Exception {
         return new ArrayDatasetBuilder(outDir, sampleMetaPath, pointSchema, featureMetaPath, buildOptions);
+    }
+
+    /**
+     * known-feature metadata와 build 옵션을 같이 주고 resumable array build session을 연다.
+     */
+    public static ArrayDatasetBuilder openSession(
+            String outDir,
+            String sampleMetaPath,
+            List<PointColumnSpec> pointSchema,
+            String featureMetaPath,
+            ArrayBinaryBuildOptions buildOptions) throws Exception {
+        return ArrayDatasetBuilder.openSession(outDir, sampleMetaPath, pointSchema, featureMetaPath, buildOptions);
     }
 }

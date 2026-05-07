@@ -8,6 +8,15 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.io.FileOutputStream;
+import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 
@@ -46,6 +55,62 @@ public final class JsonUtils {
             parent.mkdirs();
         }
         MAPPER.writeValue(file, node);
+    }
+
+    /**
+     * JSON tree를 임시 파일에 쓴 뒤 rename해서 원자적으로 교체한다.
+     */
+    public static void writeJsonAtomic(String path, JsonNode node) throws IOException {
+        File file = new File(path);
+        File parent = file.getAbsoluteFile().getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        File tmp = new File(path + ".tmp");
+        MAPPER.writeValue(tmp, node);
+        Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    /**
+     * JSON object 한 줄을 JSONL 파일 끝에 append한다.
+     */
+    public static void appendJsonLine(String path, JsonNode node) throws IOException {
+        File file = new File(path);
+        File parent = file.getAbsoluteFile().getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        String line = MAPPER.writer().without(SerializationFeature.INDENT_OUTPUT).writeValueAsString(node);
+        try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file, true), StandardCharsets.UTF_8)) {
+            writer.write(line);
+            writer.write(System.lineSeparator());
+        }
+    }
+
+    /**
+     * JSONL 파일을 한 줄씩 읽어 JsonNode 목록으로 돌려준다.
+     */
+    public static List<JsonNode> readJsonLines(String path) throws IOException {
+        ArrayList<JsonNode> out = new ArrayList<JsonNode>();
+        File file = new File(path);
+        if (!file.exists()) {
+            return out;
+        }
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+            String rawLine;
+            while ((rawLine = reader.readLine()) != null) {
+                String line = rawLine.trim();
+                if (line.isEmpty()) {
+                    continue;
+                }
+                try {
+                    out.add(MAPPER.readTree(line));
+                } catch (IOException ignoredTail) {
+                    break;
+                }
+            }
+        }
+        return out;
     }
 
     /**

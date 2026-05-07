@@ -42,6 +42,7 @@ public class ArraySampleBundleWriter implements AutoCloseable {
     private final String manifestPath;
     private final Connection conn;
     private final List<PointColumnSpec> pointSchema;
+    private final boolean autoFlush;
 
     private PreparedStatement insertPs;
     private String insertSql;
@@ -50,6 +51,23 @@ public class ArraySampleBundleWriter implements AutoCloseable {
     private long currentBytes;
     private int nBundles;
     private boolean finished;
+
+    /**
+     * seal된 bundle parquet 하나의 commit 결과를 나타낸다.
+     */
+    public static final class BundleCommit {
+        public final int bundleId;
+        public final String path;
+        public final int rowCount;
+        public final long byteSize;
+
+        BundleCommit(int bundleId, String path, int rowCount, long byteSize) {
+            this.bundleId = bundleId;
+            this.path = path;
+            this.rowCount = rowCount;
+            this.byteSize = byteSize;
+        }
+    }
 
     /**
      * bundle writer를 초기화한다.
@@ -68,11 +86,27 @@ public class ArraySampleBundleWriter implements AutoCloseable {
             int nSamples,
             ArrayBundleConfig config,
             List<PointColumnSpec> pointSchema) throws Exception {
+        this(outDir, sampleMetaPath, featureMetaPath, nSamples, config, pointSchema, 0, true);
+    }
+
+    /**
+     * resume-safe builder가 bundle 번호를 이어가거나 auto flush를 직접 제어할 수 있게 하는 생성자다.
+     */
+    public ArraySampleBundleWriter(
+            String outDir,
+            String sampleMetaPath,
+            String featureMetaPath,
+            int nSamples,
+            ArrayBundleConfig config,
+            List<PointColumnSpec> pointSchema,
+            int startBundleId,
+            boolean autoFlush) throws Exception {
         this.sampleMetaPath = (sampleMetaPath == null) ? "" : sampleMetaPath;
         this.featureMetaPath = (featureMetaPath == null) ? "" : featureMetaPath;
         this.nSamples = nSamples;
         this.config = (config == null) ? new ArrayBundleConfig() : config;
         this.pointSchema = PointColumnSpec.normalizeList(pointSchema);
+        this.autoFlush = autoFlush;
         File out = new File(outDir);
         if (!out.exists() && !out.mkdirs()) {
             throw new IOException("Failed to create out dir: " + out.getAbsolutePath());
@@ -83,6 +117,7 @@ public class ArraySampleBundleWriter implements AutoCloseable {
         }
         this.manifestPath = new File(out, "array_bundle_manifest.json").getAbsolutePath();
         this.conn = DuckDBUtils.connect(null);
+        this.nBundles = startBundleId;
         resetBundleTable();
     }
 
@@ -131,9 +166,23 @@ public class ArraySampleBundleWriter implements AutoCloseable {
             insertPs.executeBatch();
             pendingBatch = 0;
         }
-        if (currentRows >= config.maxBundleRows || currentBytes >= config.maxBundleBytes) {
+        if (autoFlush && shouldFlushBundle()) {
             flushBundle();
         }
+    }
+
+    /**
+     * 현재 bundle 버퍼가 row/byte 기준을 넘어 flush 후보인지 알려준다.
+     */
+    public boolean shouldFlushBundle() {
+        return currentRows >= config.maxBundleRows || currentBytes >= config.maxBundleBytes;
+    }
+
+    /**
+     * 다음에 기록될 bundle id를 돌려준다.
+     */
+    public int nextBundleId() {
+        return nBundles;
     }
 
     /**
@@ -201,22 +250,35 @@ public class ArraySampleBundleWriter implements AutoCloseable {
     /**
      * 현재 임시 테이블 내용을 parquet bundle 하나로 materialize한다.
      */
-    private void flushBundle() throws SQLException {
+    public BundleCommit flushBundle() throws SQLException {
         if (pendingBatch > 0) {
             insertPs.executeBatch();
             pendingBatch = 0;
         }
         if (currentRows == 0) {
-            return;
+            return null;
         }
-        String bundlePath = new File(bundleDir, String.format("bundle_%06d.parquet", nBundles)).getAbsolutePath();
+        int bundleId = nBundles;
+        String bundlePath = new File(bundleDir, String.format("bundle_%06d.parquet", bundleId)).getAbsolutePath();
+        String tmpBundlePath = bundlePath + ".tmp";
+        int rowCount = currentRows;
+        long byteSize = currentBytes;
         try (Statement st = conn.createStatement()) {
-            st.execute("COPY tmp_array_bundle TO " + DuckDBUtils.quotePath(bundlePath) + " (FORMAT PARQUET)");
+            st.execute("COPY tmp_array_bundle TO " + DuckDBUtils.quotePath(tmpBundlePath) + " (FORMAT PARQUET)");
             st.execute("DELETE FROM tmp_array_bundle");
+        }
+        try {
+            java.nio.file.Files.move(
+                    new File(tmpBundlePath).toPath(),
+                    new File(bundlePath).toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            throw new SQLException("failed to finalize bundle parquet: " + bundlePath, e);
         }
         nBundles++;
         currentRows = 0;
         currentBytes = 0L;
+        return new BundleCommit(bundleId, bundlePath, rowCount, byteSize);
     }
 
     /**

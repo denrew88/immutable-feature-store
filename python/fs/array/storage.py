@@ -86,6 +86,8 @@ class ArraySampleBundleWriter:
         feature_meta_path: str = "",
         config: ArrayBundleConfig = None,
         point_schema,
+        start_bundle_id: int = 0,
+        auto_flush: bool = True,
     ):
         self.config = config or ArrayBundleConfig()
         self.sample_meta_path = str(sample_meta_path or "")
@@ -96,7 +98,8 @@ class ArraySampleBundleWriter:
         self.bundle_path = os.path.join(out_dir, "array_sample_bundles")
         self.manifest_path = os.path.join(out_dir, "array_bundle_manifest.json")
         os.makedirs(self.bundle_path, exist_ok=True)
-        self.n_bundles = 0
+        self.n_bundles = int(start_bundle_id)
+        self.auto_flush = bool(auto_flush)
         self._finished = False
         self._reset_buffer()
 
@@ -148,12 +151,20 @@ class ArraySampleBundleWriter:
         self._current_rows += 1
         self._current_bytes += _estimate_bundle_trace_row_bytes(encoded_columns, self.point_schema)
 
-        if self._current_rows >= self.config.max_bundle_rows or self._current_bytes >= self.config.max_bundle_bytes:
+        if self.auto_flush and self.should_flush_bundle():
             self.flush_bundle()
+
+    def should_flush_bundle(self) -> bool:
+        return bool(
+            self._current_rows >= int(self.config.max_bundle_rows)
+            or self._current_bytes >= int(self.config.max_bundle_bytes)
+        )
 
     def flush_bundle(self):
         if self._current_rows == 0:
-            return
+            return None
+        bundle_id = int(self.n_bundles)
+        row_count = int(self._current_rows)
         order = np.lexsort((np.asarray(self._feature_ids), np.asarray(self._sample_ids)))
         df = pl.DataFrame(
             {
@@ -171,9 +182,19 @@ class ArraySampleBundleWriter:
                 },
             }
         )
-        df.write_parquet(bundle_file_path(self.bundle_path, self.n_bundles))
+        final_path = bundle_file_path(self.bundle_path, bundle_id)
+        tmp_path = final_path + ".tmp"
+        df.write_parquet(tmp_path)
+        os.replace(tmp_path, final_path)
+        byte_size = os.path.getsize(final_path)
         self.n_bundles += 1
         self._reset_buffer()
+        return {
+            "bundle_id": bundle_id,
+            "path": final_path,
+            "row_count": row_count,
+            "byte_size": int(byte_size),
+        }
 
     def finish(self):
         if self._finished:
