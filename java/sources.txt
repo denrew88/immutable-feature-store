@@ -72,6 +72,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateArraySyn
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateArrayFeatureMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateFeatureMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayBuilderTestsMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunBuilderSessionTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayStorageTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArraySyntheticTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayV3TestsMain.java
