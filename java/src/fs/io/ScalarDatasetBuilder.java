@@ -222,7 +222,6 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         bundleWriter.appendSample(sampleId, featureValues);
         recordProcessedSample(sampleId, featureValues.size());
         commitPendingBundle(false);
-        saveState();
     }
 
     /**
@@ -360,7 +359,6 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         try {
             if (!sampleMajorFinalized) {
                 commitPendingBundle(true);
-                saveState();
             }
         } finally {
             try {
@@ -463,9 +461,11 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         } else {
             root.put("known_feature_count", knownFeatureCount.intValue());
         }
-        ArrayNode featureKeysNode = root.putArray("feature_keys_in_order");
-        for (String featureKey : featureKeysInOrder) {
-            featureKeysNode.add(featureKey);
+        if (shouldPersistFeatureKeysInState()) {
+            ArrayNode featureKeysNode = root.putArray("feature_keys_in_order");
+            for (String featureKey : featureKeysInOrder) {
+                featureKeysNode.add(featureKey);
+            }
         }
         root.put("next_bundle_id", bundleWriter.nextBundleId());
         if (lastCommittedSampleId == null) {
@@ -491,6 +491,19 @@ public class ScalarDatasetBuilder implements AutoCloseable {
             root.put("buffered_through_sample_key", sampleKeyForId(pendingBundleLastSampleId));
         }
         return root;
+    }
+
+    /**
+     * state.json에 feature key 전체 목록을 유지해야 하는지 결정한다.
+     *
+     * <p>discovered-feature mode나 `featureKeys` 리스트 기반 known-feature mode는
+     * session state만으로 feature 순서를 복구해야 하므로 key 목록을 저장한다.
+     *
+     * <p>반면 외부 `feature_meta_path`를 받은 known-feature mode는 authoritative feature metadata가
+     * 이미 따로 있으므로, 매 sample마다 큰 key 배열을 state에 다시 쓰지 않아도 된다.
+     */
+    private boolean shouldPersistFeatureKeysInState() {
+        return !knownFeatureMode || featureMetaSourcePath.isEmpty();
     }
 
     private ObjectNode buildConfigPayload() {
@@ -570,10 +583,16 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         cleanupTmpFiles(new File(sampleMajorOutDir));
         cleanupTmpFiles(new File(sampleMajorBundlesDir));
 
-        for (JsonNode node : state.get("feature_keys_in_order")) {
-            String featureKey = node.asText();
-            featureKeyToId.put(featureKey, Integer.valueOf(featureKeysInOrder.size()));
-            featureKeysInOrder.add(featureKey);
+        JsonNode storedFeatureKeys = state.get("feature_keys_in_order");
+        if (storedFeatureKeys != null && storedFeatureKeys.isArray()) {
+            for (JsonNode node : storedFeatureKeys) {
+                String featureKey = node.asText();
+                featureKeyToId.put(featureKey, Integer.valueOf(featureKeysInOrder.size()));
+                featureKeysInOrder.add(featureKey);
+            }
+        } else if (state.path("known_feature_mode").asBoolean(false)
+                && !textOrEmpty(state, "feature_meta_source_path").isEmpty()) {
+            loadFeatureKeysFromKnownMeta();
         }
         List<JsonNode> bundleRecords = JsonUtils.readJsonLines(bundleLogPath);
         Long localLastCommitted = bundleRecords.isEmpty()
@@ -618,6 +637,34 @@ public class ScalarDatasetBuilder implements AutoCloseable {
                 if (!featureKeys.get(i).equals(raw.get(i).asText())) {
                     throw new IllegalArgumentException("featureKeys do not match existing scalar build session");
                 }
+            }
+        }
+    }
+
+    /**
+     * known-feature mode에서 state에 key 목록을 저장하지 않았을 때, copied feature metadata에서
+     * `feature_key -> feature_id` 순서를 다시 복구한다.
+     */
+    private void loadFeatureKeysFromKnownMeta() throws Exception {
+        List<LinkedHashMap<String, Object>> featureRows = ArrayMetadataWriter.readRows(sampleMajorFeatureMetaPath);
+        validateDenseIds(featureRows, buildConfig.featureIdCol, "feature");
+        for (LinkedHashMap<String, Object> row : featureRows) {
+            Object keyValue = row.get(buildConfig.featureKeyCol);
+            if (keyValue == null) {
+                continue;
+            }
+            int featureId = ((Number) row.get(buildConfig.featureIdCol)).intValue();
+            String featureKey = keyValue.toString();
+            while (featureKeysInOrder.size() <= featureId) {
+                featureKeysInOrder.add(null);
+            }
+            featureKeysInOrder.set(featureId, featureKey);
+            featureKeyToId.put(featureKey, Integer.valueOf(featureId));
+        }
+        for (int featureId = 0; featureId < featureKeysInOrder.size(); featureId++) {
+            if (featureKeysInOrder.get(featureId) == null) {
+                throw new IllegalArgumentException(
+                        "feature metadata is missing feature key for dense feature_id=" + featureId);
             }
         }
     }

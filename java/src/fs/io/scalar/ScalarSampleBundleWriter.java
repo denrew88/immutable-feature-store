@@ -1,10 +1,10 @@
 package fs.io.scalar;
 
 import fs.io.common.DuckDBUtils;
+import org.duckdb.DuckDBAppender;
+import org.duckdb.DuckDBConnection;
 
 import java.io.File;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -19,13 +19,12 @@ import java.util.Map;
  */
 public final class ScalarSampleBundleWriter implements AutoCloseable {
     private final File bundleDir;
-    private final Connection conn;
-    private final PreparedStatement insertPs;
+    private final DuckDBConnection conn;
+    private final DuckDBAppender appender;
     private final List<String> bundlePaths;
     private final int maxBundleRows;
     private final boolean autoFlush;
 
-    private int pendingBatch;
     private int bundleIndex;
     private int currentRows;
     private boolean finished;
@@ -67,12 +66,11 @@ public final class ScalarSampleBundleWriter implements AutoCloseable {
         this.maxBundleRows = maxBundleRows;
         this.autoFlush = autoFlush;
         this.bundlePaths = new ArrayList<String>();
-        this.conn = DuckDBUtils.connect(null);
+        this.conn = (DuckDBConnection) DuckDBUtils.connect(null);
         try (Statement st = conn.createStatement()) {
             st.execute("CREATE TEMP TABLE tmp_scalar_sample_bundle (sample_id BIGINT, feature_id INTEGER, value DOUBLE)");
         }
-        this.insertPs = conn.prepareStatement("INSERT INTO tmp_scalar_sample_bundle VALUES (?, ?, ?)");
-        this.pendingBatch = 0;
+        this.appender = conn.createAppender(DuckDBConnection.DEFAULT_SCHEMA, "tmp_scalar_sample_bundle");
         this.bundleIndex = startBundleIndex;
         this.currentRows = 0;
         this.finished = false;
@@ -91,16 +89,12 @@ public final class ScalarSampleBundleWriter implements AutoCloseable {
             if (value == null || Double.isNaN(value.doubleValue())) {
                 continue;
             }
-            insertPs.setLong(1, sampleId);
-            insertPs.setInt(2, entry.getKey().intValue());
-            insertPs.setDouble(3, value.doubleValue());
-            insertPs.addBatch();
-            pendingBatch++;
+            appender.beginRow();
+            appender.append(sampleId);
+            appender.append(entry.getKey().intValue());
+            appender.append(value.doubleValue());
+            appender.endRow();
             currentRows++;
-            if (pendingBatch >= 1024) {
-                insertPs.executeBatch();
-                pendingBatch = 0;
-            }
         }
         if (autoFlush && shouldFlushBundle()) {
             flushBundle();
@@ -139,7 +133,7 @@ public final class ScalarSampleBundleWriter implements AutoCloseable {
             finish();
         } finally {
             try {
-                insertPs.close();
+                appender.close();
             } finally {
                 conn.close();
             }
@@ -150,13 +144,10 @@ public final class ScalarSampleBundleWriter implements AutoCloseable {
      * 현재 임시 테이블을 parquet bundle 하나로 materialize한다.
      */
     public BundleCommit flushBundle() throws SQLException {
-        if (pendingBatch > 0) {
-            insertPs.executeBatch();
-            pendingBatch = 0;
-        }
         if (currentRows == 0) {
             return null;
         }
+        appender.flush();
         int bundleId = bundleIndex;
         String bundlePath = new File(bundleDir, String.format("bundle_%06d.parquet", bundleId)).getAbsolutePath();
         String tmpBundlePath = bundlePath + ".tmp";

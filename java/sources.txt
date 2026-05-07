@@ -38,8 +38,8 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ShardBuilde
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ShardReader.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\math\Pearson.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayBinaryShardInfo.java
-C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayBuildSessionStatus.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayBlockLocation.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayBuildSessionStatus.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayBundleManifest.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayFeatureBlock.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayShardManifest.java
@@ -69,13 +69,14 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildArrayShards
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildShardsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateArrayShardTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateArraySynthMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateScalarShardTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateArrayFeatureMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateFeatureMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayBuilderTestsMain.java
-C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunBuilderSessionTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayStorageTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArraySyntheticTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayV3TestsMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunBuilderSessionTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarBuilderTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarNotebookBuilderTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunSelectionMain.java
