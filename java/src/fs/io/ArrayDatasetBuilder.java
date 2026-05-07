@@ -299,6 +299,13 @@ public class ArrayDatasetBuilder implements AutoCloseable {
 
     /**
      * sample id 기준으로 trace를 묶어 쓰는 context를 연다.
+     *
+     * <p>array 입력은 보통 sample 하나 안에 trace 여러 개가 들어간다.
+     * 이 context는 그 sample 경계를 public API에서 명시적으로 고정한다.
+     * builder는 이 경계를 기준으로
+     * - 다른 sample trace가 섞이는 실수를 막고
+     * - sample이 완전히 닫힌 뒤에만 bundle checkpoint commit을 판단하고
+     * - resume 시 {@code nextExpectedSampleId}와 ingestion 흐름을 일치시킨다.
      */
     public ArraySampleContext sample(long sampleId) throws Exception {
         ensureTraceStageOpen();
@@ -307,6 +314,9 @@ public class ArrayDatasetBuilder implements AutoCloseable {
 
     /**
      * sample key 기준으로 trace를 묶어 쓰는 context를 연다.
+     *
+     * <p>의미는 {@link #sample(long)}와 같고, 단지 외부 호출자가 sample key로
+     * sample 경계를 지정할 수 있게 한 overload다.
      */
     public ArraySampleContext sample(String sampleKey) throws Exception {
         ensureTraceStageOpen();
@@ -319,6 +329,9 @@ public class ArrayDatasetBuilder implements AutoCloseable {
      * <p>top-level addTrace는 같은 sample 안에서만 연속 호출할 수 있다.
      * sample 경계를 넘기려면 {@link #sample(long)} 또는 {@link #sample(String)}
      * context를 써서 이전 sample을 명시적으로 닫아야 한다.
+     *
+     * <p>즉 array public API에서 sample context가 권장되는 이유는 문법 취향이 아니라,
+     * sample 경계가 곧 checkpoint 경계이기 때문이다.
      */
     public void addTrace(long sampleId, Integer featureId, String featureKey, Map<String, Object> columns) throws Exception {
         ensureTraceStageOpen();
@@ -1282,6 +1295,9 @@ public class ArrayDatasetBuilder implements AutoCloseable {
 
         /**
          * 현재 sample에 trace 하나를 추가한다.
+         *
+         * <p>하나의 sample 안에 여러 feature trace가 들어갈 수 있으므로
+         * context는 `addTrace(...)` 여러 번을 하나의 sample 단위로 묶는다.
          */
         public void addTrace(Integer featureId, String featureKey, Map<String, Object> columns) throws Exception {
             builder.addTrace(sampleId, featureId, featureKey, columns);

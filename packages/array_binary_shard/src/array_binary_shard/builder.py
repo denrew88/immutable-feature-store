@@ -109,6 +109,19 @@ class ArrayBuildSessionStatus:
 
 
 class SampleContext:
+    """trace 여러 개를 하나의 sample 단위로 묶어 주는 helper다.
+
+    array 입력은 보통 "sample 하나 안에 feature trace 여러 개"가 들어간다.
+    이 context는 그 sample 경계를 명시해서 builder가 다음을 보장하게 한다.
+
+    - 다른 sample trace가 실수로 섞이는 것을 막음
+    - sample이 완전히 닫힌 뒤에만 checkpoint commit 여부를 판단함
+    - `next_expected_sample_id`와 실제 resume 경계를 일치시킴
+
+    즉 이 객체는 단순 편의 문법이 아니라, array ingestion의 durable sample
+    경계를 public API에서 표시하는 역할을 한다.
+    """
+
     def __init__(self, builder: "ArrayDatasetBuilder", sample_id: int):
         self._builder = builder
         self._sample_id = int(sample_id)
@@ -122,6 +135,7 @@ class SampleContext:
         return False
 
     def add_trace(self, feature_id: Optional[int] = None, feature_key: Optional[str] = None, *, columns):
+        """현재 열려 있는 sample에 trace 하나를 추가한다."""
         self._builder.add_trace(
             sample_id=self._sample_id,
             feature_id=feature_id,
@@ -558,6 +572,12 @@ class ArrayDatasetBuilder:
         self._commit_pending_bundle(force=False)
 
     def sample(self, sample_id: Optional[int] = None, sample_key: Optional[str] = None) -> SampleContext:
+        """sample 경계를 명시하는 trace context를 연다.
+
+        array 데이터셋은 sample 하나를 만들기 위해 `add_trace(...)`를 여러 번
+        호출하는 경우가 많다. `sample(...)`로 감싸면 그 경계가 명시되고,
+        builder는 sample이 완전히 닫힌 뒤에만 자동 bundle commit을 판단할 수 있다.
+        """
         self._ensure_trace_stage_open()
         return SampleContext(self, self._resolve_sample_id(sample_id, sample_key))
 
@@ -570,6 +590,12 @@ class ArrayDatasetBuilder:
         feature_key: Optional[str] = None,
         columns,
     ):
+        """현재 열려 있는 sample에 trace 하나를 추가한다.
+
+        top-level `add_trace(...)`는 저수준 경로라서, 연속 호출이 모두 같은 sample에
+        속할 때만 안전하다. 대부분의 호출자는 `with builder.sample(...): ...`를
+        써서 sample 종료 시점을 명시하고, 그 지점을 checkpoint 경계로 삼는 편이 맞다.
+        """
         self._ensure_trace_stage_open()
         resolved_sample_id = self._resolve_sample_id(sample_id, sample_key)
         if self._open_sample_id is None:

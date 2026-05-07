@@ -67,6 +67,12 @@ thin jar이므로 실행 시 DuckDB JDBC와 Jackson jars를 classpath에 같이 
 - `finishStage()`
 - `buildShards(...)`
 
+`sample(...)`가 필요한 이유:
+
+- array 입력은 sample 하나 안에 trace 여러 개가 들어가는 형태입니다.
+- builder는 sample 경계를 기준으로 trace 묶음을 닫고, 그 뒤에만 checkpoint commit을 할 수 있습니다.
+- 그래서 sample context는 단순 편의 API가 아니라 resume-safe array ingestion의 기본 경계입니다.
+
 중요:
 
 - 자동 chunking은 내부 구현입니다.

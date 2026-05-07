@@ -121,6 +121,13 @@ array는 sample context 안에서 trace를 추가합니다.
 - `finish_stage()`
 - `build_shards(...)`
 
+`sample(...)`가 필요한 이유:
+
+- array는 sample 하나 안에 여러 feature trace가 들어가는 구조입니다.
+- builder는 sample 경계를 알아야 다른 sample trace가 섞이는 실수를 막을 수 있습니다.
+- 자동 checkpoint commit도 sample이 완전히 끝난 뒤에만 안전하게 할 수 있습니다.
+- 그래서 array 쪽 sample context는 단순 편의 문법이 아니라, resume-safe ingestion 경계를 표시하는 public API입니다.
+
 예:
 
 ```python
@@ -178,6 +185,7 @@ manifest_path = session.build_shards(cleanup_bundles=False)
 
 - array는 sample 경계에서만 checkpoint가 생깁니다.
 - top-level `add_trace(...)`는 같은 sample 안에서만 연속 호출해야 합니다.
+- 여러 trace를 한 sample로 묶어 쓰는 것이 기본 경로이므로, 보통은 `with session.sample(...):` 형태를 권장합니다.
 - `finish_bundles()`는 legacy alias로 남아 있지만 새 코드는 `finish_stage()`를 권장합니다.
 
 ### reader
