@@ -16,6 +16,14 @@ $duckdbJar = Join-Path $repoRoot "java\lib\duckdb_jdbc-1.1.3.jar"
 $jacksonCoreJar = Join-Path $repoRoot "java\lib\jackson-core-2.20.0.jar"
 $jacksonDatabindJar = Join-Path $repoRoot "java\lib\jackson-databind-2.20.0.jar"
 $jacksonAnnotationsJar = Join-Path $repoRoot "java\lib\jackson-annotations-2.20.jar"
+$parquetBundleJar = Join-Path $repoRoot "java\lib\parquet-hadoop-bundle-1.13.1.jar"
+$hadoopCommonJar = Join-Path $repoRoot "java\lib\hadoop-common-3.3.6.jar"
+$slf4jApiJar = Join-Path $repoRoot "java\lib\slf4j-api-1.7.36.jar"
+$woodstoxCoreJar = Join-Path $repoRoot "java\lib\woodstox-core-6.5.1.jar"
+$stax2ApiJar = Join-Path $repoRoot "java\lib\stax2-api-4.2.1.jar"
+$commonsCollectionsJar = Join-Path $repoRoot "java\lib\commons-collections-3.2.2.jar"
+$commonsLang3Jar = Join-Path $repoRoot "java\lib\commons-lang3-3.12.0.jar"
+$hadoopMapReduceCoreJar = Join-Path $repoRoot "java\lib\hadoop-mapreduce-client-core-3.3.6.jar"
 if (-not (Test-Path $javac)) {
     throw "javac.exe not found at $javac"
 }
@@ -37,12 +45,44 @@ if (-not (Test-Path $jacksonDatabindJar)) {
 if (-not (Test-Path $jacksonAnnotationsJar)) {
     throw "jackson-annotations jar not found at $jacksonAnnotationsJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
 }
+if (-not (Test-Path $parquetBundleJar)) {
+    throw "parquet-hadoop-bundle jar not found at $parquetBundleJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $hadoopCommonJar)) {
+    throw "hadoop-common jar not found at $hadoopCommonJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $slf4jApiJar)) {
+    throw "slf4j-api jar not found at $slf4jApiJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $woodstoxCoreJar)) {
+    throw "woodstox-core jar not found at $woodstoxCoreJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $stax2ApiJar)) {
+    throw "stax2-api jar not found at $stax2ApiJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $commonsCollectionsJar)) {
+    throw "commons-collections jar not found at $commonsCollectionsJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $commonsLang3Jar)) {
+    throw "commons-lang3 jar not found at $commonsLang3Jar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
+if (-not (Test-Path $hadoopMapReduceCoreJar)) {
+    throw "hadoop-mapreduce-client-core jar not found at $hadoopMapReduceCoreJar. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+}
 
 $classpath = @(
     $duckdbJar
     $jacksonCoreJar
     $jacksonDatabindJar
     $jacksonAnnotationsJar
+    $parquetBundleJar
+    $hadoopCommonJar
+    $slf4jApiJar
+    $woodstoxCoreJar
+    $stax2ApiJar
+    $commonsCollectionsJar
+    $commonsLang3Jar
+    $hadoopMapReduceCoreJar
 ) -join ";"
 
 $buildDir = Join-Path $packageRoot "build"
@@ -79,6 +119,7 @@ $sourceSpecs = @(
     "java\src\fs\io\scalar\ScalarMetadataWriter.java",
     "java\src\fs\io\scalar\ScalarSampleBundleManifestIO.java",
     "java\src\fs\io\scalar\ScalarSampleBundleWriter.java",
+    "java\src\fs\io\scalar\ScalarShardParquetWriter.java",
     "java\src\fs\io\ScalarShardDataset.java",
     "java\src\fs\io\scalar\ShardBuilder.java",
     "java\src\fs\io\scalar\ShardReader.java",

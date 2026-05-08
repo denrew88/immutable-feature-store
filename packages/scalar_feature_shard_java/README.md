@@ -23,6 +23,14 @@ Java 8용 scalar feature shard reader/builder/selection 패키지입니다.
   - `java/lib/jackson-core-2.20.0.jar`
   - `java/lib/jackson-databind-2.20.0.jar`
   - `java/lib/jackson-annotations-2.20.jar`
+  - `java/lib/parquet-hadoop-bundle-1.13.1.jar`
+  - `java/lib/hadoop-common-3.3.6.jar`
+  - `java/lib/slf4j-api-1.7.36.jar`
+  - `java/lib/woodstox-core-6.5.1.jar`
+  - `java/lib/stax2-api-4.2.1.jar`
+  - `java/lib/commons-collections-3.2.2.jar`
+  - `java/lib/commons-lang3-3.12.0.jar`
+  - `java/lib/hadoop-mapreduce-client-core-3.3.6.jar`
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File java\download_java_libs.ps1
@@ -40,7 +48,7 @@ powershell -ExecutionPolicy Bypass -File packages\scalar_feature_shard_java\buil
 - `dist/scalar-feature-shard-java-0.1.0-sources.jar`
 - `dist/scalar-feature-shard-java-0.1.0-javadoc.jar`
 
-thin jar이므로 실행 시 DuckDB JDBC와 Jackson jars를 classpath에 같이 넣어야 합니다.
+thin jar이므로 실행 시 DuckDB JDBC, Jackson, Parquet bundle, Hadoop common, Hadoop MapReduce core, SLF4J API, Woodstox, commons-collections, commons-lang3 jars를 classpath에 같이 넣어야 합니다.
 
 ## Public API
 

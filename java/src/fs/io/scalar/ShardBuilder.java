@@ -7,6 +7,8 @@ import fs.math.Pearson;
 import fs.model.common.SampleMeta;
 import fs.model.scalar.ScalarSampleBundleManifest;
 import fs.model.scalar.ShardManifest;
+import org.duckdb.DuckDBAppender;
+import org.duckdb.DuckDBConnection;
 
 import java.io.File;
 import java.io.IOException;
@@ -21,7 +23,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -271,20 +272,18 @@ public class ShardBuilder {
                 Arrays.fill(nOverlapByY.get(statsYCol), -1);
             }
 
-            try (Connection conn = DuckDBUtils.connect(null)) {
-                // 채워 둔 dense buffer를 실제 shard parquet 파일로 직렬화한다.
-                for (int shardId = 0; shardId < layout.nShards; shardId++) {
-                    int start = layout.shardStarts[shardId];
-                    int end = layout.shardEnds[shardId];
-                    int rows = Math.max(0, end - start);
-                    String shardPath = new File(shardDir, String.format("shard_%04d.parquet", shardId)).getAbsolutePath();
-                    if (rows == 0) {
-                        writeEmptyShard(conn, shardPath);
-                        continue;
-                    }
-                    MappedShard shard = shards.get(shardId);
-                    writeShardParquet(conn, shard, shardPath, targetsByY, r2yByY, nOverlapByY, start);
+            // 채워 둔 dense buffer를 DuckDB temp table을 거치지 않고 바로 shard parquet로 직렬화한다.
+            for (int shardId = 0; shardId < layout.nShards; shardId++) {
+                int start = layout.shardStarts[shardId];
+                int end = layout.shardEnds[shardId];
+                int rows = Math.max(0, end - start);
+                String shardPath = new File(shardDir, String.format("shard_%04d.parquet", shardId)).getAbsolutePath();
+                if (rows == 0) {
+                    writeEmptyShard(shardPath);
+                    continue;
                 }
+                MappedShard shard = shards.get(shardId);
+                writeShardParquet(shard, shardPath, targetsByY, r2yByY, nOverlapByY, start);
             }
 
             String sampleMetaOut = new File(out, "sample_meta.parquet").getAbsolutePath();
@@ -499,11 +498,9 @@ public class ShardBuilder {
      * <p>feature 수가 shard 수보다 적으면 일부 shard는 비어 있을 수 있다.
      * 그래도 locator와 manifest 상 shard 번호 체계를 유지하기 위해, 빈 shard도 실제 parquet 파일로 남긴다.
      */
-    private static void writeEmptyShard(Connection conn, String shardPath) throws SQLException {
-        try (Statement st = conn.createStatement()) {
-            st.execute("CREATE TEMP TABLE tmp_shard (feature_id INTEGER, value_len INTEGER, values_blob BLOB, valid_blob BLOB)");
-            st.execute("COPY tmp_shard TO " + DuckDBUtils.quotePath(shardPath) + " (FORMAT PARQUET)");
-            st.execute("DROP TABLE tmp_shard");
+    private static void writeEmptyShard(String shardPath) throws IOException {
+        try (ScalarShardParquetWriter writer = ScalarShardParquetWriter.open(shardPath)) {
+            // row를 하나도 쓰지 않고 닫으면 빈 shard parquet만 남는다.
         }
     }
 
@@ -518,7 +515,6 @@ public class ShardBuilder {
      * 각 feature row를 y 컬럼들과 pairwise 비교해 {@code r2}와 유효 sample 개수를 구하고,
      * 그 값을 전역 결과 배열 {@code r2yByY}, {@code nOverlapByY}에 기록한다.
      *
-     * @param conn DuckDB 연결
      * @param shard 이미 값이 채워진 dense shard buffer
      * @param shardPath 최종 shard parquet 출력 경로
      * @param targetsByY y 컬럼별 target 값과 valid mask
@@ -527,23 +523,16 @@ public class ShardBuilder {
      * @param globalStart 현재 shard의 첫 feature가 전체 feature 순서에서 시작하는 global index
      */
     private static void writeShardParquet(
-            Connection conn,
             MappedShard shard,
             String shardPath,
             Map<String, SampleMeta> targetsByY,
             Map<String, double[]> r2yByY,
             Map<String, int[]> nOverlapByY,
-            int globalStart) throws SQLException {
-        try (Statement st = conn.createStatement()) {
-            st.execute("CREATE TEMP TABLE tmp_shard (feature_id INTEGER, value_len INTEGER, values_blob BLOB, valid_blob BLOB)");
-        }
-        String insertSql = "INSERT INTO tmp_shard VALUES (?, ?, ?, ?)";
-        int batchSize = 64;
+            int globalStart) throws IOException {
         int rowValueBytes = shard.rowValueBytes;
         int rowValidBytes = shard.rowValidBytes;
 
-        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
-            int batch = 0;
+        try (ScalarShardParquetWriter writer = ScalarShardParquetWriter.open(shardPath)) {
             for (int row = 0; row < shard.rows; row++) {
                 byte[] valuesBytes = new byte[rowValueBytes];
                 byte[] validBytes = new byte[rowValidBytes];
@@ -563,24 +552,8 @@ public class ShardBuilder {
                 }
 
                 // shard parquet의 한 row는 feature 하나의 전체 sample 값을 blob 두 개로 담는다.
-                ps.setInt(1, shard.featureIds[row]);
-                ps.setInt(2, shard.nSamples);
-                ps.setBytes(3, valuesBytes);
-                ps.setBytes(4, validBytes);
-                ps.addBatch();
-                batch++;
-                if (batch >= batchSize) {
-                    ps.executeBatch();
-                    batch = 0;
-                }
+                writer.writeRow(shard.featureIds[row], shard.nSamples, valuesBytes, validBytes);
             }
-            if (batch > 0) {
-                ps.executeBatch();
-            }
-        }
-        try (Statement st = conn.createStatement()) {
-            st.execute("COPY tmp_shard TO " + DuckDBUtils.quotePath(shardPath) + " (FORMAT PARQUET)");
-            st.execute("DROP TABLE tmp_shard");
         }
     }
 
@@ -597,26 +570,18 @@ public class ShardBuilder {
         try (Statement st = conn.createStatement()) {
             st.execute("CREATE TEMP TABLE tmp_feature_locator (feature_id INTEGER, global_rank INTEGER, shard_id INTEGER, offset_in_shard INTEGER)");
         }
-        String insertSql = "INSERT INTO tmp_feature_locator VALUES (?, ?, ?, ?)";
-        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
-            int batch = 0;
+        try (DuckDBAppender appender = ((DuckDBConnection) conn).createAppender(DuckDBConnection.DEFAULT_SCHEMA, "tmp_feature_locator")) {
             for (int i = 0; i < featureIds.length; i++) {
                 int shardId = i / shardSize;
                 int offsetInShard = i - shardId * shardSize;
-                ps.setInt(1, featureIds[i]);
-                ps.setInt(2, i);
-                ps.setInt(3, shardId);
-                ps.setInt(4, offsetInShard);
-                ps.addBatch();
-                batch++;
-                if (batch >= 1024) {
-                    ps.executeBatch();
-                    batch = 0;
-                }
+                appender.beginRow();
+                appender.append(featureIds[i]);
+                appender.append(i);
+                appender.append(shardId);
+                appender.append(offsetInShard);
+                appender.endRow();
             }
-            if (batch > 0) {
-                ps.executeBatch();
-            }
+            appender.flush();
         }
         try (Statement st = conn.createStatement()) {
             st.execute("COPY tmp_feature_locator TO " + DuckDBUtils.quotePath(locatorPath) + " (FORMAT PARQUET)");
@@ -641,27 +606,19 @@ public class ShardBuilder {
         try (Statement st = conn.createStatement()) {
             st.execute("CREATE TEMP TABLE tmp_selection_stats (feature_id INTEGER, shard_id INTEGER, offset_in_shard INTEGER, r2y DOUBLE, n_y_overlap INTEGER)");
         }
-        String insertSql = "INSERT INTO tmp_selection_stats VALUES (?, ?, ?, ?, ?)";
-        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
-            int batch = 0;
+        try (DuckDBAppender appender = ((DuckDBConnection) conn).createAppender(DuckDBConnection.DEFAULT_SCHEMA, "tmp_selection_stats")) {
             for (int i = 0; i < featureIds.length; i++) {
                 int shardId = i / shardSize;
                 int offsetInShard = i - shardId * shardSize;
-                ps.setInt(1, featureIds[i]);
-                ps.setInt(2, shardId);
-                ps.setInt(3, offsetInShard);
-                ps.setDouble(4, r2y[i]);
-                ps.setInt(5, nYOverlap[i]);
-                ps.addBatch();
-                batch++;
-                if (batch >= 1024) {
-                    ps.executeBatch();
-                    batch = 0;
-                }
+                appender.beginRow();
+                appender.append(featureIds[i]);
+                appender.append(shardId);
+                appender.append(offsetInShard);
+                appender.append(r2y[i]);
+                appender.append(nYOverlap[i]);
+                appender.endRow();
             }
-            if (batch > 0) {
-                ps.executeBatch();
-            }
+            appender.flush();
         }
         try (Statement st = conn.createStatement()) {
             st.execute("COPY tmp_selection_stats TO " + DuckDBUtils.quotePath(path) + " (FORMAT PARQUET)");

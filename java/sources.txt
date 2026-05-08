@@ -34,6 +34,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\SampleMetaL
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarMetadataWriter.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarSampleBundleManifestIO.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarSampleBundleWriter.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarShardParquetWriter.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ShardBuilder.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ShardReader.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\math\Pearson.java
