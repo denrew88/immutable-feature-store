@@ -117,9 +117,9 @@ class SelectionRequest(BaseModel):
     manifest_path: str = Field(..., description="Path to scalar shard_manifest.json")
     y_col: str = "y"
     y_r2: float = 0.01
-    min_non_null_y: int = 200
-    ff_r2: float = 0.9
-    min_non_null_pair: int = 200
+    min_non_null_y: int = 20
+    ff_r2: float = 0.8
+    min_non_null_pair: int = 20
     top_m: int = 100
     initial_cap: int = 2048
     max_step: int = 4096

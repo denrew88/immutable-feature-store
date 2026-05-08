@@ -17,23 +17,31 @@ import java.util.Map;
 import java.util.Random;
 
 /**
- * `check_array.ipynb`의 Builder Test와 비슷한 흐름을 자바 public API로 실행하는
- * synthetic 데이터 생성 스크립트다.
+ * `check_array.ipynb`의 Builder Test와 비슷한 synthetic array dataset 생성 스크립트다.
  *
- * <p>이 스크립트는 다음 순서로 동작한다.
- * 1) sample/feature metadata 생성
- * 2) builder로 synthetic trace 기록
- * 3) 최종 array binary shard build
+ * <p>최신 session API 흐름을 그대로 사용한다.
+ * 1) sample/feature metadata 작성
+ * 2) `openSession(...)`으로 builder session 오픈
+ * 3) `status().nextExpectedSampleId`부터 sample context 안에서 trace 기록
+ * 4) `finishStage()`
+ * 5) `buildShards(...)`
  */
 public final class GenerateArrayShardTestsMain {
     private static final int N_SAMPLES = 100;
-    private static final int N_FEATURES = 16;
+    private static final int N_FEATURES = 64;
     private static final int FEATURES_PER_SENSOR = 4;
     private static final int N_CH_STEPS = 10;
     private static final String STEP_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    private static final int RESUME_SPLIT_SAMPLE = 20;
+
+    private GenerateArrayShardTestsMain() {
+    }
 
     public static void main(String[] args) throws Exception {
-        File root = new File("data/tmp_java_array_builder_test_large");
+        File root = new File("data/tmp_java_array_builder_test_small");
+        if (!root.exists() && !root.mkdirs()) {
+            throw new IllegalStateException("failed to create output root: " + root.getAbsolutePath());
+        }
 
         String outDir = new File(root, "array_shards").getAbsolutePath();
         String sampleMetaPath = new File(root, "sample_meta.parquet").getAbsolutePath();
@@ -48,7 +56,7 @@ public final class GenerateArrayShardTestsMain {
 
         ArrayBinaryBuildOptions buildOptions = new ArrayBinaryBuildOptions();
         buildOptions.samplesPerBlock = 16;
-        buildOptions.targetShardMb = 32;
+        buildOptions.targetShardMb = 128;
         buildOptions.codec = "none";
 
         List<PointColumnSpec> pointSchema = Arrays.asList(
@@ -65,32 +73,55 @@ public final class GenerateArrayShardTestsMain {
                 pointSchema,
                 featureMetaPath,
                 buildOptions)) {
-            for (int sampleId = 0; sampleId < N_SAMPLES; sampleId++) {
-                try (ArrayDatasetBuilder.ArraySampleContext sample = builder.sample((long) sampleId)) {
-                    for (int featureBase = 0; featureBase < N_FEATURES; featureBase += FEATURES_PER_SENSOR) {
-                        int signalLength = 300 + rng.nextInt(200);
-                        double amplitude = -1.0 + rng.nextDouble() * 2.0;
-                        double frequency = 0.1 + rng.nextDouble() * 9.9;
+            long nextSampleId = builder.status().nextExpectedSampleId;
+            writeSamples(builder, rng, nextSampleId, RESUME_SPLIT_SAMPLE);
+            System.out.println("paused after sample " + (RESUME_SPLIT_SAMPLE - 1));
+        }
 
-                        double[] time = buildTime(signalLength);
-                        double[] baseSignal = buildBaseSignal(signalLength, amplitude, frequency);
-                        String[] chSteps = buildChSteps(signalLength, rng);
+        try (ArrayDatasetBuilder builder = ArrayBinaryShards.openSession(
+                outDir,
+                sampleMetaPath,
+                pointSchema,
+                featureMetaPath,
+                buildOptions)) {
+            long nextSampleId = builder.status().nextExpectedSampleId;
+            writeSamples(builder, rng, nextSampleId, N_SAMPLES);
 
-                        for (int featureTail = 0; featureTail < FEATURES_PER_SENSOR; featureTail++) {
-                            int featureId = featureBase + featureTail;
-                            double[] values = buildSignalVariant(baseSignal, amplitude, frequency, featureTail);
+            String stageManifestPath = builder.finishStage();
+            System.out.println("stage manifest: " + stageManifestPath);
+            String manifestPath = builder.buildShards(false);
+            System.out.println("final manifest: " + manifestPath);
+        }
+    }
 
-                            LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
-                            columns.put("time", time.clone());
-                            columns.put("value", values.clone());
-                            columns.put("ch_step", chSteps.clone());
-                            sample.addTrace(Integer.valueOf(featureId), null, columns);
-                        }
+    private static void writeSamples(
+            ArrayDatasetBuilder builder,
+            Random rng,
+            long startSampleId,
+            int endExclusiveSampleId) throws Exception {
+        for (long sampleId = startSampleId; sampleId < endExclusiveSampleId; sampleId++) {
+            try (ArrayDatasetBuilder.ArraySampleContext sample = builder.sample(sampleId)) {
+                for (int featureBase = 0; featureBase < N_FEATURES; featureBase += FEATURES_PER_SENSOR) {
+                    int signalLength = 300 + rng.nextInt(200);
+                    double amplitude = -1.0 + rng.nextDouble() * 2.0;
+                    double frequency = 0.1 + rng.nextDouble() * 9.9;
+
+                    double[] time = buildTime(signalLength);
+                    double[] baseSignal = buildBaseSignal(signalLength, amplitude, frequency);
+                    String[] chSteps = buildChSteps(signalLength, rng);
+
+                    for (int featureTail = 0; featureTail < FEATURES_PER_SENSOR; featureTail++) {
+                        int featureId = featureBase + featureTail;
+                        double[] values = buildSignalVariant(baseSignal, amplitude, frequency, featureTail);
+
+                        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
+                        columns.put("time", time.clone());
+                        columns.put("value", values.clone());
+                        columns.put("ch_step", chSteps.clone());
+                        sample.addTrace(Integer.valueOf(featureId), null, columns);
                     }
                 }
             }
-            String manifestPath = builder.buildShards(false);
-            System.out.println(manifestPath);
         }
     }
 
