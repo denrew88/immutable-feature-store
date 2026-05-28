@@ -2,11 +2,15 @@
 
 오프라인으로 생성하고 빠르게 조회하는 feature store 저장소입니다.
 
-이 저장소는 두 가지 데이터 형태를 다룹니다.
+이 저장소는 세 가지 저장 경로를 다룹니다.
 
-- **array shard**
-  - 샘플마다 길이가 다른 trace를 저장
+- **array binary shard**
+  - 샘플마다 길이가 다른 trace를 feature-major custom binary로 저장
   - manifest가 point schema를 정의
+  - 빠른 serving과 random access에 사용
+- **array sample parquet**
+  - 샘플마다 길이가 다른 trace를 sample-major Parquet으로 저장
+  - 일반 Parquet 도구로 열어보기 쉬운 viewer/debugging용 포맷
 - **scalar shard**
   - `feature x sample` 형태의 dense 값 저장
   - 빠른 조회와 feature selection에 사용
@@ -23,11 +27,13 @@
 ```text
 docs/
   array_binary_shard_format_v3.md
+  array_sample_parquet_format_v1.md
   scalar_parquet_shard_format.md
 
 python/
   fs/
     array/
+    array_sample_parquet/
     scalar/
     feature_selection/
   scripts/
@@ -39,8 +45,10 @@ java/
 
 packages/
   array_binary_shard/
+  array_sample_parquet/
   scalar_feature_shard/
   array_binary_shard_java/
+  array_sample_parquet_java/
   scalar_feature_shard_java/
 ```
 
@@ -63,6 +71,27 @@ Array binary shard v3 특징:
 - manifest 정의 point schema
 - categorical dictionary sidecar
 - direct-ingestion builder
+- `sample_key` / `feature_key` 기반 조회
+
+### Array Sample Parquet
+
+- 문서
+  - [docs/array_sample_parquet_format_v1.md](docs/array_sample_parquet_format_v1.md)
+- Python core
+  - [python/fs/array_sample_parquet](python/fs/array_sample_parquet)
+- Python wheel
+  - [packages/array_sample_parquet](packages/array_sample_parquet)
+- Java jar
+  - [packages/array_sample_parquet_java](packages/array_sample_parquet_java)
+
+Array sample parquet v1 특징:
+
+- row 하나가 `(sample_id, feature_id)` trace 하나
+- point column을 Parquet `list<typed value>`로 저장
+- sample-major layout
+- `.parquet.tmp`에 streaming write 후 sample 경계에서 commit
+- `target_part_bytes` / `targetPartBytes` 기반 자동 part 크기 조절
+- `state.json`과 `parts.jsonl` 기반 resume
 - `sample_key` / `feature_key` 기반 조회
 
 ### Scalar
@@ -101,6 +130,8 @@ Scalar shard 특징:
 - `GET /cache-stats`
 - `POST /array-schema`
 - `POST /array-feature`
+- `POST /array-sample-parquet/schema`
+- `POST /array-sample-parquet/traces`
 - `POST /scalar-feature`
 - `POST /run-selection`
 
@@ -122,6 +153,26 @@ python -m pip wheel . -w wheelhouse --no-deps --no-build-isolation
 - `open_shard(...)`
 - `ArrayDatasetBuilder`
 - `build_shard(...)`
+
+### `array_sample_parquet`
+
+빌드:
+
+```powershell
+cd packages\array_sample_parquet
+python -m pip wheel . -w wheelhouse --no-deps --no-build-isolation
+```
+
+주요 public API:
+
+- `ArraySampleParquetDatasetBuilder.open_session(...)`
+- `builder.status()`
+- `builder.sample(...)`
+- `sample.add_trace(...)`
+- `builder.finish()`
+- `open_array_sample_parquet(...)`
+- `reader.get_traces(...)`
+- `reader.get_traces_json(...)`
 
 ### `scalar_feature_shard`
 
@@ -170,11 +221,18 @@ python -m pip wheel . -w wheelhouse --no-deps --no-build-isolation
 
 - array binary format을 이해하려면
   - [docs/array_binary_shard_format_v3.md](docs/array_binary_shard_format_v3.md)
+- array sample parquet format과 구현 방식을 이해하려면
+  - [docs/array_sample_parquet_format_v1.md](docs/array_sample_parquet_format_v1.md)
 - scalar shard format을 이해하려면
   - [docs/scalar_parquet_shard_format.md](docs/scalar_parquet_shard_format.md)
 - Python 패키지를 쓰려면
   - [packages/array_binary_shard/README.md](packages/array_binary_shard/README.md)
+  - [packages/array_sample_parquet/README.md](packages/array_sample_parquet/README.md)
   - [packages/scalar_feature_shard/README.md](packages/scalar_feature_shard/README.md)
+- Java jar 패키지를 쓰려면
+  - [packages/array_binary_shard_java/README.md](packages/array_binary_shard_java/README.md)
+  - [packages/array_sample_parquet_java/README.md](packages/array_sample_parquet_java/README.md)
+  - [packages/scalar_feature_shard_java/README.md](packages/scalar_feature_shard_java/README.md)
 - Python core 흐름을 보려면
   - [python/README.md](python/README.md)
 - Java 쪽을 보려면
