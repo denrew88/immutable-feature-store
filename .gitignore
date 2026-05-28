@@ -34,6 +34,10 @@ packages/**/wheelhouse/
 packages/**/*.egg-info/
 !packages/array_binary_shard_java/dist/
 !packages/array_binary_shard_java/dist/*.jar
+!packages/array_sample_parquet/dist/
+!packages/array_sample_parquet/dist/*.whl
+!packages/array_sample_parquet_java/dist/
+!packages/array_sample_parquet_java/dist/*.jar
 !packages/scalar_feature_shard_java/dist/
 !packages/scalar_feature_shard_java/dist/*.jar
 
