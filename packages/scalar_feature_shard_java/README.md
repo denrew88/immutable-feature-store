@@ -164,6 +164,33 @@ public class ScalarPackageExample {
 }
 ```
 
+## Jar Example
+
+sample meta, feature meta, scalar feature shard dataset을 jar classpath만으로 생성하는 전체 예제는 다음 파일에 있습니다.
+
+- `examples/BuildScalarFeatureShardWithJarExample.java`
+
+컴파일:
+
+```powershell
+New-Item -ItemType Directory -Force packages\scalar_feature_shard_java\examples\out | Out-Null
+& "C:\Program Files\Java\jdk-1.8\bin\javac.exe" `
+  -encoding UTF-8 `
+  -cp "packages\scalar_feature_shard_java\dist\scalar-feature-shard-java-0.1.0.jar;java\lib\*" `
+  -d packages\scalar_feature_shard_java\examples\out `
+  packages\scalar_feature_shard_java\examples\BuildScalarFeatureShardWithJarExample.java
+```
+
+실행:
+
+```powershell
+& "C:\Program Files\Java\jdk-1.8\bin\java.exe" `
+  -cp "packages\scalar_feature_shard_java\examples\out;packages\scalar_feature_shard_java\dist\scalar-feature-shard-java-0.1.0.jar;java\lib\*" `
+  BuildScalarFeatureShardWithJarExample
+```
+
+기본 출력 위치는 `data/tmp_scalar_feature_shard_jar_example`입니다. 다른 위치에 쓰려면 실행 명령 끝에 출력 root directory를 인자로 넘기면 됩니다.
+
 ## 참고
 
 - 포맷 상세: [docs/scalar_parquet_shard_format.md](../../docs/scalar_parquet_shard_format.md)

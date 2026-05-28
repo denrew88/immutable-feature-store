@@ -87,6 +87,33 @@ try (ArraySampleParquetDatasetBuilder builder = ArraySampleParquets.openSession(
 }
 ```
 
+## Jar Example
+
+sample meta, feature meta, array sample parquet dataset을 jar classpath만으로 생성하는 전체 예제는 다음 파일에 있습니다.
+
+- `examples/BuildArraySampleParquetWithJarExample.java`
+
+컴파일:
+
+```powershell
+New-Item -ItemType Directory -Force packages\array_sample_parquet_java\examples\out | Out-Null
+& "C:\Program Files\Java\jdk-1.8\bin\javac.exe" `
+  -encoding UTF-8 `
+  -cp "packages\array_sample_parquet_java\dist\array-sample-parquet-java-0.1.0.jar;java\lib\*" `
+  -d packages\array_sample_parquet_java\examples\out `
+  packages\array_sample_parquet_java\examples\BuildArraySampleParquetWithJarExample.java
+```
+
+실행:
+
+```powershell
+& "C:\Program Files\Java\jdk-1.8\bin\java.exe" `
+  -cp "packages\array_sample_parquet_java\examples\out;packages\array_sample_parquet_java\dist\array-sample-parquet-java-0.1.0.jar;java\lib\*" `
+  BuildArraySampleParquetWithJarExample
+```
+
+기본 출력 위치는 `data/tmp_array_sample_parquet_jar_example`입니다. 다른 위치에 쓰려면 실행 명령 끝에 출력 root directory를 인자로 넘기면 됩니다.
+
 ## When To Use
 
 이 jar는 sample 중심 viewer/debugging과 Java 쪽 검증 스크립트에 적합합니다. feature-major serving이나 대량 random access가 목적이면 기존 custom binary array shard를 사용하십시오.
