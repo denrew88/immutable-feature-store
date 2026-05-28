@@ -423,3 +423,47 @@ java -cp "java\lib\*;java\out" scripts.RunScalarNotebookBuilderTestsMain
 - package별 사용법:
   - [packages/array_binary_shard_java/README.md](../packages/array_binary_shard_java/README.md)
   - [packages/scalar_feature_shard_java/README.md](../packages/scalar_feature_shard_java/README.md)
+
+## Array Sample Parquet
+
+`fs.io.ArraySampleParquets`는 viewer/debugging용 sample-major Parquet 포맷의 public facade입니다.
+
+- `openSession(...)`으로 sample 순서 ingest를 시작합니다.
+- `status().nextExpectedSampleId`로 resume 위치를 확인합니다.
+- `sample(sampleId)` / `sample(sampleKey)` context 안에서 trace를 추가합니다.
+- trace row는 `.parquet.tmp`에 streaming으로 바로 쓰고, part commit은 sample 경계에서만 일어납니다.
+- part 크기는 sample 개수가 아니라 `targetPartBytes` 기준으로 자동 조절합니다.
+- `finish()`가 `array_sample_parquet_manifest.json`을 씁니다.
+- `ArraySampleParquetReader`는 `loadTracesByIds(...)`, `loadTracesByKeys(...)`를 제공합니다.
+
+```java
+ArraySampleParquetBuildOptions options = new ArraySampleParquetBuildOptions();
+options.targetPartBytes = 128L * 1024L * 1024L;
+options.compression = "none";
+
+try (ArraySampleParquetDatasetBuilder builder = ArraySampleParquets.openSession(
+        "C:\\data\\array_sample_parquet",
+        "C:\\data\\sample_meta.parquet",
+        pointSchema,
+        "C:\\data\\feature_meta.parquet",
+        options)) {
+    long start = builder.status().nextExpectedSampleId;
+    for (long sampleId = start; sampleId < nSamples; sampleId++) {
+        try (ArraySampleParquetSampleContext sample = builder.sample(sampleId)) {
+            sample.addTrace(null, "feature_a", columns);
+        }
+    }
+    builder.finish();
+}
+```
+
+추가 테스트:
+
+```powershell
+java -cp "java\lib\*;java\out" scripts.RunArraySampleParquetTestsMain
+```
+
+추가 문서와 패키지:
+
+- [docs/array_sample_parquet_format_v1.md](../docs/array_sample_parquet_format_v1.md)
+- [packages/array_sample_parquet_java/README.md](../packages/array_sample_parquet_java/README.md)

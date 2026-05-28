@@ -219,3 +219,49 @@ python -m scripts.run_array_binary_package_tests
 - Python wheel/package 사용법:
   - [../packages/array_binary_shard/README.md](../packages/array_binary_shard/README.md)
   - [../packages/scalar_feature_shard/README.md](../packages/scalar_feature_shard/README.md)
+
+## Array Sample Parquet
+
+`fs.array_sample_parquet`는 기존 custom binary shard와 별개인 viewer/debugging용 sample-major Parquet 포맷입니다.
+
+- 행 하나는 `(sample_id, feature_id)` trace 하나입니다.
+- point column은 `list<typed value>` Parquet column으로 저장됩니다.
+- trace row는 `.parquet.tmp`에 streaming으로 바로 쓰고, part commit은 sample 경계에서만 일어납니다.
+- part 크기는 sample 개수가 아니라 `target_part_bytes` 기준으로 자동 조절합니다.
+- 중단 후 재개할 때는 `.tmp`를 버리고 `status().next_expected_sample_id`부터 다시 넣습니다.
+- API 서버 endpoint는 `/array-sample-parquet/schema`, `/array-sample-parquet/traces`입니다.
+
+```python
+from fs.array_sample_parquet import ArraySampleParquetDatasetBuilder, open_array_sample_parquet
+
+with ArraySampleParquetDatasetBuilder.open_session(
+    out_dir="..\\data\\array_sample_parquet",
+    sample_meta_path="..\\data\\array_sample_meta.parquet",
+    point_schema=point_schema,
+    feature_meta_path="..\\data\\array_feature_meta.parquet",
+) as session:
+    start = session.status().next_expected_sample_id
+    for sample_id in range(start, n_samples):
+        with session.sample(sample_id=sample_id) as sample:
+            sample.add_trace(feature_key="feature_a", columns=columns)
+    manifest_path = session.finish()
+
+reader = open_array_sample_parquet(manifest_path)
+payload = reader.get_traces_json(
+    sample_keys=["sample_000001"],
+    feature_keys=["feature_a"],
+    decode_categorical=True,
+    layout="nested",
+)
+```
+
+추가 테스트:
+
+```powershell
+python -m scripts.run_array_sample_parquet_tests
+```
+
+추가 문서와 패키지:
+
+- [../docs/array_sample_parquet_format_v1.md](../docs/array_sample_parquet_format_v1.md)
+- [../packages/array_sample_parquet/README.md](../packages/array_sample_parquet/README.md)

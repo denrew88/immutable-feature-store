@@ -42,3 +42,4 @@ packages/**/*.egg-info/
 *.iml
 .DS_Store
 Thumbs.db
+python/check_scalar.ipynb

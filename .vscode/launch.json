@@ -127,29 +127,6 @@
         },
         {
             "type": "python",
-            "name": "Build Array Parquet Shards (Python)",
-            "request": "launch",
-            "program": "${workspaceFolder}/python/scripts/build_array_shards.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
-            },
-            "args": [
-                "--bundle-manifest",
-                "${workspaceFolder}/data/array_synth_py/bundles/array_bundle_manifest.json",
-                "--out-dir",
-                "${workspaceFolder}/data/array_synth_py/shards",
-                "--target-shard-mb",
-                "256",
-                "--samples-per-block",
-                "8",
-                "--row-group-size",
-                "64"
-            ]
-        },
-        {
-            "type": "python",
             "name": "Build Array Binary Shards (Python)",
             "request": "launch",
             "program": "${workspaceFolder}/python/scripts/build_array_binary_shards.py",
@@ -163,33 +140,6 @@
                 "${workspaceFolder}/data/array_synth_py/bundles/array_bundle_manifest.json",
                 "--out-dir",
                 "${workspaceFolder}/data/array_synth_py_binary",
-                "--target-shard-mb",
-                "32",
-                "--samples-per-block",
-                "16",
-                "--codec",
-                "none",
-                "--sample-key-col",
-                "sample_key",
-                "--feature-key-col",
-                "feature_key"
-            ]
-        },
-        {
-            "type": "python",
-            "name": "Build Array Binary Bench (Python)",
-            "request": "launch",
-            "program": "${workspaceFolder}/python/scripts/build_array_binary_shards.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
-            },
-            "args": [
-                "--bundle-manifest",
-                "${workspaceFolder}/data/tmp_array_shard_bench_2000x1024/bundles/array_bundle_manifest.json",
-                "--out-dir",
-                "${workspaceFolder}/data/tmp_array_shard_bench_2000x1024/build_binary_from_bundles_b16_v2",
                 "--target-shard-mb",
                 "32",
                 "--samples-per-block",

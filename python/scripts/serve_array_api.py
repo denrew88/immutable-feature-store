@@ -22,6 +22,10 @@ from fs.array.binary_storage import (
     load_array_binary_categorical_dictionaries,
     load_array_binary_shard_manifest,
 )
+from fs.array_sample_parquet import (
+    ArraySampleParquetReader,
+    load_array_sample_parquet_manifest,
+)
 from fs.scalar.parquet_storage import (
     ParquetShardReader,
     build_feature_locator_index,
@@ -87,6 +91,23 @@ class ArraySchemaResponse(BaseModel):
     default_codec: Optional[str] = None
     point_schema: List[dict]
     categorical_dictionaries: Optional[dict] = None
+
+
+class ArraySampleParquetSchemaRequest(BaseModel):
+    manifest_path: str = Field(..., description="Path to array_sample_parquet_manifest.json")
+    include_dictionaries: bool = False
+
+
+class ArraySampleParquetTraceRequest(BaseModel):
+    manifest_path: str = Field(..., description="Path to array_sample_parquet_manifest.json")
+    sample_ids: Optional[List[int]] = None
+    sample_keys: Optional[List[str]] = None
+    feature_ids: Optional[List[int]] = None
+    feature_keys: Optional[List[str]] = None
+    layout: str = "nested"
+    decode_categorical: bool = False
+    include_missing: bool = False
+    max_traces: int = 10000
 
 
 class ScalarFeatureRequest(BaseModel):
@@ -178,6 +199,7 @@ app.add_middleware(
 )
 _CACHE_LOCK = threading.Lock()
 _ARRAY_CACHE = OrderedDict()
+_ARRAY_SAMPLE_PARQUET_CACHE = OrderedDict()
 _SCALAR_CACHE = OrderedDict()
 _MANIFEST_CACHE_MAX_ENTRIES = 16
 _MANIFEST_CACHE_TTL_SECONDS = 30 * 60
@@ -352,6 +374,36 @@ def _get_array_cache_entry(manifest_path: str) -> _ManifestCacheEntry:
         )
         _touch_manifest_entry(_ARRAY_CACHE, normalized, entry, now)
         _sweep_manifest_cache(_ARRAY_CACHE, now)
+        return entry
+
+
+def _get_array_sample_parquet_cache_entry(manifest_path: str) -> _ManifestCacheEntry:
+    """sample-major Parquet array manifest와 reader를 로드하고 캐시한다."""
+    normalized = _normalize_manifest_path(manifest_path)
+    with _CACHE_LOCK:
+        now = time.monotonic()
+        _sweep_manifest_cache(_ARRAY_SAMPLE_PARQUET_CACHE, now)
+        entry = _ARRAY_SAMPLE_PARQUET_CACHE.get(normalized)
+        if entry is not None:
+            _touch_manifest_entry(_ARRAY_SAMPLE_PARQUET_CACHE, normalized, entry, now)
+            return entry
+        manifest_json = _load_manifest_json(normalized)
+        if manifest_json.get("format") != "array-sample-parquet":
+            raise ValueError(f"unsupported array sample parquet manifest format: {manifest_json.get('format')!r}")
+        manifest = load_array_sample_parquet_manifest(normalized)
+        reader = ArraySampleParquetReader(manifest)
+        entry = _ManifestCacheEntry(
+            manifest_path=normalized,
+            manifest=manifest,
+            locator_index=None,
+            reader=reader,
+            last_access_ts=now,
+            sample_key_col=str(getattr(manifest, "sample_key_col", "sample_key")),
+            feature_key_col=str(getattr(manifest, "feature_key_col", "feature_key")),
+            point_schema=list(manifest.point_schema),
+        )
+        _touch_manifest_entry(_ARRAY_SAMPLE_PARQUET_CACHE, normalized, entry, now)
+        _sweep_manifest_cache(_ARRAY_SAMPLE_PARQUET_CACHE, now)
         return entry
 
 
@@ -754,8 +806,10 @@ def cache_stats():
     now = time.monotonic()
     with _CACHE_LOCK:
         _sweep_manifest_cache(_ARRAY_CACHE, now)
+        _sweep_manifest_cache(_ARRAY_SAMPLE_PARQUET_CACHE, now)
         _sweep_manifest_cache(_SCALAR_CACHE, now)
         array_entries = _manifest_cache_snapshot(_ARRAY_CACHE, now)
+        array_sample_parquet_entries = _manifest_cache_snapshot(_ARRAY_SAMPLE_PARQUET_CACHE, now)
         scalar_entries = _manifest_cache_snapshot(_SCALAR_CACHE, now)
 
         scalar_open_scans = 0
@@ -777,7 +831,11 @@ def cache_stats():
             "scalar_manifests": scalar_entries,
         },
         array_binary_cache=get_array_binary_cache_stats(),
-        array_parquet_cache={},
+        array_parquet_cache={
+            "entries": array_sample_parquet_entries,
+            "max_entries": int(_MANIFEST_CACHE_MAX_ENTRIES),
+            "ttl_seconds": int(_MANIFEST_CACHE_TTL_SECONDS),
+        },
         scalar_parquet_cache={
             "open_scan_manifests": int(scalar_open_scan_manifests),
             "open_scans": int(scalar_open_scans),
@@ -809,6 +867,65 @@ def array_schema(req: ArraySchemaRequest):
         point_schema=_schema_json(point_schema),
         categorical_dictionaries=categorical_dictionaries,
     )
+
+
+@app.post("/array-sample-parquet/schema")
+def array_sample_parquet_schema(req: ArraySampleParquetSchemaRequest):
+    """sample-major Parquet array dataset의 schema와 dictionary 정보를 반환한다."""
+    try:
+        entry = _get_array_sample_parquet_cache_entry(req.manifest_path)
+        dictionaries = None
+        if req.include_dictionaries:
+            dictionaries = entry.reader.categorical_dictionaries()
+        return {
+            "manifest_path": entry.manifest_path,
+            "format": "array-sample-parquet",
+            "version": int(entry.manifest.version),
+            "n_samples": int(entry.manifest.n_samples),
+            "n_features": int(entry.manifest.n_features),
+            "sample_key_col": str(entry.manifest.sample_key_col),
+            "feature_key_col": str(entry.manifest.feature_key_col),
+            "part_count": int(len(entry.manifest.parts)),
+            "point_schema": _schema_json(entry.manifest.point_schema),
+            "categorical_dictionaries": dictionaries,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/array-sample-parquet/traces")
+def array_sample_parquet_traces(req: ArraySampleParquetTraceRequest):
+    """sample-major Parquet array trace를 sample/key 또는 feature/key 기준으로 조회한다.
+
+    sample은 `sample_ids` 또는 `sample_keys` 중 정확히 하나가 필요하다.
+    feature는 `feature_ids` 또는 `feature_keys` 중 최대 하나만 허용하며,
+    둘 다 생략하면 요청 sample에 존재하는 모든 trace를 반환한다.
+    """
+    try:
+        entry = _get_array_sample_parquet_cache_entry(req.manifest_path)
+        result = entry.reader.get_traces_json(
+            sample_ids=req.sample_ids,
+            sample_keys=req.sample_keys,
+            feature_ids=req.feature_ids,
+            feature_keys=req.feature_keys,
+            decode_categorical=bool(req.decode_categorical),
+            include_missing=bool(req.include_missing),
+            layout=str(req.layout),
+        )
+        trace_count = int(result.get("trace_count", 0))
+        if trace_count > int(req.max_traces):
+            raise HTTPException(
+                status_code=413,
+                detail=f"trace_count exceeds max_traces: {trace_count} > {int(req.max_traces)}",
+            )
+        return {
+            "manifest_path": entry.manifest_path,
+            **result,
+        }
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/array-feature", response_model=ArrayFeatureResponse)
