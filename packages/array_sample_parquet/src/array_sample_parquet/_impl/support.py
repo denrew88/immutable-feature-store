@@ -15,14 +15,12 @@ def _normalize_point_schema(point_schema):
                 name=spec.name,
                 storage_type=spec.storage_type,
                 logical_type=spec.logical_type,
-                dictionary_path=getattr(spec, "dictionary_path", ""),
             )
         else:
             item = PointColumnSpec(
                 name=str(spec["name"]),
                 storage_type=spec["storage_type"],
                 logical_type=spec.get("logical_type", LogicalType.CONTINUOUS),
-                dictionary_path=str(spec.get("dictionary_path", "")),
             )
         specs.append(item)
     if not specs:

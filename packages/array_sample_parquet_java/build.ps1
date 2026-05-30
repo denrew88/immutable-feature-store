@@ -39,12 +39,10 @@ New-Item -ItemType Directory -Path $distDir | Out-Null
 $sourceSpecs = @(
     "java\src\fs\io\ArraySampleParquets.java",
     "java\src\fs\io\array_sample_parquet\ArraySampleParquetDatasetBuilder.java",
-    "java\src\fs\io\array_sample_parquet\ArraySampleParquetDictionaryIO.java",
     "java\src\fs\io\array_sample_parquet\ArraySampleParquetManifestIO.java",
     "java\src\fs\io\array_sample_parquet\ArraySampleParquetPartWriter.java",
     "java\src\fs\io\array_sample_parquet\ArraySampleParquetReader.java",
     "java\src\fs\io\array_sample_parquet\ArraySampleParquetSampleContext.java",
-    "java\src\fs\io\array_sample_parquet\CategoricalRegistry.java",
     "java\src\fs\io\common\ArrayMetadataWriter.java",
     "java\src\fs\io\common\ArrayUtils.java",
     "java\src\fs\io\common\DuckDBUtils.java",

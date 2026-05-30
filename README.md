@@ -84,16 +84,13 @@ Array binary shard v3 특징:
 - Java jar
   - [packages/array_sample_parquet_java](packages/array_sample_parquet_java)
 
-Array sample parquet v1 특징:
-
-- row 하나가 `(sample_id, feature_id)` trace 하나
-- point column을 Parquet `list<typed value>`로 저장
-- sample-major layout
-- `.parquet.tmp`에 streaming write 후 sample 경계에서 commit
-- `target_part_bytes` / `targetPartBytes` 기반 자동 part 크기 조절
-- `state.json`과 `parts.jsonl` 기반 resume
-- `sample_key` / `feature_key` 기반 조회
-
+- row 하나가 point 하나입니다.
+- `sample_parts/`는 point rows를 저장합니다.
+- `trace_index_parts/`는 present trace와 empty trace index를 저장합니다.
+- sample-major layout이며 물리 순서는 `(sample_id, feature_id, point_idx)`입니다.
+- raw builder도 `raw_samples/` point rows와 `raw_trace_index/` present trace index를 분리해 씁니다.
+- categorical column은 별도 dictionary sidecar 없이 string으로 저장합니다.
+- `target_part_bytes` / `targetPartBytes` 기반 자동 part 크기 조절, `state.json`과 `parts.jsonl` 기반 resume, `sample_key` / `feature_key` 기반 조회를 지원합니다.
 ### Scalar
 
 - 문서

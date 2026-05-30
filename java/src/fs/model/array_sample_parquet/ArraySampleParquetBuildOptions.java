@@ -9,7 +9,7 @@ package fs.model.array_sample_parquet;
  */
 public class ArraySampleParquetBuildOptions {
     public long targetPartBytes = 128L * 1024L * 1024L;
-    public int maxPartRows = 100000;
+    public int maxPartRows = 10000000;
     public int maxPartSamples = 0;
     public String compression = "zstd";
     public String sampleKeyCol = "sample_key";

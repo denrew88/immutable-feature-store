@@ -874,9 +874,6 @@ def array_sample_parquet_schema(req: ArraySampleParquetSchemaRequest):
     """sample-major Parquet array dataset의 schema와 dictionary 정보를 반환한다."""
     try:
         entry = _get_array_sample_parquet_cache_entry(req.manifest_path)
-        dictionaries = None
-        if req.include_dictionaries:
-            dictionaries = entry.reader.categorical_dictionaries()
         return {
             "manifest_path": entry.manifest_path,
             "format": "array-sample-parquet",
@@ -887,7 +884,7 @@ def array_sample_parquet_schema(req: ArraySampleParquetSchemaRequest):
             "feature_key_col": str(entry.manifest.feature_key_col),
             "part_count": int(len(entry.manifest.parts)),
             "point_schema": _schema_json(entry.manifest.point_schema),
-            "categorical_dictionaries": dictionaries,
+            "categorical_dictionaries": None,
         }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

@@ -13,8 +13,8 @@ from typing import Mapping, Optional, Sequence
 import numpy as np
 import polars as pl
 
-from ..types import LogicalType, PointColumnSpec, point_storage_dtype
-from .dictionaries import CategoricalRegistry, append_jsonl, load_jsonl, write_json_atomic
+from ..types import LogicalType, StorageType, point_storage_dtype
+from .dictionaries import append_jsonl, load_jsonl, write_json_atomic
 from .manifest import (
     FORMAT_NAME,
     ArraySampleParquetBuildOptions,
@@ -23,7 +23,7 @@ from .manifest import (
     ArraySampleParquetPart,
     write_array_sample_parquet_manifest,
 )
-from .parquet_io import StreamingTracePartWriter
+from .parquet_io import StreamingTracePartWriter, normalize_array_sample_point_schema
 from .support import _load_dense_meta, _normalize_point_schema
 
 
@@ -81,10 +81,10 @@ class ArraySampleParquetDatasetBuilder:
         self.out_dir = str(Path(out_dir).expanduser().resolve())
         self.sample_meta_source_path = str(Path(sample_meta_path).expanduser().resolve())
         self.options = options or ArraySampleParquetBuildOptions()
-        self.point_schema = _normalize_point_schema(point_schema)
+        self.point_schema = normalize_array_sample_point_schema(_normalize_point_schema(point_schema))
 
         self.sample_parts_path = os.path.join(self.out_dir, "sample_parts")
-        self.dictionary_path = os.path.join(self.out_dir, "categorical_dictionaries")
+        self.trace_index_parts_path = os.path.join(self.out_dir, "trace_index_parts")
         self.manifest_path = os.path.join(self.out_dir, "array_sample_parquet_manifest.json")
         self.state_path = os.path.join(self.out_dir, "state.json")
         self.parts_log_path = os.path.join(self.out_dir, "parts.jsonl")
@@ -110,12 +110,6 @@ class ArraySampleParquetDatasetBuilder:
         self._feature_keys_in_order: list[str] = []
         self._known_feature_count: Optional[int] = None
 
-        self._categorical_registries = {
-            spec.name: CategoricalRegistry.create()
-            for spec in self.point_schema
-            if spec.logical_type == LogicalType.CATEGORICAL
-        }
-
         self._part_writer: Optional[StreamingTracePartWriter] = None
         self._part_rows = 0
         self._part_bytes = 0
@@ -128,6 +122,7 @@ class ArraySampleParquetDatasetBuilder:
         self._cursor_sample_id = 0
         self._open_sample_id: Optional[int] = None
         self._current_sample_trace_count = 0
+        self._current_sample_traces: list[tuple[int, int, dict[str, np.ndarray]]] = []
         self._closed = False
         self._finished = False
 
@@ -154,10 +149,15 @@ class ArraySampleParquetDatasetBuilder:
     def _part_path(self, part_id: int) -> str:
         return os.path.join(self.sample_parts_path, f"part_{int(part_id):06d}.parquet")
 
+    def _trace_index_part_path(self, part_id: int) -> str:
+        return os.path.join(self.trace_index_parts_path, f"part_{int(part_id):06d}.parquet")
+
     def _ensure_part_writer(self) -> StreamingTracePartWriter:
         if self._part_writer is None:
+            part_id = int(self._committed_part_count)
             self._part_writer = StreamingTracePartWriter(
-                self._part_path(self._committed_part_count),
+                self._part_path(part_id),
+                trace_index_path=self._trace_index_part_path(part_id),
                 point_schema=self.point_schema,
                 compression=str(self.options.compression),
             )
@@ -168,12 +168,6 @@ class ArraySampleParquetDatasetBuilder:
 
     def _point_schema_payload(self) -> list[dict]:
         return [spec.to_json() for spec in self.point_schema]
-
-    def _categorical_labels_payload(self) -> dict[str, list[str]]:
-        return {
-            name: registry.labels_json()
-            for name, registry in self._categorical_registries.items()
-        }
 
     def _state_payload(self) -> dict:
         return {
@@ -187,7 +181,6 @@ class ArraySampleParquetDatasetBuilder:
             "writes_feature_meta": bool(self._writes_feature_meta),
             "feature_keys_in_order": list(self._feature_keys_in_order),
             "known_feature_count": self._known_feature_count,
-            "categorical_labels_by_column": self._categorical_labels_payload(),
             "committed_part_count": int(self._committed_part_count),
             "last_committed_sample_id": self._last_committed_sample_id,
             "last_committed_sample_key": self._sample_key_for_id(self._last_committed_sample_id),
@@ -201,7 +194,7 @@ class ArraySampleParquetDatasetBuilder:
         write_json_atomic(self.state_path, self._state_payload())
 
     def _cleanup_tmp_files(self):
-        for root in [self.out_dir, self.sample_parts_path, self.dictionary_path]:
+        for root in [self.out_dir, self.sample_parts_path, self.trace_index_parts_path]:
             if not os.path.isdir(root):
                 continue
             for name in os.listdir(root):
@@ -215,6 +208,7 @@ class ArraySampleParquetDatasetBuilder:
         if os.path.exists(self.out_dir) and os.listdir(self.out_dir):
             raise ValueError(f"out_dir already exists and is not empty: {self.out_dir}")
         os.makedirs(self.sample_parts_path, exist_ok=True)
+        os.makedirs(self.trace_index_parts_path, exist_ok=True)
         shutil.copy2(self.sample_meta_source_path, self.sample_meta_path)
         self._initialize_feature_meta(feature_meta_path=feature_meta_path, feature_keys=feature_keys)
         self._save_state()
@@ -269,13 +263,6 @@ class ArraySampleParquetDatasetBuilder:
         self._feature_key_to_id = OrderedDict(
             (feature_key, int(idx)) for idx, feature_key in enumerate(self._feature_keys_in_order)
         )
-
-        labels = state.get("categorical_labels_by_column") or {}
-        if records and records[-1].get("categorical_labels_by_column"):
-            labels = records[-1]["categorical_labels_by_column"]
-        for spec in self.point_schema:
-            if spec.logical_type == LogicalType.CATEGORICAL:
-                self._categorical_registries[spec.name] = CategoricalRegistry.from_labels(labels.get(spec.name, []))
 
     def _validate_resume_state(self, state: dict, *, feature_meta_path: Optional[str], feature_keys: Optional[Sequence[str]]):
         if state.get("format") != FORMAT_NAME:
@@ -371,7 +358,7 @@ class ArraySampleParquetDatasetBuilder:
         for spec in self.point_schema:
             values = column_map[spec.name]
             if spec.logical_type == LogicalType.CATEGORICAL:
-                arr = self._categorical_registries[spec.name].encode(values)
+                arr = _normalize_categorical_values(values, spec.name)
             elif spec.logical_type == LogicalType.TIMESTAMP_NS:
                 arr = np.asarray(values, dtype="datetime64[ns]").reshape(-1).astype(point_storage_dtype(spec.storage_type), copy=False)
             elif spec.logical_type == LogicalType.TIMEDELTA_NS:
@@ -399,19 +386,26 @@ class ArraySampleParquetDatasetBuilder:
             )
         self._open_sample_id = sample_id
         self._current_sample_trace_count = 0
+        self._current_sample_traces = []
 
     def _end_sample(self, *, abort: bool):
         if self._open_sample_id is None:
             return
         sample_id = int(self._open_sample_id)
-        trace_count = int(self._current_sample_trace_count)
+        traces = list(self._current_sample_traces)
         self._open_sample_id = None
         self._current_sample_trace_count = 0
+        self._current_sample_traces = []
         if abort:
-            # 이미 `.tmp` part에 append된 row는 rollback할 수 없으므로,
-            # 현재 uncommitted part 전체를 버리고 마지막 committed sample 다음부터 재개한다.
-            self._discard_part_buffer()
+            # current sample은 아직 part writer에 쓰기 전이므로 버퍼만 버리면 된다.
             return
+        try:
+            trace_count = self._write_sample_traces_sorted(sample_id, traces)
+        except Exception:
+            # sample 기록 도중 실패하면 일부 row만 part writer에 들어갔을 수 있다.
+            # parquet row 단위 rollback은 불가능하므로 현재 미commit part를 버린다.
+            self._discard_part_buffer()
+            raise
         if self._pending_first_sample_id is None:
             self._pending_first_sample_id = sample_id
         self._pending_last_sample_id = sample_id
@@ -420,6 +414,30 @@ class ArraySampleParquetDatasetBuilder:
         self._cursor_sample_id = sample_id + 1
         if self._should_flush_part():
             self.flush_part()
+
+    def _write_sample_traces_sorted(self, sample_id: int, traces: list[tuple[int, int, dict[str, np.ndarray]]]) -> int:
+        """sample 내부 trace를 feature_id 순서로 정렬해 part에 기록한다.
+
+        builder는 sample_id를 순차 처리하도록 강제한다. 따라서 sample 하나 안에서
+        feature_id만 정렬하면 최종 point parquet의 물리 순서는
+        `(sample_id, feature_id, point_idx)`가 된다.
+        """
+
+        if not traces:
+            return 0
+        ordered = traces
+        if any(int(ordered[idx - 1][0]) > int(ordered[idx][0]) for idx in range(1, len(ordered))):
+            ordered = sorted(traces, key=lambda item: int(item[0]))
+        for feature_id, trace_len, normalized in ordered:
+            self._ensure_part_writer().write_row(
+                sample_id=int(sample_id),
+                feature_id=int(feature_id),
+                trace_len=int(trace_len),
+                columns=normalized,
+            )
+            self._part_rows += int(trace_len)
+            self._part_bytes += self._estimate_row_bytes(int(trace_len))
+        return len(ordered)
 
     def sample(self, sample_id: Optional[int] = None, sample_key: Optional[str] = None) -> ArraySampleParquetSampleContext:
         return ArraySampleParquetSampleContext(self, self._resolve_sample_id(sample_id, sample_key))
@@ -445,21 +463,14 @@ class ArraySampleParquetDatasetBuilder:
         normalized = self._normalize_columns(columns)
         trace_len = int(next(iter(normalized.values())).shape[0]) if normalized else 0
 
-        self._ensure_part_writer().write_row(
-            sample_id=int(resolved_sample_id),
-            feature_id=int(resolved_feature_id),
-            trace_len=trace_len,
-            columns=normalized,
-        )
-        self._part_rows += 1
-        self._part_bytes += self._estimate_row_bytes(trace_len)
+        self._current_sample_traces.append((int(resolved_feature_id), trace_len, normalized))
         self._current_sample_trace_count += 1
 
     def _estimate_row_bytes(self, trace_len: int) -> int:
         # Parquet 내부 인코딩까지 정확히 맞추려는 값이 아니라, 자동 flush가 너무
         # 늦어지지 않도록 trace payload 크기를 근사하는 제어용 추정치다.
         fixed = 8 + 4 + 4
-        return int(fixed + sum(int(trace_len) * int(point_storage_dtype(spec.storage_type).itemsize) for spec in self.point_schema))
+        return int(fixed + sum(int(trace_len) * _estimated_value_bytes(spec) for spec in self.point_schema))
 
     def _should_flush_part(self) -> bool:
         if self._pending_sample_count <= 0:
@@ -478,12 +489,15 @@ class ArraySampleParquetDatasetBuilder:
             return None
         part_id = int(self._committed_part_count)
         part_path = self._part_path(part_id)
+        trace_index_path = self._trace_index_part_path(part_id)
         self._ensure_part_writer().commit()
         self._part_writer = None
         byte_size = os.path.getsize(part_path)
+        trace_index_byte_size = os.path.getsize(trace_index_path)
         record = {
             "part_id": part_id,
             "path": os.path.relpath(part_path, self.out_dir).replace("\\", "/"),
+            "trace_index_path": os.path.relpath(trace_index_path, self.out_dir).replace("\\", "/"),
             "first_sample_id": int(self._pending_first_sample_id),
             "last_sample_id": int(self._pending_last_sample_id),
             "first_sample_key": self._sample_key_for_id(self._pending_first_sample_id),
@@ -492,7 +506,7 @@ class ArraySampleParquetDatasetBuilder:
             "trace_count": int(self._pending_trace_count),
             "row_count": int(self._part_rows),
             "byte_size": int(byte_size),
-            "categorical_labels_by_column": self._categorical_labels_payload(),
+            "trace_index_byte_size": int(trace_index_byte_size),
         }
         append_jsonl(self.parts_log_path, record)
         self._committed_part_count += 1
@@ -527,20 +541,6 @@ class ArraySampleParquetDatasetBuilder:
         pl.DataFrame(data).write_parquet(self.feature_meta_path)
         self._known_feature_count = int(len(self._feature_keys_in_order))
 
-    def _write_categorical_dictionaries(self):
-        os.makedirs(self.dictionary_path, exist_ok=True)
-        for idx, spec in enumerate(self.point_schema):
-            if spec.logical_type != LogicalType.CATEGORICAL:
-                continue
-            path = os.path.join(self.dictionary_path, f"{spec.name}.json")
-            write_json_atomic(path, self._categorical_registries[spec.name].to_json_dict(spec.name))
-            self.point_schema[idx] = PointColumnSpec(
-                name=spec.name,
-                storage_type=spec.storage_type,
-                logical_type=spec.logical_type,
-                dictionary_path=path,
-            )
-
     def finish(self) -> str:
         """남은 part를 commit하고 최종 manifest를 쓴다."""
 
@@ -550,17 +550,18 @@ class ArraySampleParquetDatasetBuilder:
         self._end_sample(abort=False)
         self.flush_part()
         self._write_feature_meta()
-        self._write_categorical_dictionaries()
         parts = [
             ArraySampleParquetPart(
                 part_id=int(item["part_id"]),
                 path=os.path.join(self.out_dir, item["path"]),
+                trace_index_path=os.path.join(self.out_dir, item["trace_index_path"]),
                 first_sample_id=int(item["first_sample_id"]),
                 last_sample_id=int(item["last_sample_id"]),
                 sample_count=int(item["sample_count"]),
                 trace_count=int(item["trace_count"]),
                 row_count=int(item["row_count"]),
                 byte_size=int(item["byte_size"]),
+                trace_index_byte_size=int(item.get("trace_index_byte_size", 0)),
             )
             for item in load_jsonl(self.parts_log_path)
         ]
@@ -570,6 +571,7 @@ class ArraySampleParquetDatasetBuilder:
             n_samples=int(self.n_samples),
             n_features=int(self._known_feature_count or len(self._feature_keys_in_order)),
             sample_parts_path=self.sample_parts_path,
+            trace_index_parts_path=self.trace_index_parts_path,
             parts=parts,
             point_schema=self.point_schema,
             sample_key_col=str(self.options.sample_key_col),
@@ -621,3 +623,16 @@ def build_array_sample_parquet_dataset(*args, **kwargs) -> str:
 
     with ArraySampleParquetDatasetBuilder(*args, **kwargs) as builder:
         return builder.finish()
+
+
+def _normalize_categorical_values(values, column_name: str) -> np.ndarray:
+    arr = np.asarray(values, dtype=object).reshape(-1)
+    if bool(np.any(arr == None)):
+        raise ValueError(f"categorical point column {column_name} does not support null values")
+    return arr
+
+
+def _estimated_value_bytes(spec) -> int:
+    if spec.storage_type == StorageType.STRING:
+        return 16
+    return int(point_storage_dtype(spec.storage_type).itemsize)

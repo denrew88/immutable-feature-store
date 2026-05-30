@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from ..types import LogicalType, PointColumnSpec
+from ..types import PointColumnSpec
 from .support import _normalize_point_schema
 
 
@@ -28,7 +28,7 @@ class ArraySampleParquetBuildOptions:
     """
 
     target_part_bytes: int = 128 * 1024 * 1024
-    max_part_rows: int = 100_000
+    max_part_rows: int = 10_000_000
     max_part_samples: int = 0
     compression: str = "zstd"
     sample_key_col: str = DEFAULT_SAMPLE_KEY_COL
@@ -56,23 +56,27 @@ class ArraySampleParquetBuildSessionStatus:
 class ArraySampleParquetPart:
     part_id: int
     path: str
+    trace_index_path: str
     first_sample_id: int
     last_sample_id: int
     sample_count: int
     trace_count: int
     row_count: int
     byte_size: int
+    trace_index_byte_size: int = 0
 
     def to_json(self) -> dict:
         return {
             "part_id": int(self.part_id),
             "path": str(self.path),
+            "trace_index_path": str(self.trace_index_path),
             "first_sample_id": int(self.first_sample_id),
             "last_sample_id": int(self.last_sample_id),
             "sample_count": int(self.sample_count),
             "trace_count": int(self.trace_count),
             "row_count": int(self.row_count),
             "byte_size": int(self.byte_size),
+            "trace_index_byte_size": int(self.trace_index_byte_size),
         }
 
 
@@ -83,6 +87,7 @@ class ArraySampleParquetManifest:
     n_samples: int
     n_features: int
     sample_parts_path: str
+    trace_index_parts_path: str
     parts: list[ArraySampleParquetPart]
     point_schema: list[PointColumnSpec]
     sample_key_col: str = DEFAULT_SAMPLE_KEY_COL
@@ -100,6 +105,7 @@ class ArraySampleParquetManifest:
             "n_samples": int(self.n_samples),
             "n_features": int(self.n_features),
             "sample_parts_path": str(self.sample_parts_path),
+            "trace_index_parts_path": str(self.trace_index_parts_path),
             "sample_key_col": str(self.sample_key_col),
             "feature_key_col": str(self.feature_key_col),
             "point_schema": [spec.to_json() for spec in self.point_schema],
@@ -133,12 +139,13 @@ def write_array_sample_parquet_manifest(path: str, manifest: ArraySampleParquetM
     payload["sample_meta_path"] = _relative_to(path, manifest.sample_meta_path)
     payload["feature_meta_path"] = _relative_to(path, manifest.feature_meta_path)
     payload["sample_parts_path"] = _relative_to(path, manifest.sample_parts_path)
+    payload["trace_index_parts_path"] = _relative_to(path, manifest.trace_index_parts_path)
+    for part in payload["parts"]:
+        part["path"] = _relative_to(path, part["path"])
+        part["trace_index_path"] = _relative_to(path, part["trace_index_path"])
     point_schema = []
     for spec in manifest.point_schema:
-        item = spec.to_json()
-        if item.get("dictionary_path"):
-            item["dictionary_path"] = _relative_to(path, item["dictionary_path"])
-        point_schema.append(item)
+        point_schema.append(spec.to_json())
     payload["point_schema"] = point_schema
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -157,26 +164,26 @@ def load_array_sample_parquet_manifest(path: str) -> ArraySampleParquetManifest:
         raise ValueError(f"unsupported array sample parquet version: {version}")
     point_schema_payload = []
     for item in data.get("point_schema") or []:
-        copied = dict(item)
-        if copied.get("dictionary_path"):
-            copied["dictionary_path"] = _resolve_against(manifest_path, copied["dictionary_path"])
-        point_schema_payload.append(copied)
+        point_schema_payload.append(dict(item))
     return ArraySampleParquetManifest(
         sample_meta_path=_resolve_against(manifest_path, data["sample_meta_path"]),
         feature_meta_path=_resolve_against(manifest_path, data["feature_meta_path"]),
         n_samples=int(data["n_samples"]),
         n_features=int(data["n_features"]),
         sample_parts_path=_resolve_against(manifest_path, data["sample_parts_path"]),
+        trace_index_parts_path=_resolve_against(manifest_path, data["trace_index_parts_path"]),
         parts=[
             ArraySampleParquetPart(
                 part_id=int(item["part_id"]),
                 path=_resolve_against(manifest_path, item["path"]),
+                trace_index_path=_resolve_against(manifest_path, item["trace_index_path"]),
                 first_sample_id=int(item["first_sample_id"]),
                 last_sample_id=int(item["last_sample_id"]),
                 sample_count=int(item["sample_count"]),
                 trace_count=int(item["trace_count"]),
                 row_count=int(item["row_count"]),
                 byte_size=int(item["byte_size"]),
+                trace_index_byte_size=int(item.get("trace_index_byte_size", 0)),
             )
             for item in data.get("parts") or []
         ],
@@ -186,7 +193,3 @@ def load_array_sample_parquet_manifest(path: str) -> ArraySampleParquetManifest:
         id_scheme=str(data.get("id_scheme", "dense_row_ids")),
         version=version,
     )
-
-
-def schema_contains_categorical(point_schema) -> bool:
-    return any(spec.logical_type == LogicalType.CATEGORICAL for spec in point_schema)

@@ -8,8 +8,6 @@ from typing import Optional
 
 import polars as pl
 
-from ..types import LogicalType
-from .dictionaries import load_categorical_dictionary
 from .manifest import ArraySampleParquetManifest, load_array_sample_parquet_manifest
 
 
@@ -64,7 +62,6 @@ class ArraySampleParquetReader:
         self._feature_key_index = None
         self._sample_keys_by_id = None
         self._feature_keys_by_id = None
-        self._categorical_dictionaries = None
 
     def close(self):
         """현재 reader는 mmap 같은 장기 리소스를 잡지 않으므로 no-op이다."""
@@ -107,16 +104,6 @@ class ArraySampleParquetReader:
                 "feature_id",
             )
         return self._feature_keys_by_id
-
-    def categorical_dictionaries(self) -> dict[str, dict[int, str]]:
-        if self._categorical_dictionaries is not None:
-            return self._categorical_dictionaries
-        out = {}
-        for spec in self.manifest.point_schema:
-            if spec.logical_type == LogicalType.CATEGORICAL and spec.dictionary_path:
-                out[spec.name] = load_categorical_dictionary(spec.dictionary_path)
-        self._categorical_dictionaries = out
-        return out
 
     def _resolve_sample_ids(self, sample_ids=None, sample_keys=None) -> list[int]:
         has_ids = sample_ids is not None
@@ -173,6 +160,17 @@ class ArraySampleParquetReader:
                 paths.append(part.path)
         return paths
 
+    def _candidate_trace_index_paths(self, sample_ids: list[int]) -> list[str]:
+        requested_min = min(sample_ids)
+        requested_max = max(sample_ids)
+        paths = []
+        for part in self.manifest.parts:
+            if int(part.last_sample_id) < requested_min or int(part.first_sample_id) > requested_max:
+                continue
+            if os.path.exists(part.trace_index_path):
+                paths.append(part.trace_index_path)
+        return paths
+
     def get_traces(
         self,
         *,
@@ -188,35 +186,63 @@ class ArraySampleParquetReader:
         resolved_sample_ids = self._resolve_sample_ids(sample_ids=sample_ids, sample_keys=sample_keys)
         resolved_feature_ids = self._resolve_feature_ids(feature_ids=feature_ids, feature_keys=feature_keys)
         paths = self._candidate_part_paths(resolved_sample_ids)
+        trace_index_paths = self._candidate_trace_index_paths(resolved_sample_ids)
         sample_keys_by_id = self.sample_keys_by_id() or {}
         feature_keys_by_id = self.feature_keys_by_id() or {}
         specs = self.manifest.point_schema
         traces: list[ArraySampleParquetTrace] = []
-        if paths:
-            lazy = pl.scan_parquet(paths).filter(pl.col("sample_id").is_in(resolved_sample_ids))
+
+        trace_df = pl.DataFrame({"sample_id": [], "feature_id": [], "trace_len": []})
+        if trace_index_paths:
+            trace_lazy = pl.scan_parquet(trace_index_paths, glob=False).filter(pl.col("sample_id").is_in(resolved_sample_ids))
             if resolved_feature_ids is not None:
-                lazy = lazy.filter(pl.col("feature_id").is_in(resolved_feature_ids))
-            df = lazy.sort(["sample_id", "feature_id"]).collect()
-            dictionaries = self.categorical_dictionaries() if decode_categorical else {}
-            for row in df.iter_rows(named=True):
-                columns = {}
-                for spec in specs:
-                    values = list(row[spec.name] or [])
-                    if decode_categorical and spec.logical_type == LogicalType.CATEGORICAL:
-                        dictionary = dictionaries.get(spec.name, {})
-                        values = [None if int(code) == 0 else dictionary.get(int(code)) for code in values]
-                    columns[spec.name] = values
-                traces.append(
-                    ArraySampleParquetTrace(
-                        sample_id=int(row["sample_id"]),
-                        sample_key=sample_keys_by_id.get(int(row["sample_id"])),
-                        feature_id=int(row["feature_id"]),
-                        feature_key=feature_keys_by_id.get(int(row["feature_id"])),
-                        trace_len=int(row["trace_len"]),
-                        columns=columns,
-                        present=True,
-                    )
+                trace_lazy = trace_lazy.filter(pl.col("feature_id").is_in(resolved_feature_ids))
+            trace_df = trace_lazy.sort(["sample_id", "feature_id"]).collect()
+
+        point_rows_by_trace: dict[tuple[int, int], dict] = {}
+        if paths and trace_df.height:
+            point_lazy = pl.scan_parquet(paths, glob=False).filter(pl.col("sample_id").is_in(resolved_sample_ids))
+            if resolved_feature_ids is not None:
+                point_lazy = point_lazy.filter(pl.col("feature_id").is_in(resolved_feature_ids))
+            point_df = (
+                point_lazy
+                .sort(["sample_id", "feature_id", "point_idx"])
+                .group_by(["sample_id", "feature_id"], maintain_order=True)
+                .agg([pl.col(spec.name).alias(spec.name) for spec in specs])
+                .collect()
+            )
+            point_rows_by_trace = {
+                (int(row["sample_id"]), int(row["feature_id"])): row
+                for row in point_df.iter_rows(named=True)
+            }
+
+        for row in trace_df.iter_rows(named=True):
+            sample_id = int(row["sample_id"])
+            feature_id = int(row["feature_id"])
+            trace_len = int(row["trace_len"])
+            point_row = point_rows_by_trace.get((sample_id, feature_id), {})
+            columns = {}
+            for spec in specs:
+                values = list(point_row.get(spec.name) or [])
+                if trace_len != len(values):
+                    if trace_len == 0 and not values:
+                        values = []
+                    else:
+                        raise ValueError(
+                            f"trace_len/point row mismatch for sample_id={sample_id}, feature_id={feature_id}, column={spec.name}"
+                        )
+                columns[spec.name] = values
+            traces.append(
+                ArraySampleParquetTrace(
+                    sample_id=sample_id,
+                    sample_key=sample_keys_by_id.get(sample_id),
+                    feature_id=feature_id,
+                    feature_key=feature_keys_by_id.get(feature_id),
+                    trace_len=trace_len,
+                    columns=columns,
+                    present=True,
                 )
+            )
 
         if include_missing and resolved_feature_ids is not None:
             seen = {(trace.sample_id, trace.feature_id) for trace in traces}

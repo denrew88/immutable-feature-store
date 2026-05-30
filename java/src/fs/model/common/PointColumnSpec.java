@@ -84,8 +84,8 @@ public class PointColumnSpec {
                 }
                 throw invalidPair(storageType, logicalType, "int32, int64, uint32, uint64");
             case CATEGORICAL:
-                if (storageType != StorageType.UINT32) {
-                    throw invalidPair(storageType, logicalType, "uint32");
+                if (storageType != StorageType.STRING && storageType != StorageType.UINT32) {
+                    throw invalidPair(storageType, logicalType, "string, uint32");
                 }
                 return;
             case TIMESTAMP_NS:

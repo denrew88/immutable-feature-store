@@ -14,6 +14,7 @@ public class ArraySampleParquetManifest {
     public final int nSamples;
     public final int nFeatures;
     public final String samplePartsPath;
+    public final String traceIndexPartsPath;
     public final String sampleKeyCol;
     public final String featureKeyCol;
     public final List<PointColumnSpec> pointSchema;
@@ -26,6 +27,7 @@ public class ArraySampleParquetManifest {
             int nSamples,
             int nFeatures,
             String samplePartsPath,
+            String traceIndexPartsPath,
             String sampleKeyCol,
             String featureKeyCol,
             List<PointColumnSpec> pointSchema,
@@ -36,6 +38,7 @@ public class ArraySampleParquetManifest {
         this.nSamples = nSamples;
         this.nFeatures = nFeatures;
         this.samplePartsPath = samplePartsPath;
+        this.traceIndexPartsPath = traceIndexPartsPath;
         this.sampleKeyCol = sampleKeyCol;
         this.featureKeyCol = featureKeyCol;
         this.pointSchema = PointColumnSpec.normalizeList(pointSchema);

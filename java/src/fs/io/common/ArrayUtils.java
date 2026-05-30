@@ -96,6 +96,22 @@ public class ArrayUtils {
                 }
                 return bb.array();
             }
+            case UINT8: {
+                long[] longs = toLongArray(values, spec.name);
+                ByteBuffer bb = ByteBuffer.allocate(longs.length);
+                for (long value : longs) {
+                    bb.put((byte) (value & 0xFFL));
+                }
+                return bb.array();
+            }
+            case UINT16: {
+                long[] longs = toLongArray(values, spec.name);
+                ByteBuffer bb = ByteBuffer.allocate(longs.length * 2).order(ByteOrder.LITTLE_ENDIAN);
+                for (long value : longs) {
+                    bb.putShort((short) (value & 0xFFFFL));
+                }
+                return bb.array();
+            }
             case UINT32: {
                 long[] longs = toLongArray(values, spec.name);
                 ByteBuffer bb = ByteBuffer.allocate(longs.length * 4).order(ByteOrder.LITTLE_ENDIAN);
@@ -138,6 +154,27 @@ public class ArrayUtils {
             }
             case INT64:
                 return decodeLongArray(bytes);
+            case UINT8: {
+                if ((bytes == null ? 0 : bytes.length) != count) {
+                    throw new IllegalArgumentException("Invalid uint8 byte length: " + ((bytes == null) ? 0 : bytes.length));
+                }
+                long[] out = new long[count];
+                for (int i = 0; i < count; i++) {
+                    out[i] = bytes[i] & 0xFFL;
+                }
+                return out;
+            }
+            case UINT16: {
+                if ((bytes == null ? 0 : bytes.length) != count * 2) {
+                    throw new IllegalArgumentException("Invalid uint16 byte length: " + ((bytes == null) ? 0 : bytes.length));
+                }
+                long[] out = new long[count];
+                ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+                for (int i = 0; i < count; i++) {
+                    out[i] = bb.getShort() & 0xFFFFL;
+                }
+                return out;
+            }
             case UINT32: {
                 if ((bytes == null ? 0 : bytes.length) != count * 4) {
                     throw new IllegalArgumentException("Invalid uint32 byte length: " + ((bytes == null) ? 0 : bytes.length));
@@ -172,6 +209,12 @@ public class ArrayUtils {
         if (values instanceof String[]) {
             return ((String[]) values).length;
         }
+        if (values instanceof Object[]) {
+            return ((Object[]) values).length;
+        }
+        if (values instanceof java.util.List<?>) {
+            return ((java.util.List<?>) values).size();
+        }
         throw new IllegalArgumentException("unsupported point column array type: " + values.getClass().getName());
     }
 
@@ -187,6 +230,13 @@ public class ArrayUtils {
         }
         if (values instanceof String[]) {
             return Arrays.copyOfRange((String[]) values, start, end);
+        }
+        if (values instanceof Object[]) {
+            return Arrays.copyOfRange((Object[]) values, start, end);
+        }
+        if (values instanceof java.util.List<?>) {
+            java.util.List<?> source = (java.util.List<?>) values;
+            return source.subList(start, end).toArray(new Object[end - start]);
         }
         throw new IllegalArgumentException("unsupported point column array type: " + values.getClass().getName());
     }
@@ -205,9 +255,13 @@ public class ArrayUtils {
             case INT32:
                 return new int[0];
             case INT64:
+            case UINT8:
+            case UINT16:
             case UINT32:
             case UINT64:
                 return new long[0];
+            case STRING:
+                return new String[0];
             default:
                 throw new IllegalArgumentException("unsupported point storage type: " + spec.storageType.value);
         }
@@ -341,6 +395,40 @@ public class ArrayUtils {
             return out;
         }
         throw new IllegalArgumentException("unsupported values for column " + columnName + ": " + values.getClass().getName());
+    }
+
+    public static String[] toStringArray(Object values, String columnName) {
+        if (values == null) {
+            return new String[0];
+        }
+        if (values instanceof String[]) {
+            return (String[]) values;
+        }
+        if (values instanceof Object[]) {
+            Object[] source = (Object[]) values;
+            String[] out = new String[source.length];
+            for (int i = 0; i < source.length; i++) {
+                Object value = source[i];
+                if (value == null) {
+                    throw new IllegalArgumentException("point column " + columnName + " must not contain null string values");
+                }
+                out[i] = value.toString();
+            }
+            return out;
+        }
+        if (values instanceof java.util.List<?>) {
+            java.util.List<?> source = (java.util.List<?>) values;
+            String[] out = new String[source.size()];
+            for (int i = 0; i < source.size(); i++) {
+                Object value = source.get(i);
+                if (value == null) {
+                    throw new IllegalArgumentException("point column " + columnName + " must not contain null string values");
+                }
+                out[i] = value.toString();
+            }
+            return out;
+        }
+        throw new IllegalArgumentException("unsupported string values for column " + columnName + ": " + values.getClass().getName());
     }
 
     public static int pointColumnBytes(PointColumnSpec spec, int traceLen) {

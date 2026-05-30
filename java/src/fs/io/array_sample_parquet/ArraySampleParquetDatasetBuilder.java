@@ -12,12 +12,15 @@ import fs.model.array_sample_parquet.ArraySampleParquetManifest;
 import fs.model.array_sample_parquet.ArraySampleParquetPart;
 import fs.model.common.LogicalType;
 import fs.model.common.PointColumnSpec;
+import fs.model.common.StorageType;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -33,7 +36,7 @@ import java.util.Map;
 public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     private final File outDir;
     private final File samplePartsDir;
-    private final File dictionaryDir;
+    private final File traceIndexPartsDir;
     private final String sampleMetaSourcePath;
     private final String featureMetaSourcePath;
     private final String sampleMetaPath;
@@ -48,7 +51,6 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     private final LinkedHashMap<String, Long> sampleKeyToId;
     private final LinkedHashMap<String, Integer> featureKeyToId = new LinkedHashMap<String, Integer>();
     private final ArrayList<String> featureKeysInOrder = new ArrayList<String>();
-    private final LinkedHashMap<String, CategoricalRegistry> categoricalRegistries = new LinkedHashMap<String, CategoricalRegistry>();
     private boolean knownFeatureMode;
     private boolean writesFeatureMeta;
     private Integer knownFeatureCount;
@@ -57,6 +59,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     private long cursorSampleId;
     private Long openSampleId;
     private int currentSampleTraceCount;
+    private final ArrayList<PendingTrace> currentSampleTraces = new ArrayList<PendingTrace>();
     private Long pendingFirstSampleId;
     private Long pendingLastSampleId;
     private int pendingSampleCount;
@@ -76,7 +79,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             ArraySampleParquetBuildOptions options) throws Exception {
         this.outDir = new File(outDir).getAbsoluteFile();
         this.samplePartsDir = new File(this.outDir, "sample_parts");
-        this.dictionaryDir = new File(this.outDir, "categorical_dictionaries");
+        this.traceIndexPartsDir = new File(this.outDir, "trace_index_parts");
         this.sampleMetaSourcePath = new File(sampleMetaPath).getAbsolutePath();
         this.featureMetaSourcePath = (featureMetaPath == null || featureMetaPath.isEmpty()) ? "" : new File(featureMetaPath).getAbsolutePath();
         this.sampleMetaPath = new File(this.outDir, "sample_meta.parquet").getAbsolutePath();
@@ -85,12 +88,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         this.partsLogPath = new File(this.outDir, "parts.jsonl").getAbsolutePath();
         this.manifestPath = new File(this.outDir, "array_sample_parquet_manifest.json").getAbsolutePath();
         this.options = (options == null) ? new ArraySampleParquetBuildOptions() : options;
-        this.pointSchema = PointColumnSpec.normalizeList(pointSchema);
-        for (PointColumnSpec spec : this.pointSchema) {
-            if (spec.logicalType == LogicalType.CATEGORICAL) {
-                categoricalRegistries.put(spec.name, new CategoricalRegistry());
-            }
-        }
+        this.pointSchema = normalizeArraySamplePointSchema(pointSchema);
 
         List<LinkedHashMap<String, Object>> sampleRows = ArrayMetadataWriter.readRows(this.sampleMetaSourcePath);
         this.nSamples = sampleRows.size();
@@ -128,6 +126,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             }
         }
         ensureDir(samplePartsDir);
+        ensureDir(traceIndexPartsDir);
         Files.copy(new File(sampleMetaSourcePath).toPath(), new File(sampleMetaPath).toPath(), StandardCopyOption.REPLACE_EXISTING);
         initializeFeatures(featureKeys);
         saveState();
@@ -165,7 +164,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     private void resume(List<String> featureKeys) throws Exception {
         cleanupTmpFiles(outDir);
         cleanupTmpFiles(samplePartsDir);
-        cleanupTmpFiles(dictionaryDir);
+        cleanupTmpFiles(traceIndexPartsDir);
         JsonNode state = JsonUtils.readJson(statePath);
         validateResumeState(state, featureKeys);
         List<JsonNode> parts = JsonUtils.readJsonLines(partsLogPath);
@@ -188,11 +187,6 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
                 featureKeysInOrder.add(key);
             }
         }
-        JsonNode labelsNode = state.get("categorical_labels_by_column");
-        if (!parts.isEmpty() && parts.get(parts.size() - 1).has("categorical_labels_by_column")) {
-            labelsNode = parts.get(parts.size() - 1).get("categorical_labels_by_column");
-        }
-        loadCategoricalLabels(labelsNode);
     }
 
     private void validateResumeState(JsonNode state, List<String> featureKeys) throws IOException {
@@ -240,6 +234,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         }
         openSampleId = Long.valueOf(sampleId);
         currentSampleTraceCount = 0;
+        currentSampleTraces.clear();
     }
 
     void endSample(boolean abort) throws Exception {
@@ -247,12 +242,21 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             return;
         }
         long sampleId = openSampleId.longValue();
-        int traceCount = currentSampleTraceCount;
+        ArrayList<PendingTrace> traces = new ArrayList<PendingTrace>(currentSampleTraces);
         openSampleId = null;
         currentSampleTraceCount = 0;
+        currentSampleTraces.clear();
         if (abort) {
-            discardPartBuffer();
             return;
+        }
+        int traceCount;
+        try {
+            traceCount = writeSampleTracesSorted(sampleId, traces);
+        } catch (Exception e) {
+            // sample 기록 도중 실패하면 일부 row만 part writer에 들어갔을 수 있다.
+            // parquet row 단위 rollback은 불가능하므로 현재 미commit part를 버린다.
+            discardPartBuffer();
+            throw e;
         }
         if (pendingFirstSampleId == null) {
             pendingFirstSampleId = Long.valueOf(sampleId);
@@ -275,10 +279,48 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         }
         int resolvedFeatureId = resolveFeatureId(featureId, featureKey);
         NormalizedColumns normalized = normalizeColumns(columns);
-        ensurePartWriter().writeRow(sampleId, resolvedFeatureId, normalized.traceLen, normalized.columns);
-        partRows++;
-        partBytes += estimateRowBytes(normalized.traceLen);
+        currentSampleTraces.add(new PendingTrace(
+                resolvedFeatureId,
+                normalized.traceLen,
+                copyColumns(normalized.columns, normalized.traceLen)));
         currentSampleTraceCount++;
+    }
+
+    private int writeSampleTracesSorted(long sampleId, ArrayList<PendingTrace> traces) throws Exception {
+        if (traces.isEmpty()) {
+            return 0;
+        }
+        if (!isSortedByFeatureId(traces)) {
+            Collections.sort(traces, new Comparator<PendingTrace>() {
+                @Override
+                public int compare(PendingTrace a, PendingTrace b) {
+                    return Integer.compare(a.featureId, b.featureId);
+                }
+            });
+        }
+        for (PendingTrace trace : traces) {
+            ensurePartWriter().writeRow(sampleId, trace.featureId, trace.traceLen, trace.columns);
+            partRows += trace.traceLen;
+            partBytes += estimateRowBytes(trace.traceLen);
+        }
+        return traces.size();
+    }
+
+    private static boolean isSortedByFeatureId(ArrayList<PendingTrace> traces) {
+        for (int i = 1; i < traces.size(); i++) {
+            if (traces.get(i - 1).featureId > traces.get(i).featureId) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private LinkedHashMap<String, Object> copyColumns(LinkedHashMap<String, Object> columns, int traceLen) {
+        LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
+        for (PointColumnSpec spec : pointSchema) {
+            out.put(spec.name, ArrayUtils.slicePointColumn(columns.get(spec.name), 0, traceLen));
+        }
+        return out;
     }
 
     private int resolveFeatureId(Integer featureId, String featureKey) {
@@ -331,7 +373,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             Object value = columns.get(spec.name);
             Object normalized = value;
             if (spec.logicalType == LogicalType.CATEGORICAL) {
-                normalized = categoricalRegistries.get(spec.name).encode(value, spec.name);
+                normalized = ArrayUtils.toStringArray(value, spec.name);
             }
             int columnLen = ArrayUtils.pointColumnLength(normalized);
             if (traceLen == null) {
@@ -373,12 +415,16 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         }
         int partId = committedPartCount;
         String partPath = partPath(partId);
+        String traceIndexPartPath = traceIndexPartPath(partId);
         ensurePartWriter().close();
         partWriter = null;
         long byteSize = new File(partPath).length();
+        long traceIndexByteSize = new File(traceIndexPartPath).length();
         ObjectNode record = JsonUtils.objectNode();
         record.put("part_id", partId);
         record.put("path", new File(outDir, "sample_parts/part_" + String.format("%06d", partId) + ".parquet").toPath()
+                .toAbsolutePath().normalize().toString().replace("\\", "/"));
+        record.put("trace_index_path", new File(outDir, "trace_index_parts/part_" + String.format("%06d", partId) + ".parquet").toPath()
                 .toAbsolutePath().normalize().toString().replace("\\", "/"));
         record.put("first_sample_id", pendingFirstSampleId.longValue());
         record.put("last_sample_id", pendingLastSampleId.longValue());
@@ -388,7 +434,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         record.put("trace_count", pendingTraceCount);
         record.put("row_count", partRows);
         record.put("byte_size", byteSize);
-        writeCategoricalLabels(record.putObject("categorical_labels_by_column"));
+        record.put("trace_index_byte_size", traceIndexByteSize);
         JsonUtils.appendJsonLine(partsLogPath, record);
         committedPartCount++;
         lastCommittedSampleId = pendingLastSampleId;
@@ -405,7 +451,6 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         endSample(false);
         flushPart();
         writeFeatureMetaIfNeeded();
-        List<PointColumnSpec> schemaWithDictionaries = writeDictionaries();
         List<ArraySampleParquetPart> parts = readCommittedParts();
         int nFeatures = knownFeatureCount == null ? featureKeysInOrder.size() : knownFeatureCount.intValue();
         ArraySampleParquetManifest manifest = new ArraySampleParquetManifest(
@@ -415,9 +460,10 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
                 nSamples,
                 nFeatures,
                 samplePartsDir.getAbsolutePath(),
+                traceIndexPartsDir.getAbsolutePath(),
                 options.sampleKeyCol,
                 options.featureKeyCol,
-                schemaWithDictionaries,
+                pointSchema,
                 parts);
         ArraySampleParquetManifestIO.write(manifest, manifestPath);
         finished = true;
@@ -469,21 +515,6 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         knownFeatureCount = Integer.valueOf(featureKeysInOrder.size());
     }
 
-    private List<PointColumnSpec> writeDictionaries() throws IOException {
-        ensureDir(dictionaryDir);
-        ArrayList<PointColumnSpec> out = new ArrayList<PointColumnSpec>();
-        for (PointColumnSpec spec : pointSchema) {
-            if (spec.logicalType != LogicalType.CATEGORICAL) {
-                out.add(spec);
-                continue;
-            }
-            String path = new File(dictionaryDir, spec.name + ".json").getAbsolutePath();
-            ArraySampleParquetDictionaryIO.write(path, spec.name, categoricalRegistries.get(spec.name).labels());
-            out.add(spec.withDictionaryPath(path));
-        }
-        return out;
-    }
-
     private List<ArraySampleParquetPart> readCommittedParts() throws IOException {
         ArrayList<ArraySampleParquetPart> out = new ArrayList<ArraySampleParquetPart>();
         List<JsonNode> records = JsonUtils.readJsonLines(partsLogPath);
@@ -491,12 +522,14 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             out.add(new ArraySampleParquetPart(
                     item.get("part_id").asInt(),
                     textOrEmpty(item, "path"),
+                    textOrEmpty(item, "trace_index_path"),
                     item.get("first_sample_id").asLong(),
                     item.get("last_sample_id").asLong(),
                     item.get("sample_count").asInt(),
                     item.get("trace_count").asInt(),
                     item.get("row_count").asInt(),
-                    item.get("byte_size").asLong()));
+                    item.get("byte_size").asLong(),
+                    item.has("trace_index_byte_size") ? item.get("trace_index_byte_size").asLong() : 0L));
         }
         return out;
     }
@@ -518,7 +551,6 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         for (String key : featureKeysInOrder) {
             featureKeys.add(key);
         }
-        writeCategoricalLabels(root.putObject("categorical_labels_by_column"));
         root.put("committed_part_count", committedPartCount);
         if (lastCommittedSampleId == null) {
             root.putNull("last_committed_sample_id");
@@ -542,34 +574,6 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             root.putNull("manifest_path");
         }
         JsonUtils.writeJsonAtomic(statePath, root);
-    }
-
-    private void writeCategoricalLabels(ObjectNode labelsRoot) {
-        for (Map.Entry<String, CategoricalRegistry> entry : categoricalRegistries.entrySet()) {
-            ArrayNode labels = labelsRoot.putArray(entry.getKey());
-            for (String label : entry.getValue().labels()) {
-                labels.add(label);
-            }
-        }
-    }
-
-    private void loadCategoricalLabels(JsonNode labelsNode) {
-        if (labelsNode == null || !labelsNode.isObject()) {
-            return;
-        }
-        for (PointColumnSpec spec : pointSchema) {
-            if (spec.logicalType != LogicalType.CATEGORICAL) {
-                continue;
-            }
-            JsonNode raw = labelsNode.get(spec.name);
-            ArrayList<String> labels = new ArrayList<String>();
-            if (raw != null && raw.isArray()) {
-                for (JsonNode item : raw) {
-                    labels.add(item.asText());
-                }
-            }
-            categoricalRegistries.get(spec.name).loadLabels(labels);
-        }
     }
 
     private void resetPartBuffer() {
@@ -605,9 +609,17 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         return new File(samplePartsDir, String.format("part_%06d.parquet", partId)).getAbsolutePath();
     }
 
+    private String traceIndexPartPath(int partId) {
+        return new File(traceIndexPartsDir, String.format("part_%06d.parquet", partId)).getAbsolutePath();
+    }
+
     private ArraySampleParquetPartWriter ensurePartWriter() throws IOException {
         if (partWriter == null) {
-            partWriter = ArraySampleParquetPartWriter.open(partPath(committedPartCount), pointSchema, options.compression);
+            partWriter = ArraySampleParquetPartWriter.open(
+                    partPath(committedPartCount),
+                    traceIndexPartPath(committedPartCount),
+                    pointSchema,
+                    options.compression);
         }
         return partWriter;
     }
@@ -626,6 +638,19 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         for (Map<String, Object> row : rows) {
             Object value = row.get(keyCol);
             out.add(value == null ? null : value.toString());
+        }
+        return out;
+    }
+
+    private static List<PointColumnSpec> normalizeArraySamplePointSchema(List<PointColumnSpec> pointSchema) {
+        List<PointColumnSpec> normalized = PointColumnSpec.normalizeList(pointSchema);
+        ArrayList<PointColumnSpec> out = new ArrayList<PointColumnSpec>(normalized.size());
+        for (PointColumnSpec spec : normalized) {
+            if (spec.logicalType == LogicalType.CATEGORICAL) {
+                out.add(new PointColumnSpec(spec.name, StorageType.STRING, spec.logicalType));
+            } else {
+                out.add(new PointColumnSpec(spec.name, spec.storageType, spec.logicalType));
+            }
         }
         return out;
     }
@@ -673,6 +698,18 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         final LinkedHashMap<String, Object> columns;
 
         NormalizedColumns(int traceLen, LinkedHashMap<String, Object> columns) {
+            this.traceLen = traceLen;
+            this.columns = columns;
+        }
+    }
+
+    private static final class PendingTrace {
+        final int featureId;
+        final int traceLen;
+        final LinkedHashMap<String, Object> columns;
+
+        PendingTrace(int featureId, int traceLen, LinkedHashMap<String, Object> columns) {
+            this.featureId = featureId;
             this.traceLen = traceLen;
             this.columns = columns;
         }

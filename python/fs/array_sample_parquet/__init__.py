@@ -12,6 +12,11 @@ from .manifest import (
     ArraySampleParquetPart,
     load_array_sample_parquet_manifest,
 )
+from .raw_builder import (
+    ArraySampleParquetRawBuildStatus,
+    ArraySampleParquetRawDatasetBuilder,
+    ArraySampleParquetRawSampleContext,
+)
 from .reader import ArraySampleParquetReader, ArraySampleParquetTrace, open_array_sample_parquet
 
 __all__ = [
@@ -20,6 +25,9 @@ __all__ = [
     "ArraySampleParquetDatasetBuilder",
     "ArraySampleParquetManifest",
     "ArraySampleParquetPart",
+    "ArraySampleParquetRawBuildStatus",
+    "ArraySampleParquetRawDatasetBuilder",
+    "ArraySampleParquetRawSampleContext",
     "ArraySampleParquetReader",
     "ArraySampleParquetSampleContext",
     "ArraySampleParquetTrace",

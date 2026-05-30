@@ -6,7 +6,6 @@ import fs.io.common.DuckDBUtils;
 import fs.model.array_sample_parquet.ArraySampleParquetManifest;
 import fs.model.array_sample_parquet.ArraySampleParquetPart;
 import fs.model.array_sample_parquet.ArraySampleParquetTrace;
-import fs.model.common.LogicalType;
 import fs.model.common.PointColumnSpec;
 
 import java.io.File;
@@ -17,10 +16,10 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 
 /**
  * array_sample_parquet v1 reader다.
@@ -35,7 +34,6 @@ public class ArraySampleParquetReader implements AutoCloseable {
     private Map<String, Integer> featureKeyToId;
     private Map<Long, String> sampleKeysById;
     private Map<Integer, String> featureKeysById;
-    private Map<String, Map<Long, String>> categoricalDictionaries;
 
     public ArraySampleParquetReader(ArraySampleParquetManifest manifest) {
         this.manifest = manifest;
@@ -68,37 +66,63 @@ public class ArraySampleParquetReader implements AutoCloseable {
         ArrayList<ArraySampleParquetTrace> out = new ArrayList<ArraySampleParquetTrace>();
         Map<Long, String> sampleKeys = sampleKeysById();
         Map<Integer, String> featureKeys = featureKeysById();
-        Map<String, Map<Long, String>> dictionaries = decodeCategorical ? categoricalDictionaries() : Collections.<String, Map<Long, String>>emptyMap();
-
         for (ArraySampleParquetPart part : manifest.parts) {
             if (part.lastSampleId < minSample || part.firstSampleId > maxSample) {
                 continue;
             }
-            File file = new File(part.path);
-            if (!file.exists()) {
+            File pointFile = new File(part.path);
+            File traceIndexFile = new File(part.traceIndexPath);
+            if (!traceIndexFile.exists()) {
                 continue;
             }
             try (Connection conn = DuckDBUtils.connect(null);
-                 Statement st = conn.createStatement();
-                 ResultSet rs = st.executeQuery(buildSelectSql(file.getAbsolutePath(), sampleIds, featureIds))) {
-                while (rs.next()) {
-                    long sampleId = rs.getLong("sample_id");
-                    int featureId = rs.getInt("feature_id");
-                    int traceLen = rs.getInt("trace_len");
-                    LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
-                    for (PointColumnSpec spec : manifest.pointSchema) {
-                        Object values = readList(rs, spec, traceLen);
-                        if (decodeCategorical && spec.logicalType == LogicalType.CATEGORICAL) {
-                            values = ArrayUtils.decodeCategoricalLabels(values, dictionaries.get(spec.name));
+                 Statement st = conn.createStatement()) {
+                ArrayList<TraceIndexRow> traceRows = new ArrayList<TraceIndexRow>();
+                HashMap<String, Integer> traceLenByKey = new HashMap<String, Integer>();
+                try (ResultSet rs = st.executeQuery(buildTraceIndexSelectSql(traceIndexFile.getAbsolutePath(), sampleIds, featureIds))) {
+                    while (rs.next()) {
+                        long sampleId = rs.getLong("sample_id");
+                        int featureId = rs.getInt("feature_id");
+                        int traceLen = rs.getInt("trace_len");
+                        TraceIndexRow row = new TraceIndexRow(sampleId, featureId, traceLen);
+                        traceRows.add(row);
+                        traceLenByKey.put(row.key(), Integer.valueOf(traceLen));
+                    }
+                }
+                HashMap<String, LinkedHashMap<String, Object>> columnsByKey = new HashMap<String, LinkedHashMap<String, Object>>();
+                if (!traceRows.isEmpty() && pointFile.exists()) {
+                    try (ResultSet rs = st.executeQuery(buildPointGroupSql(pointFile.getAbsolutePath(), sampleIds, featureIds, manifest.pointSchema))) {
+                        while (rs.next()) {
+                            long sampleId = rs.getLong("sample_id");
+                            int featureId = rs.getInt("feature_id");
+                            String key = sampleId + ":" + featureId;
+                            Integer traceLen = traceLenByKey.get(key);
+                            if (traceLen == null) {
+                                continue;
+                            }
+                            LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
+                            for (PointColumnSpec spec : manifest.pointSchema) {
+                                Object values = readList(rs, spec, traceLen.intValue());
+                                columns.put(spec.name, values);
+                            }
+                            columnsByKey.put(key, columns);
                         }
-                        columns.put(spec.name, values);
+                    }
+                }
+                for (TraceIndexRow row : traceRows) {
+                    LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
+                    LinkedHashMap<String, Object> loaded = columnsByKey.get(row.key());
+                    if (loaded == null) {
+                        columns.putAll(emptyColumns(decodeCategorical));
+                    } else {
+                        columns.putAll(loaded);
                     }
                     out.add(new ArraySampleParquetTrace(
-                            sampleId,
-                            sampleKeys.get(Long.valueOf(sampleId)),
-                            featureId,
-                            featureKeys.get(Integer.valueOf(featureId)),
-                            traceLen,
+                            row.sampleId,
+                            sampleKeys.get(Long.valueOf(row.sampleId)),
+                            row.featureId,
+                            featureKeys.get(Integer.valueOf(row.featureId)),
+                            row.traceLen,
                             true,
                             columns));
                 }
@@ -178,7 +202,7 @@ public class ArraySampleParquetReader implements AutoCloseable {
         // ParquetReader instances are opened per call and closed immediately.
     }
 
-    private static String buildSelectSql(String path, long[] sampleIds, int[] featureIds) {
+    private static String buildTraceIndexSelectSql(String path, long[] sampleIds, int[] featureIds) {
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT * FROM read_parquet(").append(DuckDBUtils.quotePath(path)).append(")");
         sql.append(" WHERE sample_id IN (");
@@ -200,6 +224,36 @@ public class ArraySampleParquetReader implements AutoCloseable {
             sql.append(")");
         }
         sql.append(" ORDER BY sample_id, feature_id");
+        return sql.toString();
+    }
+
+    private static String buildPointGroupSql(String path, long[] sampleIds, int[] featureIds, List<PointColumnSpec> pointSchema) {
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT sample_id, feature_id");
+        for (PointColumnSpec spec : pointSchema) {
+            String name = DuckDBUtils.quoteIdentifier(spec.name);
+            sql.append(", list(").append(name).append(" ORDER BY point_idx) AS ").append(name);
+        }
+        sql.append(" FROM read_parquet(").append(DuckDBUtils.quotePath(path)).append(")");
+        sql.append(" WHERE sample_id IN (");
+        for (int i = 0; i < sampleIds.length; i++) {
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append(sampleIds[i]);
+        }
+        sql.append(")");
+        if (featureIds != null) {
+            sql.append(" AND feature_id IN (");
+            for (int i = 0; i < featureIds.length; i++) {
+                if (i > 0) {
+                    sql.append(", ");
+                }
+                sql.append(featureIds[i]);
+            }
+            sql.append(")");
+        }
+        sql.append(" GROUP BY sample_id, feature_id ORDER BY sample_id, feature_id");
         return sql.toString();
     }
 
@@ -232,6 +286,27 @@ public class ArraySampleParquetReader implements AutoCloseable {
             }
             case INT64: {
                 long[] out = toLongArray(raw, spec.name);
+                requireTraceLen(spec.name, traceLen, out.length);
+                return out;
+            }
+            case STRING: {
+                String[] out = toStringArray(raw, spec.name);
+                requireTraceLen(spec.name, traceLen, out.length);
+                return out;
+            }
+            case UINT8: {
+                long[] out = toLongArray(raw, spec.name);
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = out[i] & 0xFFL;
+                }
+                requireTraceLen(spec.name, traceLen, out.length);
+                return out;
+            }
+            case UINT16: {
+                long[] out = toLongArray(raw, spec.name);
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = out[i] & 0xFFFFL;
+                }
                 requireTraceLen(spec.name, traceLen, out.length);
                 return out;
             }
@@ -312,6 +387,10 @@ public class ArraySampleParquetReader implements AutoCloseable {
         return ArrayUtils.toLongArray(raw, columnName);
     }
 
+    private static String[] toStringArray(Object raw, String columnName) {
+        return ArrayUtils.toStringArray(raw, columnName);
+    }
+
     private LinkedHashMap<String, Object> emptyColumns(boolean decodeCategorical) {
         LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>();
         for (PointColumnSpec spec : manifest.pointSchema) {
@@ -346,19 +425,6 @@ public class ArraySampleParquetReader implements AutoCloseable {
             featureKeysById = buildIntIdToKey(manifest.featureMetaPath, manifest.featureKeyCol, "feature_id");
         }
         return featureKeysById;
-    }
-
-    private Map<String, Map<Long, String>> categoricalDictionaries() throws Exception {
-        if (categoricalDictionaries != null) {
-            return categoricalDictionaries;
-        }
-        categoricalDictionaries = new HashMap<String, Map<Long, String>>();
-        for (PointColumnSpec spec : manifest.pointSchema) {
-            if (spec.logicalType == LogicalType.CATEGORICAL && spec.dictionaryPath != null && !spec.dictionaryPath.isEmpty()) {
-                categoricalDictionaries.put(spec.name, ArraySampleParquetDictionaryIO.read(spec.dictionaryPath));
-            }
-        }
-        return categoricalDictionaries;
     }
 
     private static Map<String, Long> buildKeyToLongId(String path, String keyCol, String idCol) throws Exception {
@@ -415,5 +481,21 @@ public class ArraySampleParquetReader implements AutoCloseable {
             }
         }
         return out;
+    }
+
+    private static final class TraceIndexRow {
+        final long sampleId;
+        final int featureId;
+        final int traceLen;
+
+        TraceIndexRow(long sampleId, int featureId, int traceLen) {
+            this.sampleId = sampleId;
+            this.featureId = featureId;
+            this.traceLen = traceLen;
+        }
+
+        String key() {
+            return sampleId + ":" + featureId;
+        }
     }
 }

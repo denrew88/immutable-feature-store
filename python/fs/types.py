@@ -11,6 +11,9 @@ class StorageType(str, Enum):
     FLOAT64 = "float64"
     INT32 = "int32"
     INT64 = "int64"
+    STRING = "string"
+    UINT8 = "uint8"
+    UINT16 = "uint16"
     UINT32 = "uint32"
     UINT64 = "uint64"
 
@@ -29,6 +32,8 @@ POINT_STORAGE_DTYPES = {
     StorageType.FLOAT64: np.dtype("<f8"),
     StorageType.INT32: np.dtype("<i4"),
     StorageType.INT64: np.dtype("<i8"),
+    StorageType.UINT8: np.dtype("u1"),
+    StorageType.UINT16: np.dtype("<u2"),
     StorageType.UINT32: np.dtype("<u4"),
     StorageType.UINT64: np.dtype("<u8"),
 }
@@ -41,7 +46,7 @@ ALLOWED_STORAGE_TYPES_BY_LOGICAL = {
         StorageType.UINT32,
         StorageType.UINT64,
     },
-    LogicalType.CATEGORICAL: {StorageType.UINT32},
+    LogicalType.CATEGORICAL: {StorageType.STRING, StorageType.UINT8, StorageType.UINT16, StorageType.UINT32},
     LogicalType.TIMESTAMP_NS: {StorageType.INT64},
     LogicalType.TIMEDELTA_NS: {StorageType.INT64},
 }

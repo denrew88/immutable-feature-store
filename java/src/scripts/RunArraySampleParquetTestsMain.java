@@ -2,15 +2,21 @@ package scripts;
 
 import fs.io.ArraySampleParquets;
 import fs.io.array_sample_parquet.ArraySampleParquetDatasetBuilder;
+import fs.io.array_sample_parquet.ArraySampleParquetManifestIO;
 import fs.io.array_sample_parquet.ArraySampleParquetSampleContext;
+import fs.io.common.DuckDBUtils;
 import fs.model.array_sample_parquet.ArraySampleParquetBuildOptions;
 import fs.model.array_sample_parquet.ArraySampleParquetBuildSessionStatus;
+import fs.model.array_sample_parquet.ArraySampleParquetManifest;
 import fs.model.array_sample_parquet.ArraySampleParquetTrace;
 import fs.model.common.LogicalType;
 import fs.model.common.PointColumnSpec;
 import fs.model.common.StorageType;
 
 import java.io.File;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -34,7 +40,7 @@ public class RunArraySampleParquetTestsMain {
                 new PointColumnSpec("ts", StorageType.INT64, LogicalType.TIMESTAMP_NS),
                 new PointColumnSpec("value", StorageType.FLOAT64, LogicalType.CONTINUOUS),
                 new PointColumnSpec("phase", StorageType.INT32, LogicalType.INTEGER),
-                new PointColumnSpec("ch_step", StorageType.UINT32, LogicalType.CATEGORICAL)
+                new PointColumnSpec("ch_step", StorageType.STRING, LogicalType.CATEGORICAL)
         );
         ArraySampleParquetBuildOptions options = new ArraySampleParquetBuildOptions();
         options.targetPartBytes = 1024L * 1024L;
@@ -49,6 +55,11 @@ public class RunArraySampleParquetTestsMain {
                 featureMetaPath,
                 options)) {
             try (ArraySampleParquetSampleContext sample = builder.sample(0L)) {
+                sample.addTrace(null, "feature_b", columns(
+                        new long[]{3L},
+                        new double[]{2.0},
+                        new int[]{20},
+                        new String[]{"B"}));
                 sample.addTrace(null, "feature_a", columns(
                         new long[]{0L, 1L},
                         new double[]{1.0, Double.NaN},
@@ -90,6 +101,12 @@ public class RunArraySampleParquetTestsMain {
         }
 
         require(new File(manifestPath).exists(), "missing manifest");
+        ArraySampleParquetManifest manifest = ArraySampleParquetManifestIO.read(manifestPath);
+        require(new File(manifest.parts.get(0).path).exists(), "missing point part");
+        require(new File(manifest.parts.get(0).traceIndexPath).exists(), "missing trace index part");
+        require(manifest.parts.get(0).rowCount == 3, "first point part should contain three point rows");
+        assertPointPartSorted(manifest.parts.get(0).path);
+        assertTraceIndexSorted(manifest.parts.get(0).traceIndexPath);
         try (fs.io.array_sample_parquet.ArraySampleParquetReader reader = ArraySampleParquets.open(manifestPath)) {
             List<ArraySampleParquetTrace> traces = reader.loadTracesByKeys(
                     new String[]{"sample_000000", "sample_000001", "sample_000002", "sample_000003"},
@@ -102,6 +119,8 @@ public class RunArraySampleParquetTestsMain {
             }
             require(byPair.get("0:0").present, "feature_a sample0 should be present");
             assertStringArray((String[]) byPair.get("0:0").columns.get("ch_step"), new String[]{"A", "B"}, "sample0 ch_step");
+            require(byPair.get("0:1").present, "feature_b sample0 should be present");
+            assertStringArray((String[]) byPair.get("0:1").columns.get("ch_step"), new String[]{"B"}, "sample0 feature_b ch_step");
             require(!byPair.get("1:0").present, "sample1 feature_a should be missing");
             assertStringArray((String[]) byPair.get("2:1").columns.get("ch_step"), new String[]{"B"}, "sample2 ch_step");
             require(byPair.get("3:0").present, "sample3 feature_a should be present");
@@ -152,6 +171,53 @@ public class RunArraySampleParquetTestsMain {
                 require(actual[i] == null, label + " mismatch at " + i);
             } else {
                 require(expected[i].equals(actual[i]), label + " mismatch at " + i);
+            }
+        }
+    }
+
+    private static void assertPointPartSorted(String path) throws Exception {
+        try (Connection conn = DuckDBUtils.connect(null);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT sample_id, feature_id, point_idx FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")")) {
+            long prevSample = Long.MIN_VALUE;
+            int prevFeature = Integer.MIN_VALUE;
+            int prevPoint = Integer.MIN_VALUE;
+            boolean first = true;
+            while (rs.next()) {
+                long sample = rs.getLong("sample_id");
+                int feature = rs.getInt("feature_id");
+                int point = rs.getInt("point_idx");
+                if (!first) {
+                    boolean sorted = sample > prevSample
+                            || (sample == prevSample && feature > prevFeature)
+                            || (sample == prevSample && feature == prevFeature && point >= prevPoint);
+                    require(sorted, "point part is not sorted by sample_id, feature_id, point_idx");
+                }
+                first = false;
+                prevSample = sample;
+                prevFeature = feature;
+                prevPoint = point;
+            }
+        }
+    }
+
+    private static void assertTraceIndexSorted(String path) throws Exception {
+        try (Connection conn = DuckDBUtils.connect(null);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT sample_id, feature_id FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")")) {
+            long prevSample = Long.MIN_VALUE;
+            int prevFeature = Integer.MIN_VALUE;
+            boolean first = true;
+            while (rs.next()) {
+                long sample = rs.getLong("sample_id");
+                int feature = rs.getInt("feature_id");
+                if (!first) {
+                    boolean sorted = sample > prevSample || (sample == prevSample && feature >= prevFeature);
+                    require(sorted, "trace index part is not sorted by sample_id, feature_id");
+                }
+                first = false;
+                prevSample = sample;
+                prevFeature = feature;
             }
         }
     }

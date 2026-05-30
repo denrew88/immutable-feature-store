@@ -53,12 +53,12 @@ public class BuildArraySampleParquetWithJarExample {
         List<PointColumnSpec> pointSchema = Arrays.asList(
                 new PointColumnSpec("time", StorageType.FLOAT64, LogicalType.CONTINUOUS),
                 new PointColumnSpec("value", StorageType.FLOAT64, LogicalType.CONTINUOUS),
-                new PointColumnSpec("ch_step", StorageType.UINT32, LogicalType.CATEGORICAL)
+                new PointColumnSpec("ch_step", StorageType.STRING, LogicalType.CATEGORICAL)
         );
 
         ArraySampleParquetBuildOptions options = new ArraySampleParquetBuildOptions();
         options.targetPartBytes = 1024L * 1024L;
-        options.maxPartRows = 100000;
+        options.maxPartRows = 10000000;
         options.maxPartSamples = 0;
         options.compression = "none";
 

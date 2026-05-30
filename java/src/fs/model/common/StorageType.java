@@ -7,6 +7,9 @@ public enum StorageType {
     FLOAT64("float64", 8),
     INT32("int32", 4),
     INT64("int64", 8),
+    STRING("string", 16),
+    UINT8("uint8", 1),
+    UINT16("uint16", 2),
     UINT32("uint32", 4),
     UINT64("uint64", 8);
 

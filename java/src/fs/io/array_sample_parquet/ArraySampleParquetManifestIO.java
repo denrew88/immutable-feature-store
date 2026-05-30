@@ -35,6 +35,7 @@ public final class ArraySampleParquetManifestIO {
         root.put("n_samples", manifest.nSamples);
         root.put("n_features", manifest.nFeatures);
         root.put("sample_parts_path", relativeTo(path, manifest.samplePartsPath));
+        root.put("trace_index_parts_path", relativeTo(path, manifest.traceIndexPartsPath));
         root.put("sample_key_col", manifest.sampleKeyCol);
         root.put("feature_key_col", manifest.featureKeyCol);
 
@@ -44,9 +45,6 @@ public final class ArraySampleParquetManifestIO {
             item.put("name", spec.name);
             item.put("storage_type", spec.storageType.value);
             item.put("logical_type", spec.logicalType.value);
-            if (spec.dictionaryPath != null && !spec.dictionaryPath.isEmpty()) {
-                item.put("dictionary_path", relativeTo(path, spec.dictionaryPath));
-            }
         }
 
         ArrayNode parts = root.putArray("parts");
@@ -54,12 +52,14 @@ public final class ArraySampleParquetManifestIO {
             ObjectNode item = parts.addObject();
             item.put("part_id", part.partId);
             item.put("path", relativeTo(path, part.path));
+            item.put("trace_index_path", relativeTo(path, part.traceIndexPath));
             item.put("first_sample_id", part.firstSampleId);
             item.put("last_sample_id", part.lastSampleId);
             item.put("sample_count", part.sampleCount);
             item.put("trace_count", part.traceCount);
             item.put("row_count", part.rowCount);
             item.put("byte_size", part.byteSize);
+            item.put("trace_index_byte_size", part.traceIndexByteSize);
         }
         JsonUtils.writeJson(path, root);
     }
@@ -80,6 +80,7 @@ public final class ArraySampleParquetManifestIO {
                 intOrZero(root, "n_samples"),
                 intOrZero(root, "n_features"),
                 resolveAgainst(path, textOrEmpty(root, "sample_parts_path")),
+                resolveAgainst(path, textOrEmpty(root, "trace_index_parts_path")),
                 defaultText(root, "sample_key_col", "sample_key"),
                 defaultText(root, "feature_key_col", "feature_key"),
                 parsePointSchema(path, root.get("point_schema")),
@@ -95,8 +96,7 @@ public final class ArraySampleParquetManifestIO {
             out.add(new PointColumnSpec(
                     textOrEmpty(item, "name"),
                     StorageType.fromValue(textOrEmpty(item, "storage_type")),
-                    LogicalType.fromValue(defaultText(item, "logical_type", LogicalType.CONTINUOUS.value)),
-                    resolveAgainst(manifestPath, textOrEmpty(item, "dictionary_path"))));
+                    LogicalType.fromValue(defaultText(item, "logical_type", LogicalType.CONTINUOUS.value))));
         }
         return PointColumnSpec.normalizeList(out);
     }
@@ -110,12 +110,14 @@ public final class ArraySampleParquetManifestIO {
             out.add(new ArraySampleParquetPart(
                     intOrZero(item, "part_id"),
                     resolveAgainst(manifestPath, textOrEmpty(item, "path")),
+                    resolveAgainst(manifestPath, textOrEmpty(item, "trace_index_path")),
                     longOrZero(item, "first_sample_id"),
                     longOrZero(item, "last_sample_id"),
                     intOrZero(item, "sample_count"),
                     intOrZero(item, "trace_count"),
                     intOrZero(item, "row_count"),
-                    longOrZero(item, "byte_size")));
+                    longOrZero(item, "byte_size"),
+                    longOrZero(item, "trace_index_byte_size")));
         }
         return out;
     }

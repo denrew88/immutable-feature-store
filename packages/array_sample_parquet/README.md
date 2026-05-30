@@ -14,6 +14,12 @@
 - `reader.get_traces_json(layout="nested"|"flat")`: API 응답과 같은 JSON-compatible layout으로 반환합니다.
 
 ## Format Summary
+Long-format physical layout:
+
+- `sample_parts/*.parquet`: point rows with `sample_id`, `feature_id`, `point_idx`, and primitive point columns.
+- `trace_index_parts/*.parquet`: present trace rows with `sample_id`, `feature_id`, `trace_len`.
+- Empty trace is `trace_len=0` in trace index with no point row; missing trace has no trace index row.
+- Categorical point columns are stored as string primitive columns, without sidecar dictionaries.
 
 artifact 구조는 다음과 같습니다.
 
@@ -26,30 +32,32 @@ out_dir/
   feature_meta.parquet
   sample_parts/
     part_000000.parquet
-  categorical_dictionaries/
-    ch_step.json
+  trace_index_parts/
+    part_000000.parquet
 ```
 
-`sample_parts/*.parquet`의 row 하나는 `(sample_id, feature_id)` trace 하나입니다. point column은 Parquet `list<typed value>`로 저장합니다.
+`sample_parts/*.parquet`의 row 하나는 trace point 하나입니다. point column은 primitive column으로 저장합니다.
 
 ```text
 sample_id  int64
 feature_id int32
-trace_len  int32
-time       list<float64>
-value      list<float64>
-ch_step    list<uint32>
+point_idx  int32
+time       float64
+value      float64
+ch_step    string
 ```
 
-missing trace는 row 부재로 표현하고, empty trace는 `trace_len=0`인 row로 표현합니다. point-level null은 지원하지 않습니다.
+`trace_index_parts/*.parquet`에는 present trace마다 `(sample_id, feature_id, trace_len)`이 기록됩니다. missing trace는 trace index row 부재, empty trace는 `trace_len=0`인 trace index row와 point row 부재로 표현합니다. point-level null은 지원하지 않습니다.
 
 ## Build Behavior
 
-builder는 전체 part를 메모리에 쌓지 않습니다. `add_trace(...)`가 호출되면 trace row를 즉시 `.parquet.tmp` writer에 전달하고, 작은 PyArrow row batch만 메모리에 유지합니다.
+builder는 전체 part를 메모리에 쌓지 않고 현재 sample의 trace만 보관합니다. sample이 닫힐 때 feature_id 순서로 정렬한 뒤 `.parquet.tmp` writer에 전달하므로 최종 point part의 물리 순서는 `(sample_id, feature_id, point_idx)`입니다.
 
 part는 sample 경계에서만 commit됩니다. flush 기준은 sample 개수가 아니라 `target_part_bytes`입니다. `max_part_rows`와 `max_part_samples`는 안전장치입니다.
 
 중간에 프로세스가 종료되면 `parts.jsonl`에 기록된 part만 committed로 인정합니다. resume 시 `.parquet.tmp`는 삭제되고, 사용자는 `builder.status().next_expected_sample_id`부터 다시 데이터를 넣으면 됩니다.
+
+`ArraySampleParquetRawDatasetBuilder`는 out-of-order/sample-parallel ingest용입니다. sample별 중간 파일도 long point row인 `raw_samples/sample_*.parquet`와 present trace index인 `raw_trace_index/sample_*.parquet`로 나뉩니다. categorical은 raw와 final 모두 string으로 저장하고, 압축은 Parquet의 dictionary/RLE encoding에 맡깁니다.
 
 ## Example
 
@@ -66,12 +74,12 @@ from array_sample_parquet import (
 schema = [
     PointColumnSpec("time", StorageType.FLOAT64, LogicalType.CONTINUOUS),
     PointColumnSpec("value", StorageType.FLOAT64, LogicalType.CONTINUOUS),
-    PointColumnSpec("ch_step", StorageType.UINT32, LogicalType.CATEGORICAL),
+    PointColumnSpec("ch_step", StorageType.STRING, LogicalType.CATEGORICAL),
 ]
 
 options = ArraySampleParquetBuildOptions(
     target_part_bytes=128 * 1024 * 1024,
-    max_part_rows=100_000,
+    max_part_rows=10_000_000,
     max_part_samples=0,
     compression="zstd",
 )
@@ -100,7 +108,6 @@ reader = open_array_sample_parquet(manifest_path)
 result = reader.get_traces_json(
     sample_keys=["sample_000001"],
     feature_keys=["feature_a"],
-    decode_categorical=True,
     include_missing=True,
     layout="nested",
 )
