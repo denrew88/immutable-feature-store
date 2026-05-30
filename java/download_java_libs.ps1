@@ -51,6 +51,26 @@ $dependencies = @(
     @{
         Name = "hadoop-mapreduce-client-core-3.3.6.jar"
         Url = "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-mapreduce-client-core/3.3.6/hadoop-mapreduce-client-core-3.3.6.jar"
+    },
+    @{
+        Name = "arrow-c-data-14.0.2.jar"
+        Url = "https://repo1.maven.org/maven2/org/apache/arrow/arrow-c-data/14.0.2/arrow-c-data-14.0.2.jar"
+    },
+    @{
+        Name = "arrow-memory-core-14.0.2.jar"
+        Url = "https://repo1.maven.org/maven2/org/apache/arrow/arrow-memory-core/14.0.2/arrow-memory-core-14.0.2.jar"
+    },
+    @{
+        Name = "arrow-memory-unsafe-14.0.2.jar"
+        Url = "https://repo1.maven.org/maven2/org/apache/arrow/arrow-memory-unsafe/14.0.2/arrow-memory-unsafe-14.0.2.jar"
+    },
+    @{
+        Name = "arrow-vector-14.0.2-shade-format-flatbuffers.jar"
+        Url = "https://repo1.maven.org/maven2/org/apache/arrow/arrow-vector/14.0.2/arrow-vector-14.0.2-shade-format-flatbuffers.jar"
+    },
+    @{
+        Name = "netty-common-4.1.96.Final.jar"
+        Url = "https://repo1.maven.org/maven2/io/netty/netty-common/4.1.96.Final/netty-common-4.1.96.Final.jar"
     }
 )
 

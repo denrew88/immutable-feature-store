@@ -25,6 +25,11 @@ wheelhouse/
 java/out/
 java/lib/*.jar
 !java/lib/.gitkeep
+!java/lib/arrow-c-data-14.0.2.jar
+!java/lib/arrow-memory-core-14.0.2.jar
+!java/lib/arrow-memory-unsafe-14.0.2.jar
+!java/lib/arrow-vector-14.0.2-shade-format-flatbuffers.jar
+!java/lib/netty-common-4.1.96.Final.jar
 *.class
 
 # Package-local build outputs

@@ -90,7 +90,9 @@ Array binary shard v3 특징:
 - sample-major layout이며 물리 순서는 `(sample_id, feature_id, point_idx)`입니다.
 - raw builder도 `raw_samples/` point rows와 `raw_trace_index/` present trace index를 분리해 씁니다.
 - categorical column은 별도 dictionary sidecar 없이 string으로 저장합니다.
-- `target_part_bytes` / `targetPartBytes` 기반 자동 part 크기 조절, `state.json`과 `parts.jsonl` 기반 resume, `sample_key` / `feature_key` 기반 조회를 지원합니다.
+- `target_part_bytes` / `targetPartBytes` 기반 자동 part 크기 조절, `raw_state.json`과 `raw_samples.jsonl` 기반 sample 단위 resume, `sample_key` / `feature_key` 기반 조회를 지원합니다.
+- Java builder는 Arrow vector batch를 DuckDB에 넘겨 raw parquet를 쓰고, raw/final parquet의 물리 row 정렬을 검증하는 helper를 제공합니다.
+
 ### Scalar
 
 - 문서

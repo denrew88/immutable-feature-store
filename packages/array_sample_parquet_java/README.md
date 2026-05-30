@@ -20,6 +20,9 @@
 - `fs.io.array_sample_parquet.ArraySampleParquetReader`
   - `loadTracesByIds(...)`
   - `loadTracesByKeys(...)`
+- `fs.io.array_sample_parquet.ArraySampleParquetOrderChecks`
+  - `requirePointRowsSorted(...)`
+  - `requireTraceIndexRowsSorted(...)`
 
 ## Format Summary
 Long-format physical layout:
@@ -33,10 +36,14 @@ artifact 구조는 다음과 같습니다.
 ```text
 out_dir/
   array_sample_parquet_manifest.json
-  state.json
-  parts.jsonl
+  raw_state.json
+  raw_samples.jsonl
   sample_meta.parquet
   feature_meta.parquet
+  raw_samples/
+    sample_000000000000.parquet
+  raw_trace_index/
+    sample_000000000000.parquet
   sample_parts/
     part_000000.parquet
   trace_index_parts/
@@ -49,11 +56,15 @@ categorical point column은 별도 dictionary sidecar 없이 string primitive로
 
 ## Build Behavior
 
-Java builder도 전체 part를 메모리에 들고 있지 않습니다. 현재 sample의 trace만 보관하고, sample이 닫힐 때 featureId 순서로 정렬한 뒤 `ArraySampleParquetPartWriter`가 parquet-hadoop `ExampleParquetWriter`로 `.parquet.tmp`에 씁니다. 최종 point part의 물리 순서는 `(sample_id, feature_id, point_idx)`입니다.
+Java builder는 Python raw builder와 같은 2단계 구조입니다. sample이 닫히면 먼저 `raw_samples/sample_*.parquet`와 `raw_trace_index/sample_*.parquet`를 확정하고, `raw_samples.jsonl`에 commit record를 append합니다. `finish()` 또는 `compact()`는 raw 파일들을 `targetPartBytes`, `maxPartRows`, `maxPartSamples` 기준으로 묶어서 최종 `sample_parts`와 `trace_index_parts`를 만듭니다.
 
-part commit은 sample 경계에서만 발생합니다. 기본 flush 기준은 `targetPartBytes`이고, `maxPartRows`와 `maxPartSamples`는 안전장치입니다. commit 시 `.parquet.tmp`를 `.parquet`으로 rename하고 `parts.jsonl`, `state.json`을 갱신합니다.
+raw sample write는 Java 8 호환 Apache Arrow vector batch를 DuckDB에 `registerArrowStream(...)`으로 넘기고, sample close 시 `COPY ... TO parquet`로 raw 파일을 씁니다. 이 경로는 point row마다 `DuckDBAppender`를 호출하지 않습니다.
 
-중간에 종료되면 `parts.jsonl`에 기록된 part만 committed로 인정합니다. resume 시 `.tmp` 파일을 삭제하고 `status().nextExpectedSampleId`부터 다시 입력하면 됩니다.
+사용자가 `addTrace(...)`를 feature 순서대로 호출한다는 보장은 없으므로, sample close 직전에 Java가 trace 목록을 `(sample_id, feature_id)` 순서로 정렬합니다. 그 뒤 raw write와 compact는 DuckDB SQL `ORDER BY` 없이 이미 정렬된 stream/file 목록을 그대로 `COPY TO parquet`로 씁니다. `ArraySampleParquetOrderChecks`는 raw/final parquet의 물리 row 순서가 실제로 `(sample_id, feature_id, point_idx)` 또는 `(sample_id, feature_id)`인지 검사합니다.
+
+중간에 종료되면 `raw_samples.jsonl`에 기록된 sample만 완료로 인정합니다. resume 시 `.tmp` 파일을 삭제하고 `status().pendingSampleIds`를 worker에게 나눠주면 됩니다. 기존 순차 예제와 호환되도록 `status().nextExpectedSampleId`는 가장 작은 pending sample id를 반환합니다.
+
+`ArraySampleParquetBuildOptions.arrowBatchRows`는 DuckDB로 넘기는 Arrow record batch의 최대 point row 수입니다. 기본값은 `262144`이며, 값을 키우면 batch 수가 줄지만 sample close 시점의 off-heap buffer 사용량이 커집니다.
 
 ## Build
 
@@ -69,6 +80,26 @@ powershell -ExecutionPolicy Bypass -File packages\array_sample_parquet_java\buil
 
 thin jar이므로 실행 시 `java/lib/*.jar`를 classpath에 같이 넣어야 합니다.
 
+현재 표준 경로에 필요한 추가 런타임 jar는 DuckDB/Jackson/Hadoop/Parquet 기본 jar 외에 다음 Arrow vector bridge jar입니다.
+
+- `arrow-c-data-14.0.2.jar`
+- `arrow-memory-core-14.0.2.jar`
+- `arrow-memory-unsafe-14.0.2.jar`
+- `arrow-vector-14.0.2-shade-format-flatbuffers.jar`
+- `netty-common-4.1.96.Final.jar`
+
+## Performance Notes
+
+로컬 기준 `20 samples x 1200 features x trace_len 950`, point columns `time/value float64 + ch_step string`, `zstd` 조건에서 최근 측정 결과는 다음과 같습니다.
+
+- 전체 build: 약 `8.2s ~ 10.0s`
+- raw sample close/write 합계: 약 `4.9s ~ 6.2s`
+- compact finish: 약 `2.9s ~ 3.3s`
+- raw samples: 약 `166.47MB`
+- final sample parts: 약 `166.38MB`
+
+같은 산출물에 대해 raw sample, raw trace index, final sample parts, final trace index 모두 물리 row 정렬 검사를 통과했습니다.
+
 ## Example
 
 ```java
@@ -77,6 +108,7 @@ options.targetPartBytes = 128L * 1024L * 1024L;
 options.maxPartRows = 10000000;
 options.maxPartSamples = 0;
 options.compression = "zstd";
+options.arrowBatchRows = 262144;
 
 try (ArraySampleParquetDatasetBuilder builder = ArraySampleParquets.openSession(
         "data/array_sample_parquet",
@@ -92,6 +124,19 @@ try (ArraySampleParquetDatasetBuilder builder = ArraySampleParquets.openSession(
     }
     String manifestPath = builder.finish();
 }
+```
+
+out-of-order 또는 worker 분배형 사용에서는 `pendingSampleIds`를 직접 쓰는 편이 더 명확합니다.
+
+```java
+for (Long sampleId : builder.status().pendingSampleIds) {
+    try (ArraySampleParquetSampleContext sample = builder.sample(sampleId.longValue(), true)) {
+        if (!sample.skipped) {
+            sample.addTrace(null, "feature_a", columns);
+        }
+    }
+}
+String manifestPath = builder.compact();
 ```
 
 ## Jar Example

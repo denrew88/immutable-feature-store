@@ -18,12 +18,17 @@
   - `java/lib/jackson-annotations-2.20.jar`
   - `java/lib/parquet-hadoop-bundle-1.13.1.jar`
   - `java/lib/hadoop-common-3.3.6.jar`
+  - `java/lib/hadoop-mapreduce-client-core-3.3.6.jar`
   - `java/lib/slf4j-api-1.7.36.jar`
   - `java/lib/woodstox-core-6.5.1.jar`
   - `java/lib/stax2-api-4.2.1.jar`
   - `java/lib/commons-collections-3.2.2.jar`
   - `java/lib/commons-lang3-3.12.0.jar`
-  - `java/lib/hadoop-mapreduce-client-core-3.3.6.jar`
+  - `java/lib/arrow-c-data-14.0.2.jar`
+  - `java/lib/arrow-memory-core-14.0.2.jar`
+  - `java/lib/arrow-memory-unsafe-14.0.2.jar`
+  - `java/lib/arrow-vector-14.0.2-shade-format-flatbuffers.jar`
+  - `java/lib/netty-common-4.1.96.Final.jar`
 
 없으면 먼저 받습니다.
 
@@ -431,7 +436,9 @@ java -cp "java\lib\*;java\out" scripts.RunScalarNotebookBuilderTestsMain
 - `openSession(...)`으로 sample 순서 ingest를 시작합니다.
 - `status().nextExpectedSampleId`로 resume 위치를 확인합니다.
 - `sample(sampleId)` / `sample(sampleKey)` context 안에서 trace를 추가합니다.
-- trace row는 `.parquet.tmp`에 streaming으로 바로 쓰고, part commit은 sample 경계에서만 일어납니다.
+- sample close 시 trace 목록을 `(sample_id, feature_id)` 순서로 정렬한 뒤 Arrow vector batch를 DuckDB에 넘겨 `.parquet.tmp` raw 파일을 씁니다.
+- raw write와 compact 단계는 이미 정렬된 입력을 사용하므로 SQL `ORDER BY`를 수행하지 않습니다.
+- `ArraySampleParquetOrderChecks`로 raw/final parquet의 물리 row 정렬을 검증할 수 있습니다.
 - part 크기는 sample 개수가 아니라 `targetPartBytes` 기준으로 자동 조절합니다.
 - `finish()`가 `array_sample_parquet_manifest.json`을 씁니다.
 - `ArraySampleParquetReader`는 `loadTracesByIds(...)`, `loadTracesByKeys(...)`를 제공합니다.

@@ -9,10 +9,14 @@
 ```text
 out_dir/
   array_sample_parquet_manifest.json
-  state.json
-  parts.jsonl
+  raw_state.json
+  raw_samples.jsonl
   sample_meta.parquet
   feature_meta.parquet
+  raw_samples/
+    sample_000000000000.parquet
+  raw_trace_index/
+    sample_000000000000.parquet
   sample_parts/
     part_000000.parquet
     part_000001.parquet
@@ -53,9 +57,11 @@ long point rows만 있으면 `trace_len=0`인 empty trace와 아예 없는 missi
 
 `feature_meta.parquet`은 dense `feature_id`와 선택적 `feature_key`를 담습니다. `feature_keys` 조회를 쓰려면 key column이 필요합니다.
 
-`parts.jsonl`은 append-only commit log입니다. resume 시에는 이 로그에 기록된 part만 committed part로 인정합니다.
+`raw_samples/*.parquet`와 `raw_trace_index/*.parquet`는 sample별 resume-safe 중간 산출물입니다. sample 하나가 정상 종료될 때만 `.tmp`에서 최종 `.parquet`로 rename됩니다.
 
-`state.json`은 build session snapshot입니다. 옵션, point schema, feature key 목록, 마지막 committed sample, 다음 ingest sample 위치가 들어갑니다.
+`raw_samples.jsonl`은 append-only raw sample commit log입니다. resume 시에는 이 로그에 기록되고 실제 파일도 존재하는 sample만 completed sample로 인정합니다.
+
+`raw_state.json`은 build session snapshot입니다. 옵션, point schema, feature key 목록, compact 완료 여부와 manifest path가 들어갑니다.
 
 ## Parquet Schema
 
@@ -115,25 +121,25 @@ API에서 `include_missing=true`와 명시적 feature 목록을 주면, trace in
 
 ## Build Algorithm
 
-builder는 sample-major ingest를 받습니다. part commit은 sample 경계에서만 일어나므로 중간 실패 후에는 마지막 committed sample 다음부터 다시 넣으면 됩니다.
+builder는 sample-major ingest를 받지만 최종 part에 바로 쓰지 않습니다. sample 하나가 끝날 때 raw sample parquet를 확정하고, 마지막에 raw 파일들을 compact해서 최종 part를 만듭니다.
 
-1. `open_session(...)`이 `out_dir`을 초기화하거나 기존 `state.json`을 읽어 resume합니다.
+1. `open_session(...)`이 `out_dir`을 초기화하거나 기존 `raw_state.json`을 읽어 resume합니다.
 2. `sample_meta.parquet`과 `feature_meta.parquet`을 artifact 안으로 복사하거나 생성합니다.
-3. 사용자는 `builder.status().next_expected_sample_id`부터 sample을 순서대로 넣습니다.
+3. 사용자는 `builder.status().pending_sample_ids`를 보고 아직 완료되지 않은 sample을 씁니다. 순차 예제에서는 `next_expected_sample_id`를 써도 됩니다.
 4. `sample.add_trace(...)`는 point column 이름과 길이를 검증합니다.
 5. categorical column은 code 변환 없이 문자열 배열로 정규화합니다.
-6. trace 하나를 쓰면 trace index writer에 `(sample_id, feature_id, trace_len)`이 기록됩니다.
-7. `trace_len > 0`이면 point part writer에 `point_idx`별 row가 펼쳐져 기록됩니다.
-8. flush 조건이 만족되면 `.parquet.tmp`를 닫고 final `.parquet`로 rename한 뒤 `parts.jsonl`과 `state.json`을 갱신합니다.
-9. `finish()`는 남은 part를 commit하고 manifest를 씁니다.
+6. sample 종료 시 `raw_samples/sample_*.parquet.tmp`와 `raw_trace_index/sample_*.parquet.tmp`를 씁니다.
+7. 두 raw 파일이 모두 정상 생성되면 final `.parquet`로 rename하고 `raw_samples.jsonl`에 commit record를 append합니다.
+8. `finish()` 또는 `compact()`는 raw 파일들을 part 크기 기준으로 묶고 final parquet를 씁니다. Java 구현은 raw sample을 쓸 때 trace 목록을 먼저 정렬해 두므로 compact 단계에서 별도 SQL `ORDER BY` 없이 raw 파일 목록 순서를 그대로 유지합니다.
+9. 모든 final part가 생성되면 manifest를 씁니다.
 
 flush 조건은 `max_part_samples`, `max_part_rows`, `target_part_bytes`로 제어합니다. long format에서 `max_part_rows`는 point row 기준이며 기본값은 `10_000_000`입니다.
 
-최종 point part의 물리 순서는 `(sample_id, feature_id, point_idx)`입니다. sequential builder는 sample 종료 시 sample 내부 trace를 `feature_id` 기준으로 정렬한 뒤 기록합니다.
+최종 point part의 물리 순서는 `(sample_id, feature_id, point_idx)`입니다. raw 파일도 같은 long row 모델을 사용하므로 parquet-tools, DuckDB, Polars로 중간 산출물을 직접 확인할 수 있습니다.
 
 ## Raw Builder
 
-`ArraySampleParquetRawDatasetBuilder`는 out-of-order/sample-parallel ingest를 위한 builder입니다. worker는 sample 단위 raw parquet를 만들고, supervisor가 `compact()`로 최종 `sample_parts`와 `trace_index_parts`를 생성합니다.
+Python의 `ArraySampleParquetRawDatasetBuilder`와 Java의 `ArraySampleParquetDatasetBuilder`는 out-of-order/sample-parallel ingest를 위한 raw builder입니다. worker는 sample 단위 raw parquet를 만들고, supervisor가 `compact()`로 최종 `sample_parts`와 `trace_index_parts`를 생성합니다.
 
 raw builder의 sample별 중간 파일도 final과 같은 long 의미 모델을 사용합니다.
 
@@ -150,9 +156,9 @@ feature_id int32
 trace_len  int32
 ```
 
-raw와 final 모두 categorical을 string으로 저장하므로 compact 단계에서 label scan, dictionary 생성, code 변환을 하지 않습니다. compact는 raw sample 파일들을 part 크기 기준으로 묶고, `(sample_id, feature_id, point_idx)` 순서로 정렬한 뒤 final parquet을 씁니다.
+raw와 final 모두 categorical을 string으로 저장하므로 compact 단계에서 label scan, dictionary 생성, code 변환을 하지 않습니다. compact는 raw sample 파일들을 part 크기 기준으로 묶고 final parquet을 씁니다. raw 파일은 sample close 시점에 이미 `(sample_id, feature_id, point_idx)` 순서를 만족해야 하며, Java 구현은 이를 `ArraySampleParquetOrderChecks`로 검증할 수 있습니다.
 
-현재 public API는 다음 형태입니다.
+Python public API는 다음 형태입니다.
 
 ```python
 builder = ArraySampleParquetRawDatasetBuilder.open_session(...)
@@ -165,13 +171,31 @@ with builder.sample(sample_id=17, skip_if_completed=True) as sample:
 manifest_path = builder.compact()
 ```
 
-compact 결과는 일반 `ArraySampleParquetDatasetBuilder`와 같은 long-format artifact입니다.
+Java public API는 같은 개념을 기존 class name으로 제공합니다.
+
+```java
+ArraySampleParquetBuildSessionStatus status = builder.status();
+for (Long sampleId : status.pendingSampleIds) {
+    try (ArraySampleParquetSampleContext sample = builder.sample(sampleId.longValue(), true)) {
+        if (!sample.skipped) {
+            sample.addTrace(null, "feature_a", columns);
+        }
+    }
+}
+String manifestPath = builder.compact();
+```
+
+compact 결과는 일반 reader가 읽는 long-format artifact입니다.
 
 ### Raw Builder 성능 특성
 
 raw 파일을 long point row로 저장하면 sample별 raw write 단계에서 `point_idx`, `sample_id`, `feature_id` column을 point 수만큼 더 써야 하므로 wide/list raw보다 약간 느리고 중간 파일도 조금 커질 수 있습니다. 대신 raw와 final의 의미 모델이 같아져 중간 파일을 parquet-tools나 DuckDB로 열었을 때 final point part와 같은 방식으로 디버깅할 수 있습니다.
 
-20 samples, 1200 features, trace_len 950, `time/value float64 + ch_step categorical string` 기준 로컬 측정에서는 raw write가 약 `10.42s`, compact가 약 `7.70s`였습니다. raw point files는 약 `150.24MB`, raw trace index는 약 `0.10MB`, final `sample_parts`는 약 `159.34MB`, final trace index는 약 `0.02MB`, part 수는 3개였습니다. reader가 Python list로 재조립한 조회 시간은 feature 하나 x 전체 sample 약 `130.6ms`, sample 하나 x 전체 feature 약 `709.3ms`, 16 samples x 64 features 약 `451.9ms`였습니다.
+20 samples, 1200 features, trace_len 950, `time/value float64 + ch_step categorical string` 기준 Python raw builder 로컬 측정에서는 writer-only raw write가 약 `5.81s`, compact-only가 약 `3.87s`였습니다. raw point files는 약 `150.24MB`, raw trace index는 약 `0.10MB`, final `sample_parts`는 약 `159.34MB`, final trace index는 약 `0.02MB`, part 수는 3개였습니다. reader가 Python list로 재조립한 조회 시간은 feature 하나 x 전체 sample 약 `130.6ms`, sample 하나 x 전체 feature 약 `709.3ms`, 16 samples x 64 features 약 `451.9ms`였습니다.
+
+Java raw builder도 같은 포맷을 만들며, point row 단위 `DuckDBAppender` 대신 Java 8 호환 Apache Arrow vector batch를 DuckDB `registerArrowStream(...)`으로 넘깁니다. sample close 직전에 trace 목록을 `(sample_id, feature_id)` 순서로 정렬하고, raw write와 compact 단계에서는 DuckDB SQL `ORDER BY` 없이 `COPY ... TO parquet`를 수행합니다.
+
+같은 크기 로컬 측정에서 Java 전체 build는 약 `8.2s ~ 10.0s`, raw sample close/write 합계는 약 `4.9s ~ 6.2s`, compact는 약 `2.9s ~ 3.3s`였습니다. raw point files는 약 `166.47MB`, final `sample_parts`는 약 `166.38MB`, part 수는 3개였습니다. raw sample, raw trace index, final sample part, final trace index 모두 물리 row 정렬 검사를 통과했습니다.
 
 ## Reader Algorithm
 

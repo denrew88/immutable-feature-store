@@ -3,6 +3,7 @@ package scripts;
 import fs.io.ArraySampleParquets;
 import fs.io.array_sample_parquet.ArraySampleParquetDatasetBuilder;
 import fs.io.array_sample_parquet.ArraySampleParquetManifestIO;
+import fs.io.array_sample_parquet.ArraySampleParquetOrderChecks;
 import fs.io.array_sample_parquet.ArraySampleParquetSampleContext;
 import fs.io.common.DuckDBUtils;
 import fs.model.array_sample_parquet.ArraySampleParquetBuildOptions;
@@ -15,7 +16,6 @@ import fs.model.common.StorageType;
 
 import java.io.File;
 import java.sql.Connection;
-import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -66,12 +66,17 @@ public class RunArraySampleParquetTestsMain {
                         new int[]{10, 11},
                         new String[]{"A", "B"}));
             }
+            ArraySampleParquetOrderChecks.requirePointRowsSorted(rawSamplePath(outDir, 0L));
+            ArraySampleParquetOrderChecks.requireTraceIndexRowsSorted(rawTraceIndexPath(outDir, 0L));
             try (ArraySampleParquetSampleContext ignored = builder.sample(1L)) {
                 // empty sample checkpoint
             }
+            ArraySampleParquetOrderChecks.requirePointRowsSorted(rawSamplePath(outDir, 1L));
+            ArraySampleParquetOrderChecks.requireTraceIndexRowsSorted(rawTraceIndexPath(outDir, 1L));
             ArraySampleParquetBuildSessionStatus status = builder.status();
             require(status.nextExpectedSampleId == 2L, "expected resume sample 2");
-            require(status.committedPartCount == 1, "expected one committed part");
+            require(status.completedSampleCount == 2, "expected two completed raw samples");
+            require(status.pendingSampleIds.size() == 2, "expected two pending raw samples");
         }
 
         String manifestPath;
@@ -83,6 +88,7 @@ public class RunArraySampleParquetTestsMain {
                 options)) {
             ArraySampleParquetBuildSessionStatus status = builder.status();
             require(status.nextExpectedSampleId == 2L, "resume status mismatch");
+            require(status.pendingSampleIds.contains(Long.valueOf(2L)), "sample 2 should be pending");
             try (ArraySampleParquetSampleContext sample = builder.sample("sample_000002")) {
                 sample.addTrace(null, "feature_b", columns(
                         new long[]{2L},
@@ -105,8 +111,9 @@ public class RunArraySampleParquetTestsMain {
         require(new File(manifest.parts.get(0).path).exists(), "missing point part");
         require(new File(manifest.parts.get(0).traceIndexPath).exists(), "missing trace index part");
         require(manifest.parts.get(0).rowCount == 3, "first point part should contain three point rows");
-        assertPointPartSorted(manifest.parts.get(0).path);
-        assertTraceIndexSorted(manifest.parts.get(0).traceIndexPath);
+        ArraySampleParquetOrderChecks.requirePointRowsSorted(manifest.parts.get(0).path);
+        ArraySampleParquetOrderChecks.requireTraceIndexRowsSorted(manifest.parts.get(0).traceIndexPath);
+        assertOrderCheckDetectsUnsortedPointRows(root);
         try (fs.io.array_sample_parquet.ArraySampleParquetReader reader = ArraySampleParquets.open(manifestPath)) {
             List<ArraySampleParquetTrace> traces = reader.loadTracesByKeys(
                     new String[]{"sample_000000", "sample_000001", "sample_000002", "sample_000003"},
@@ -175,51 +182,26 @@ public class RunArraySampleParquetTestsMain {
         }
     }
 
-    private static void assertPointPartSorted(String path) throws Exception {
+    private static void assertOrderCheckDetectsUnsortedPointRows(File root) throws Exception {
+        File path = new File(root, "unsorted_points.parquet");
         try (Connection conn = DuckDBUtils.connect(null);
-             Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT sample_id, feature_id, point_idx FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")")) {
-            long prevSample = Long.MIN_VALUE;
-            int prevFeature = Integer.MIN_VALUE;
-            int prevPoint = Integer.MIN_VALUE;
-            boolean first = true;
-            while (rs.next()) {
-                long sample = rs.getLong("sample_id");
-                int feature = rs.getInt("feature_id");
-                int point = rs.getInt("point_idx");
-                if (!first) {
-                    boolean sorted = sample > prevSample
-                            || (sample == prevSample && feature > prevFeature)
-                            || (sample == prevSample && feature == prevFeature && point >= prevPoint);
-                    require(sorted, "point part is not sorted by sample_id, feature_id, point_idx");
-                }
-                first = false;
-                prevSample = sample;
-                prevFeature = feature;
-                prevPoint = point;
-            }
+             Statement st = conn.createStatement()) {
+            st.execute("COPY (SELECT * FROM (VALUES "
+                    + "(0::BIGINT, 0::INTEGER, 1::INTEGER),"
+                    + "(0::BIGINT, 0::INTEGER, 0::INTEGER)"
+                    + ") AS t(sample_id, feature_id, point_idx)) TO "
+                    + DuckDBUtils.quotePath(path.getAbsolutePath())
+                    + " (FORMAT PARQUET, COMPRESSION 'uncompressed')");
         }
+        require(!ArraySampleParquetOrderChecks.pointRowsSorted(path.getAbsolutePath()), "unsorted point rows should be detected");
     }
 
-    private static void assertTraceIndexSorted(String path) throws Exception {
-        try (Connection conn = DuckDBUtils.connect(null);
-             Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT sample_id, feature_id FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")")) {
-            long prevSample = Long.MIN_VALUE;
-            int prevFeature = Integer.MIN_VALUE;
-            boolean first = true;
-            while (rs.next()) {
-                long sample = rs.getLong("sample_id");
-                int feature = rs.getInt("feature_id");
-                if (!first) {
-                    boolean sorted = sample > prevSample || (sample == prevSample && feature >= prevFeature);
-                    require(sorted, "trace index part is not sorted by sample_id, feature_id");
-                }
-                first = false;
-                prevSample = sample;
-                prevFeature = feature;
-            }
-        }
+    private static String rawSamplePath(File outDir, long sampleId) {
+        return new File(new File(outDir, "raw_samples"), String.format("sample_%012d.parquet", sampleId)).getAbsolutePath();
+    }
+
+    private static String rawTraceIndexPath(File outDir, long sampleId) {
+        return new File(new File(outDir, "raw_trace_index"), String.format("sample_%012d.parquet", sampleId)).getAbsolutePath();
     }
 
     private static void require(boolean condition, String message) {

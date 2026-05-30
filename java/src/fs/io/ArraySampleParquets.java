@@ -12,7 +12,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * array_sample_parquet public facade다.
+ * array_sample_parquet public facade.
+ *
+ * <p>{@link #openSession(String, String, List, String, ArraySampleParquetBuildOptions)}는
+ * sample별 raw parquet를 먼저 만들고 {@code finish()/compact()}에서 최종 part를 만드는
+ * resume-safe builder를 연다.</p>
  */
 public final class ArraySampleParquets {
     private ArraySampleParquets() {
