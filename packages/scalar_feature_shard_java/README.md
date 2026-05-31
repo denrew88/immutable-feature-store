@@ -67,6 +67,27 @@ dense-long shard reader입니다.
 - `loadSampleById(...)`, `loadSampleByKey(...)`
 - `topFeaturesFromStats(...)`
 
+## Config Guide
+
+처음에는 아래 설정만 넣으면 됩니다.
+
+```java
+BuildShardConfig cfg = new BuildShardConfig();
+cfg.targetShardBytes = 32L * 1024L * 1024L;
+cfg.statsYCols = java.util.Arrays.asList("y");
+```
+
+| option | 기본값 | 설명 |
+| --- | --- | --- |
+| `targetShardBytes` | 32MB | dense-long part 하나의 목표 크기입니다. part가 너무 많으면 키우고, 한 파일이 너무 크면 줄입니다. |
+| `statsYCols` | `null` | selection stats를 만들 target column 목록입니다. feature selection을 하려면 보통 `Arrays.asList("y")`를 넣습니다. |
+| `yCol` | `"y"` | `statsYCols`가 null이거나 비어 있을 때 사용할 target column입니다. |
+| `sampleKeyCol` | `"sample_key"` | sample metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `featureKeyCol` | `"feature_key"` | feature metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `sampleIdCol`, `featureIdCol`, `valueCol` | 기본 schema | raw/sample-major parquet column 이름을 바꿨을 때만 수정합니다. |
+| `denseLongRowGroupFeatures` | 128 | row group 하나에 묶을 feature 수입니다. 파일 크기와 조회 속도의 절충값입니다. |
+| `denseLongPartFeatures` | 0 | part 하나의 feature 수를 직접 고정할 때만 씁니다. 0이면 target size 기준 자동 계산입니다. |
+
 ## Example
 
 ```java

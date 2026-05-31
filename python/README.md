@@ -9,6 +9,26 @@
 - `fs.scalar`: scalar dense-long wrapper
 - `scripts/serve_feature_query_api.py`: 권장 조회 API 서버
 
+## Config Quick Start
+
+처음에는 아래 설정만 넣으면 됩니다.
+
+```python
+# scalar dense-long
+ScalarShardBuildOptions(target_shard_mb=32, stats_y_cols=("y",))
+
+# array sample parquet
+ArraySampleParquetBuildOptions(target_part_bytes=128 * 1024 * 1024, compression="zstd")
+
+# array custom binary
+ArrayBinaryBuildOptions(samples_per_block=16, target_shard_mb=32, codec="none")
+```
+
+- scalar의 `target_shard_mb`는 dense-long part 목표 크기이고, `stats_y_cols`는 selection stats를 만들 target column입니다.
+- array sample parquet의 `target_part_bytes`는 final parquet part 목표 크기입니다.
+- array custom binary의 `samples_per_block`은 feature 하나를 sample 축으로 자르는 block 크기입니다.
+- `sample_key_col`, `feature_key_col`은 metadata column 이름이 기본값과 다를 때만 바꿉니다.
+
 ## Scalar Dense-Long
 
 scalar는 `ScalarDatasetBuilder` 하나를 표준 builder로 사용합니다. sample별 raw parquet를 먼저 commit하고, 마지막에 dense-long shard로 materialize합니다. sample id 순서는 강제하지 않습니다.

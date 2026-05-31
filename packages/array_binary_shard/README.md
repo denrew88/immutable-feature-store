@@ -1,39 +1,51 @@
 # array-binary-shard
 
-dense-id 기반 array binary shard v3를 위한 Python 패키지입니다.
+`array-binary-shard`는 dense-id 기반 array custom binary shard v3를 만들고 읽는 Python 패키지입니다. 조회 속도는 빠르지만 포맷 유지보수 비용이 있으므로, viewer/debugging 목적이면 `array-sample-parquet`를 먼저 고려하십시오.
 
-## 포함 API
+## Public API
 
-- reader
-  - `open_shard(...)`
-  - `BinaryShardDataset`
-- builder
-  - `ArrayDatasetBuilder`
-  - `build_shard(...)`
-- schema helper
-  - `PointColumnSpec`
-  - `StorageType`
-  - `LogicalType`
-- metadata helper
-  - `write_sample_meta(...)`
-  - `write_feature_meta(...)`
+- `ArrayDatasetBuilder`: sample context 기반 resumable builder입니다.
+- `build_shard(...)`: bundle manifest에서 최종 custom binary shard를 만듭니다.
+- `open_shard(...)`, `BinaryShardDataset`: reader API입니다.
+- `BuildOptions`: direct builder와 `build_shard(...)`에서 쓰는 public build 설정입니다.
+- `PointColumnSpec`, `StorageType`, `LogicalType`: point schema 정의 helper입니다.
+- `write_sample_meta(...)`, `write_feature_meta(...)`: dense metadata parquet 작성 helper입니다.
 
-## 핵심 규칙
+## ID 규칙
 
 - `sample_id == sample_meta.parquet` row index
 - `feature_id == feature_meta.parquet` row index
-- builder는 **resumable session** 모델을 사용합니다.
-- 자동 chunking은 내부 구현입니다.
-- resume는 `status().next_expected_sample_id`를 기준으로 합니다.
+- key 조회가 필요하면 metadata에 `sample_key`, `feature_key` 같은 external key column을 둡니다.
+- builder는 resumable session 모델을 사용합니다.
 
-## 빌드
+## Build
 
 ```bash
 cd packages/array_binary_shard
 python -m pip wheel . -w wheelhouse --no-deps --no-build-isolation
 ```
 
-## bundle manifest에서 최종 shard 만들기
+## Config Guide
+
+처음에는 아래 설정만 넣으면 됩니다.
+
+```python
+BuildOptions(samples_per_block=16, target_shard_mb=32, codec="none")
+```
+
+| option | 기본값 | 설명 |
+| --- | --- | --- |
+| `samples_per_block` | 16 | feature 하나를 sample 축으로 자르는 block 크기입니다. 작을수록 부분 조회 낭비가 줄지만 index overhead가 늘어납니다. |
+| `target_shard_mb` | 32 | shard 하나의 목표 크기입니다. shard가 너무 많으면 키우고, 한 shard가 너무 크면 줄입니다. |
+| `n_shards` | `None` | shard 개수를 직접 고정할 때만 넣습니다. 보통 자동 분할을 둡니다. |
+| `codec` | `"none"` | payload codec입니다. 현재는 유지보수성과 속도 때문에 `"none"`을 권장합니다. |
+| `zstd_level` | 3 | `codec="zstd"`일 때만 쓰는 압축 level입니다. |
+| `sample_key_col` | `"sample_key"` | sample metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `feature_key_col` | `"feature_key"` | feature metadata의 key column 이름이 다를 때만 바꿉니다. |
+
+`ArrayBundleConfig`와 `ArrayShardConfig`는 bundle-to-shard 변환을 직접 호출할 때 쓰는 low-level 설정입니다. direct builder를 쓰는 일반 경로에서는 `BuildOptions`만 넣으면 됩니다.
+
+## Bundle Manifest에서 Shard 만들기
 
 ```python
 from array_binary_shard import BuildOptions, build_shard
@@ -51,24 +63,9 @@ manifest_path = build_shard(
 )
 ```
 
-## builder session
+## Builder Session
 
-array는 sample context 안에서 trace를 추가합니다.
-
-- `ArrayDatasetBuilder.open_session(...)`
-- `status()`
-- `sample(sample_id=...)`
-- sample context 안에서 `add_trace(...)`
-- `finish_stage()`
-- `build_shards(...)`
-
-`sample(...)`가 필요한 이유:
-
-- array 입력은 sample 하나 안에 trace 여러 개가 들어가는 형태가 자연스럽습니다.
-- builder는 이 sample 경계를 기준으로 trace 묶음을 닫고, 그 뒤에만 checkpoint commit을 할 수 있습니다.
-- 그래서 sample context는 단순 편의 API가 아니라 resume-safe array ingestion의 기본 경계입니다.
-
-예:
+array 입력은 sample 하나 안에 여러 feature trace가 들어가므로 sample context 안에서 trace를 추가합니다.
 
 ```python
 from array_binary_shard import (
@@ -121,14 +118,13 @@ session.finish_stage()
 manifest_path = session.build_shards(cleanup_bundles=False)
 ```
 
-중요:
+주의할 점:
 
-- array checkpoint는 sample 경계에서만 생성됩니다.
-- top-level `add_trace(...)`는 같은 sample 안에서만 연속 호출해야 합니다.
-- 일반적으로는 `with session.sample(...):` 안에서 trace를 모두 넣는 경로를 권장합니다.
-- `finish_bundles()`는 legacy alias로 남아 있지만 새 코드는 `finish_stage()`를 권장합니다.
+- checkpoint는 sample 경계에서만 생성됩니다.
+- 같은 sample의 trace는 `with session.sample(...):` 안에서 모두 넣는 경로를 권장합니다.
+- `finish_bundles()`는 legacy alias입니다. 새 코드는 `finish_stage()`를 사용하십시오.
 
-## reader
+## Reader
 
 ```python
 from array_binary_shard import open_shard
@@ -138,7 +134,7 @@ with open_shard(".../array_binary_shard_manifest.json") as ds:
     by_key = ds.get_trace_by_key("feature_000123", "sample_001001")
 ```
 
-## 참고
+## Reference
 
 - 포맷 상세: [../../docs/array_binary_shard_format_v3.md](../../docs/array_binary_shard_format_v3.md)
 - core 사용법: [../../python/README.md](../../python/README.md)

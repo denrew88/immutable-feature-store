@@ -95,6 +95,33 @@ Scalar:
 powershell -ExecutionPolicy Bypass -File packages\scalar_feature_shard_java\build.ps1
 ```
 
+## Config Quick Start
+
+처음에는 아래 설정만 넣으면 됩니다.
+
+```java
+// scalar dense-long
+BuildShardConfig scalarCfg = new BuildShardConfig();
+scalarCfg.targetShardBytes = 32L * 1024L * 1024L;
+scalarCfg.statsYCols = Arrays.asList("y");
+
+// array sample parquet
+ArraySampleParquetBuildOptions parquetOptions = new ArraySampleParquetBuildOptions();
+parquetOptions.targetPartBytes = 128L * 1024L * 1024L;
+parquetOptions.compression = "zstd";
+
+// array custom binary
+ArrayBinaryBuildOptions binaryOptions = new ArrayBinaryBuildOptions();
+binaryOptions.samplesPerBlock = 16;
+binaryOptions.targetShardMb = 32;
+binaryOptions.codec = "none";
+```
+
+- `sampleKeyCol`, `featureKeyCol`은 metadata key column 이름이 기본값과 다를 때만 바꿉니다.
+- scalar의 `denseLongRowGroupFeatures`는 기본 128을 권장합니다. 성능 테스트 후에만 조정하십시오.
+- array sample parquet의 `arrowBatchRows`는 Java writer의 Arrow batch 크기입니다. 메모리 피크가 크면 줄이고, batch overhead가 크면 키웁니다.
+- array custom binary는 빠른 serving용 특수 포맷입니다. 유지보수성이 중요하면 array sample parquet를 우선 사용하십시오.
+
 ## Array Public API
 
 주요 entrypoint:

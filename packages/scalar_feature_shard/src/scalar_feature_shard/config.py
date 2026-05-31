@@ -5,7 +5,12 @@ from dataclasses import dataclass
 
 @dataclass
 class ScalarShardBuildOptions:
-    """Low-level build options used by the scalar shard builder implementation."""
+    """Scalar dense-long builder의 low-level 설정.
+
+    public API에서는 보통 `scalar_feature_shard.BuildOptions`를 사용합니다. 이
+    클래스는 내부 구현과 legacy wrapper가 같은 설정을 공유하기 위한 형태입니다.
+    필드 의미는 `BuildOptions`와 같습니다.
+    """
 
     target_shard_mb: int = 32
     n_shards: int | None = None
@@ -23,7 +28,12 @@ class ScalarShardBuildOptions:
 
 @dataclass
 class SelectionConfig:
-    """Low-level selection configuration used by the incremental selector."""
+    """Incremental selector의 low-level 설정.
+
+    public API의 `SelectionOptions`와 같은 의미입니다. 내부 selector는 이 값을
+    사용해 y-candidate 필터링, feature-feature redundancy 필터링, batch 크기를
+    결정합니다.
+    """
 
     y_r2_threshold: float = 0.01
     min_non_null_y: int = 200

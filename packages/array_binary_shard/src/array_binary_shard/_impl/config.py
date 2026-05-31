@@ -3,6 +3,12 @@ from dataclasses import dataclass
 
 @dataclass
 class SelectionConfig:
+    """Scalar selection과 같은 incremental selector 기준값.
+
+    array-binary package 내부 테스트/호환 경로에서 사용합니다. 일반 array custom
+    binary build에는 직접 필요하지 않습니다.
+    """
+
     y_r2_threshold: float = 0.01
     min_non_null_y: int = 200
     ff_r2_threshold: float = 0.9
@@ -19,6 +25,12 @@ class SelectionConfig:
 
 @dataclass
 class BuildShardConfig:
+    """Legacy scalar shard build 설정.
+
+    array-binary package 내부 호환 경로에 남아 있는 설정입니다. 새 array build에는
+    `ArrayShardConfig` 또는 public `BuildOptions`를 사용하십시오.
+    """
+
     n_shards: int = 16
     feature_id_col: str = "feature_id"
     value_col: str = "value"
@@ -31,12 +43,29 @@ class BuildShardConfig:
 
 @dataclass
 class ArrayBundleConfig:
+    """Array custom binary 중간 bundle flush 설정.
+
+    bundle 파일이 너무 많이 생기면 값을 키우고, bundle 생성 중 메모리 피크가
+    크면 값을 줄입니다.
+    """
+
     max_bundle_rows: int = 10000
     max_bundle_bytes: int = 128 * 1024 * 1024
 
 
 @dataclass
 class ArrayShardConfig:
+    """Array custom binary shard materialize 설정.
+
+    Attributes:
+        samples_per_block: feature 하나를 sample 축으로 자르는 block 크기.
+        target_shard_bytes: shard 하나의 목표 크기(byte).
+        n_shards: 명시 shard 개수. 0이면 목표 크기 기준 자동 분할.
+        row_group_size: estimate/metadata parquet 작성 시 사용하는 row group 기준.
+        use_tmp_spill: 큰 입력을 정렬할 때 임시 spill 파일을 사용할지 여부.
+        spill_bucket_target_bytes: spill bucket 하나의 목표 크기(byte).
+    """
+
     samples_per_block: int = 8
     target_shard_bytes: int = 256 * 1024 * 1024
     n_shards: int = 0
@@ -47,6 +76,12 @@ class ArrayShardConfig:
 
 @dataclass
 class ArraySyntheticConfig:
+    """Array synthetic data 생성 설정.
+
+    저장 포맷이 아니라 테스트 데이터의 sample/feature 수, trace 길이, missing 비율,
+    nonfinite 비율, seed를 제어합니다.
+    """
+
     n_samples: int = 1000
     n_features: int = 256
     n_latent_groups: int = 12

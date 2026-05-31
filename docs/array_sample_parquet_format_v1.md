@@ -183,6 +183,45 @@ for (Long sampleId : status.pendingSampleIds) {
 String manifestPath = builder.finish();
 ```
 
+## Config Guide
+
+처음 사용하는 경우 `array_sample_parquet` build에는 아래 정도만 넣으면 됩니다.
+
+```python
+ArraySampleParquetBuildOptions(
+    target_part_bytes=128 * 1024 * 1024,
+    compression="zstd",
+)
+```
+
+Java도 같은 의미입니다.
+
+```java
+ArraySampleParquetBuildOptions options = new ArraySampleParquetBuildOptions();
+options.targetPartBytes = 128L * 1024L * 1024L;
+options.compression = "zstd";
+```
+
+### ArraySampleParquetBuildOptions
+
+| Python | Java | 기본값 | 언제 바꾸는가 |
+| --- | --- | --- | --- |
+| `target_part_bytes` | `targetPartBytes` | 128MB | final `sample_parts` 하나의 목표 크기입니다. part가 너무 많으면 키우고, 한 part가 너무 크면 줄입니다. |
+| `max_part_rows` | `maxPartRows` | 10,000,000 | point row 수 기준 안전장치입니다. trace가 매우 길어 part가 과도하게 커질 때 줄입니다. |
+| `max_part_samples` | `maxPartSamples` | 0 | sample 수 기준 안전장치입니다. 0이면 sample 수로는 제한하지 않습니다. 보통 그대로 둡니다. |
+| `compression` | `compression` | `"zstd"` | parquet compression입니다. 디버깅/속도 확인에는 `"none"`, 저장 용량에는 `"zstd"`를 씁니다. |
+| `sample_key_col` | `sampleKeyCol` | `"sample_key"` | sample metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `feature_key_col` | `featureKeyCol` | `"feature_key"` | feature metadata의 key column 이름이 다를 때만 바꿉니다. |
+| 없음 | `duckdbThreads` | 0 | Java DuckDB writer thread 수입니다. 0이면 DuckDB 기본값입니다. 병목이 확인됐을 때만 조정합니다. |
+| 없음 | `arrowBatchRows` | 262,144 | Java raw sample writer가 DuckDB로 넘기는 Arrow batch의 최대 point row 수입니다. 값을 키우면 batch overhead는 줄지만 off-heap memory 사용량이 커집니다. |
+
+권장값:
+
+- 일반 viewer/debugging dataset: `target_part_bytes=128MB`, `compression="zstd"`
+- trace가 길고 sample 하나가 큰 경우: `max_part_rows`를 낮춰 part 폭증이나 메모리 피크를 방지합니다.
+- sample 단위로 part를 강하게 나누고 싶을 때만 `max_part_samples`를 양수로 둡니다.
+- Java에서 `arrowBatchRows`는 성능 문제가 실제로 보일 때만 바꿉니다. 기본값은 대량 point row write 기준 절충값입니다.
+
 ## Reader Algorithm
 
 reader는 manifest를 읽고 sample 범위가 겹치는 candidate part만 선택합니다.

@@ -48,6 +48,32 @@ scalar_stage/
 
 `raw_samples.jsonl`에 기록되고 실제 parquet 파일도 존재하는 sample만 완료로 인정합니다. 중간에 중단되면 같은 `out_dir`로 session을 다시 열고 `pending_sample_ids()`만 처리하면 됩니다.
 
+## Config Guide
+
+처음에는 아래 설정만 넣으면 됩니다.
+
+```python
+BuildOptions(target_shard_mb=32, stats_y_cols=("y",))
+```
+
+| option | 기본값 | 설명 |
+| --- | --- | --- |
+| `target_shard_mb` | 32 | dense-long part 하나의 목표 크기입니다. part가 너무 많으면 키우고, 한 파일이 너무 크면 줄입니다. |
+| `stats_y_cols` | `None` | selection stats를 만들 target column 목록입니다. feature selection을 하려면 보통 `("y",)`를 넣습니다. |
+| `y_col` | `"y"` | `stats_y_cols`를 생략했을 때 사용할 단일 target column입니다. |
+| `sample_key_col` | `"sample_key"` | sample metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `feature_key_col` | `"feature_key"` | feature metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `sample_id_col`, `feature_id_col`, `value_col` | 기본 schema | raw/sample-major parquet column 이름을 바꿨을 때만 수정합니다. |
+| `values_dtype`, `valid_dtype` | `float64`, `uint8` | dense-long 표준 타입입니다. 보통 바꾸지 않습니다. |
+
+selection은 보통 아래처럼 씁니다.
+
+```python
+SelectionOptions(y_col="y", top_m=256)
+```
+
+`top_m`은 최종 선택 개수입니다. `y_r2_threshold`는 y와의 최소 R^2, `ff_r2_threshold`는 이미 선택된 feature와의 중복 제거 기준입니다. 나머지 batch/cap 계열 값은 후보가 너무 많거나 selection 속도 병목이 보일 때만 조정합니다.
+
 ## Dense-Long Shard
 
 최종 part parquet는 모든 `(feature_id, sample_id)` 조합을 row로 갖습니다.

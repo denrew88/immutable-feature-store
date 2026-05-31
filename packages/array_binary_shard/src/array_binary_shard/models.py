@@ -6,16 +6,20 @@ from typing import Optional, Sequence
 
 @dataclass(frozen=True)
 class BuildOptions:
-    """Options controlling bundle-to-binary-shard conversion.
+    """Array custom binary build 설정.
+
+    bundle 또는 direct builder stage에서 feature-major custom binary shard를 만들 때
+    사용합니다. 처음에는 `samples_per_block`, `target_shard_mb`, `codec`만
+    지정하면 됩니다.
 
     Attributes:
-        target_shard_mb: Preferred maximum shard size used for feature partitioning.
-        samples_per_block: Number of samples packed into one logical block.
-        n_shards: Optional explicit shard count override. `None` means target-size partitioning.
-        codec: Payload codec name. The current recommended default is `none`.
-        zstd_level: Compression level used only when `codec='zstd'`.
-        sample_key_col: Sample metadata column containing external keys.
-        feature_key_col: Feature metadata column containing external keys.
+        target_shard_mb: shard 하나의 목표 크기(MB).
+        samples_per_block: feature 하나를 sample 축으로 자르는 block 크기.
+        n_shards: 명시적인 shard 개수. `None`이면 목표 크기 기준 자동 분할입니다.
+        codec: payload codec. 현재 권장 기본값은 `none`입니다.
+        zstd_level: `codec='zstd'`일 때만 쓰는 압축 level.
+        sample_key_col: sample metadata의 external key column.
+        feature_key_col: feature metadata의 external key column.
     """
 
     target_shard_mb: int = 32

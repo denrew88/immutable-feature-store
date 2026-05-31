@@ -66,6 +66,18 @@ mask        UInt8
 value       Float64
 ```
 
+## Config Quick Start
+
+처음에는 아래 설정만 기억하면 됩니다. 자세한 필드 설명은 각 포맷 문서의 `Config Guide`를 보십시오.
+
+| 포맷 | 최소 권장 설정 | 설명 |
+| --- | --- | --- |
+| scalar dense-long | `BuildOptions(target_shard_mb=32, stats_y_cols=("y",))` | `target_shard_mb`는 part 목표 크기, `stats_y_cols`는 selection stats target입니다. |
+| array sample parquet | `ArraySampleParquetBuildOptions(target_part_bytes=128 * 1024 * 1024, compression="zstd")` | viewer/debugging용 표준 array parquet입니다. part 크기와 압축만 주면 됩니다. |
+| array custom binary | `ArrayBinaryBuildOptions(samples_per_block=16, target_shard_mb=32, codec="none")` | 빠른 feature-major serving용 특수 포맷입니다. 유지보수성이 중요하면 parquet를 우선 사용하십시오. |
+
+공통적으로 `sample_key_col`, `feature_key_col`은 metadata column 이름이 기본값(`sample_key`, `feature_key`)과 다를 때만 바꾸면 됩니다.
+
 ## Python Server
 
 권장 조회 서버:

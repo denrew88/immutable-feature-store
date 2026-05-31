@@ -225,6 +225,72 @@ try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
 }
 ```
 
+## Config Guide
+
+처음 사용하는 경우 scalar dense-long build에는 아래 정도만 넣으면 됩니다.
+
+```python
+BuildOptions(
+    target_shard_mb=32,
+    stats_y_cols=("y",),
+)
+```
+
+Java에서는 같은 의미로 아래처럼 씁니다.
+
+```java
+BuildShardConfig cfg = new BuildShardConfig();
+cfg.targetShardBytes = 32L * 1024L * 1024L;
+cfg.statsYCols = java.util.Arrays.asList("y");
+```
+
+### BuildOptions / BuildShardConfig
+
+| Python | Java | 기본값 | 언제 바꾸는가 |
+| --- | --- | --- | --- |
+| `target_shard_mb` | `targetShardBytes` | 32MB | dense-long part 파일이 너무 많으면 키우고, 한 파일이 너무 커서 query/build 부담이 크면 줄입니다. |
+| `stats_y_cols` | `statsYCols` | `None` / `null` | feature selection을 할 target column 목록입니다. 보통 `("y",)` 또는 `["y"]`를 넣습니다. |
+| `y_col` | `yCol` | `"y"` | `stats_y_cols`를 생략했을 때 사용할 단일 target column입니다. |
+| `sample_key_col` | `sampleKeyCol` | `"sample_key"` | sample metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `feature_key_col` | `featureKeyCol` | `"feature_key"` | feature metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `feature_id_col` | `featureIdCol` | `"feature_id"` | raw/sample-major 입력 schema가 기본값과 다를 때만 바꿉니다. |
+| `sample_id_col` | `sampleIdCol` | `"sample_id"` | raw/sample-major 입력 schema가 기본값과 다를 때만 바꿉니다. |
+| `value_col` | `valueCol` | `"value"` | raw/sample-major 입력의 value column 이름이 다를 때만 바꿉니다. |
+| `path_col` | `pathCol` | `"sample_path"` | sample-major manifest/table의 path column 이름이 다를 때만 바꿉니다. |
+| `values_dtype` | `valuesType` | `float64` / `FLOAT64` | 현재 dense-long 표준은 float64입니다. 특별한 이유가 없으면 바꾸지 않습니다. |
+| `valid_dtype` | `validType` | `uint8` / `UINT8` | mask column 타입입니다. 특별한 이유가 없으면 바꾸지 않습니다. |
+| 없음 | `denseLongRowGroupFeatures` | 128 | parquet row group 하나에 묶을 feature 수입니다. query pruning과 파일 크기의 절충값입니다. |
+| 없음 | `denseLongPartFeatures` | 0 | part 하나의 feature 수를 강제로 고정할 때만 씁니다. 0이면 target size 기준 자동 계산입니다. |
+
+권장값:
+
+- 일반 build: `target_shard_mb=32`, `stats_y_cols=("y",)`
+- selection stats가 필요 없으면: `stats_y_cols=()`, 단 현재 Java는 비어 있으면 `yCol` 하나를 만들기 때문에 y column이 없는 metadata에서는 stats 관련 설정을 조심해야 합니다.
+- sample/feature key 이름이 기본값이면: `sample_key_col`, `feature_key_col`은 건드리지 않습니다.
+- row group tuning은 성능 테스트 후에만 합니다. 현재 기본 128은 파일 크기, build 시간, 조회 시간을 함께 본 절충값입니다.
+
+### SelectionOptions / SelectionConfig
+
+feature selection은 보통 아래처럼 `y_col`과 `top_m`만 지정합니다.
+
+```python
+SelectionOptions(y_col="y", top_m=256)
+```
+
+| Python | Java | 기본값 | 의미 |
+| --- | --- | --- | --- |
+| `y_col` | 별도 인자/통계 이름 | `"y"` | 사용할 `selection_stats/<y>.parquet` target입니다. |
+| `top_m` | `topM` | 100 | 최종 선택할 feature 수입니다. |
+| `y_r2_threshold` | `yR2Threshold` | 0.01 | y와의 최소 R^2입니다. 낮을수록 후보가 많아집니다. |
+| `min_non_null_y` | `minNonNullY` | 200 | feature와 y가 동시에 present인 sample 최소 개수입니다. |
+| `ff_r2_threshold` | `ffR2Threshold` | 0.9 | 이미 선택된 feature와 너무 비슷한 후보를 제거하는 기준입니다. |
+| `min_non_null_pair` | `minNonNullPair` | 200 | feature-feature R^2 계산에 필요한 공통 present sample 수입니다. |
+| `initial_cap` | `initialCap` | 2048 | 처음 가져올 후보 수입니다. |
+| `max_step` | `maxStep` | 4096 | 후보가 부족할 때 한 번에 늘리는 최대 후보 수입니다. |
+| `batch_size` | `batchSize` | Python 512 / Java 1024 | 후보 feature를 reader에서 읽는 batch 크기입니다. |
+| `max_gap` | `maxGap` | Python 64 / Java 0 | 추가 후보 탐색 중 개선 없이 허용할 gap입니다. 0은 제한 없음으로 취급합니다. |
+| `max_candidates` | `maxCandidates` | 0 | 후보 수 상한입니다. 0이면 제한하지 않습니다. |
+
 ## Java Builder Value API
 
 Java가 외부 시스템에서 값을 받아 builder에 쓰는 경우, 예제 서버는 `python/scripts/serve_synthetic_value_api.py`를 사용합니다. 이 서버는 최종 dense-long shard 조회 API가 아니라, Java builder가 sample별 scalar 값을 받아오기 위한 value source 예제입니다.

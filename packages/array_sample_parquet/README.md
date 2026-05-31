@@ -57,6 +57,28 @@ commit 규칙:
 
 part flush 기준은 `target_part_bytes`, `max_part_rows`, `max_part_samples`입니다. 기본적으로 sample 개수보다 추정 byte와 row 수를 우선합니다.
 
+## Config Guide
+
+처음에는 아래 설정만 넣으면 됩니다.
+
+```python
+ArraySampleParquetBuildOptions(
+    target_part_bytes=128 * 1024 * 1024,
+    compression="zstd",
+)
+```
+
+| option | 기본값 | 설명 |
+| --- | --- | --- |
+| `target_part_bytes` | 128MB | final part 하나의 목표 크기입니다. part가 너무 많으면 키우고, 한 part가 너무 크면 줄입니다. |
+| `max_part_rows` | 10,000,000 | point row 수 기준 안전장치입니다. trace가 매우 길 때 줄일 수 있습니다. |
+| `max_part_samples` | 0 | part 하나의 최대 sample 수입니다. 0이면 sample 수로 제한하지 않습니다. |
+| `compression` | `"zstd"` | parquet compression입니다. 디버깅/속도 확인은 `"none"`, 저장 용량은 `"zstd"`를 씁니다. |
+| `sample_key_col` | `"sample_key"` | sample metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `feature_key_col` | `"feature_key"` | feature metadata의 key column 이름이 다를 때만 바꿉니다. |
+
+기본 분할 기준은 sample 수가 아니라 추정 byte와 point row 수입니다. sample마다 trace 길이와 feature 수가 달라질 수 있기 때문입니다.
+
 ## Example
 
 ```python

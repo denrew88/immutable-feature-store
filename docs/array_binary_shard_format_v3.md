@@ -998,7 +998,64 @@ array binary shard 조회는 기존 통합 서버 `python/scripts/serve_array_ap
 
 ---
 
-## 12. Validation Checklist
+## 12. Config Guide
+
+array custom binary는 빠른 feature-major serving을 위한 특수 경로입니다. 처음 사용하는 경우에는 아래 public option만 지정하면 됩니다.
+
+```python
+ArrayBinaryBuildOptions(
+    samples_per_block=16,
+    target_shard_mb=32,
+    codec="none",
+)
+```
+
+Java도 같은 의미입니다.
+
+```java
+ArrayBinaryBuildOptions options = new ArrayBinaryBuildOptions();
+options.samplesPerBlock = 16;
+options.targetShardMb = 32;
+options.codec = "none";
+```
+
+### ArrayBinaryBuildOptions
+
+| Python | Java | 기본값 | 언제 바꾸는가 |
+| --- | --- | --- | --- |
+| `target_shard_mb` | `targetShardMb` | 32MB | shard 하나의 목표 크기입니다. shard 파일이 너무 많으면 키우고, 한 shard가 너무 크면 줄입니다. |
+| `samples_per_block` | `samplesPerBlock` | Python 16 / low-level 8 | feature 하나를 sample 축으로 자르는 block 크기입니다. 작을수록 부분 sample 조회 낭비가 줄지만 index/header overhead가 늘어납니다. |
+| `n_shards` | `nShards` | `None` / `null` | shard 개수를 직접 고정할 때만 씁니다. 보통 목표 크기 기준 자동 분할을 둡니다. |
+| `codec` | `codec` | `"none"` | block payload codec입니다. 현재는 유지보수성과 속도 때문에 `"none"`을 기본 권장합니다. |
+| `zstd_level` | `zstdLevel` | 3 | `codec="zstd"`일 때만 쓰는 압축 level입니다. |
+| `sample_key_col` | `sampleKeyCol` | `"sample_key"` | sample metadata의 external key column 이름이 다를 때만 바꿉니다. |
+| `feature_key_col` | `featureKeyCol` | `"feature_key"` | feature metadata의 external key column 이름이 다를 때만 바꿉니다. |
+
+### ArrayBundleConfig
+
+bundle은 custom binary shard를 만들기 전 중간 parquet 묶음입니다. direct builder를 쓰면 대부분 기본값으로 충분합니다.
+
+| Python | Java | 기본값 | 언제 바꾸는가 |
+| --- | --- | --- | --- |
+| `max_bundle_rows` | `maxBundleRows` | 10,000 | bundle 하나에 넣을 trace row 수입니다. bundle 파일이 너무 많으면 키웁니다. |
+| `max_bundle_bytes` | `maxBundleBytes` | 128MB | bundle 하나의 목표 크기입니다. bundle 생성 중 메모리 피크가 크면 줄입니다. |
+
+### ArrayShardConfig
+
+bundle manifest에서 custom binary shard를 직접 만들 때 쓰는 low-level 설정입니다. direct builder에서는 `ArrayBinaryBuildOptions`에서 대부분 자동 변환됩니다.
+
+| Python | Java | 기본값 | 언제 바꾸는가 |
+| --- | --- | --- | --- |
+| `samples_per_block` | `samplesPerBlock` | 8 또는 16 | block 크기입니다. public builder에서는 보통 16을 씁니다. |
+| `target_shard_bytes` | `targetShardBytes` | 256MB 또는 32MB | shard 목표 크기입니다. public builder에서는 `target_shard_mb`에서 변환됩니다. |
+| `n_shards` | `nShards` | 0 | 0이면 목표 크기 기준 자동 분할입니다. 직접 shard 수를 맞춰야 할 때만 양수로 둡니다. |
+| `row_group_size` | 없음 | 64 | feature estimate용 parquet row group 기준입니다. 일반 사용자는 바꾸지 않습니다. |
+| `use_tmp_spill` | 없음 | false | bundle이 매우 커서 정렬 메모리 피크가 부담될 때만 켭니다. |
+| `spill_bucket_target_bytes` | 없음 | 8MB | spill bucket 목표 크기입니다. `use_tmp_spill=true`일 때만 의미가 있습니다. |
+
+---
+
+## 13. Validation Checklist
 
 독립 reader를 구현할 때 최소한 아래 검증은 하는 것이 좋다.
 
@@ -1047,7 +1104,7 @@ array binary shard 조회는 기존 통합 서버 `python/scripts/serve_array_ap
 
 ---
 
-## 13. 요약
+## 14. 요약
 
 v3를 한 문장으로 정리하면:
 

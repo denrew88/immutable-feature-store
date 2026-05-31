@@ -66,6 +66,27 @@ raw sample write는 Java 8 호환 Apache Arrow vector batch를 DuckDB에 `regist
 
 `ArraySampleParquetBuildOptions.arrowBatchRows`는 DuckDB로 넘기는 Arrow record batch의 최대 point row 수입니다. 기본값은 `262144`이며, 값을 키우면 batch 수가 줄지만 sample close 시점의 off-heap buffer 사용량이 커집니다.
 
+## Config Guide
+
+처음에는 아래 설정만 넣으면 됩니다.
+
+```java
+ArraySampleParquetBuildOptions options = new ArraySampleParquetBuildOptions();
+options.targetPartBytes = 128L * 1024L * 1024L;
+options.compression = "zstd";
+```
+
+| option | 기본값 | 설명 |
+| --- | --- | --- |
+| `targetPartBytes` | 128MB | final sample part 하나의 목표 크기입니다. part가 너무 많으면 키우고, 한 part가 너무 크면 줄입니다. |
+| `maxPartRows` | 10,000,000 | point row 수 기준 안전장치입니다. trace가 매우 길 때 줄일 수 있습니다. |
+| `maxPartSamples` | 0 | part 하나의 최대 sample 수입니다. 0이면 sample 수로 제한하지 않습니다. |
+| `compression` | `"zstd"` | parquet compression입니다. 디버깅/속도 확인은 `"none"`, 저장 용량은 `"zstd"`를 씁니다. |
+| `sampleKeyCol` | `"sample_key"` | sample metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `featureKeyCol` | `"feature_key"` | feature metadata의 key column 이름이 다를 때만 바꿉니다. |
+| `duckdbThreads` | 0 | DuckDB writer thread 수입니다. 0이면 DuckDB 기본값입니다. |
+| `arrowBatchRows` | 262,144 | Java raw sample writer가 DuckDB로 넘기는 Arrow batch의 최대 point row 수입니다. 크면 batch overhead는 줄지만 off-heap memory 사용량이 커집니다. |
+
 ## Build
 
 ```powershell

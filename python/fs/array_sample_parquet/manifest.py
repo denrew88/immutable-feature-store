@@ -26,10 +26,15 @@ class ArraySampleParquetBuildOptions:
     결정합니다. `max_part_samples`는 필요할 때만 거는 안전 제한입니다.
     """
 
+    # final part 하나의 목표 크기(byte). 처음에는 기본값을 쓰고, part가 너무 많으면 키웁니다.
     target_part_bytes: int = 128 * 1024 * 1024
+    # final point part 하나에 넣을 최대 point row 수입니다.
     max_part_rows: int = 10_000_000
+    # final part 하나에 넣을 최대 sample 수입니다. 0이면 sample 수로는 제한하지 않습니다.
     max_part_samples: int = 0
+    # parquet compression입니다. 일반 사용은 "zstd", 디버깅/속도 확인은 "none"을 쓸 수 있습니다.
     compression: str = "zstd"
+    # sample/feature metadata에서 external key로 사용할 column 이름입니다.
     sample_key_col: str = DEFAULT_SAMPLE_KEY_COL
     feature_key_col: str = DEFAULT_FEATURE_KEY_COL
 
