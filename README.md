@@ -124,6 +124,9 @@ Scalar shard 특징:
 - [python/scripts/serve_feature_query_api.py](python/scripts/serve_feature_query_api.py)
   - 현재 Python wheel/package API 기준의 권장 조회 서버입니다.
   - scalar blob shard, scalar dense-long shard, array sample parquet를 조회합니다.
+- [python/scripts/serve_synthetic_value_api.py](python/scripts/serve_synthetic_value_api.py)
+  - Java builder가 sample/feature 단위 값을 HTTP로 받아 shard/part를 생성하는 ingestion source 예제입니다.
+  - `/scalar/values`, `/array/traces`를 제공합니다.
 - [python/scripts/serve_array_api.py](python/scripts/serve_array_api.py)
   - 기존 core `python/fs` 구현까지 포함한 legacy/통합 서버입니다.
 
@@ -144,6 +147,14 @@ Scalar shard 특징:
 
 ```powershell
 python python\scripts\serve_feature_query_api.py --host 127.0.0.1 --port 8000
+```
+
+synthetic value source 예제:
+
+```powershell
+python python\scripts\serve_synthetic_value_api.py --host 127.0.0.1 --port 8010
+java -cp "java\lib\*;java\out" scripts.BuildScalarDenseLongFromValueApiMain --base-url http://127.0.0.1:8010 --sample-meta C:\data\sample_meta.parquet --feature-meta C:\data\feature_meta.parquet --out-dir C:\data\scalar_from_api
+java -cp "java\lib\*;java\out" scripts.BuildArraySampleParquetFromValueApiMain --base-url http://127.0.0.1:8010 --sample-meta C:\data\sample_meta.parquet --feature-meta C:\data\feature_meta.parquet --out-dir C:\data\array_from_api
 ```
 
 ## Python 패키지

@@ -289,3 +289,28 @@ Python 패키지 예제:
 
 - [../packages/array_sample_parquet/examples/build_array_sample_parquet_example.py](../packages/array_sample_parquet/examples/build_array_sample_parquet_example.py)
 - [../packages/scalar_feature_shard/examples/build_scalar_dense_long_example.py](../packages/scalar_feature_shard/examples/build_scalar_dense_long_example.py)
+
+## Synthetic Value API
+
+`python/scripts/serve_synthetic_value_api.py`는 shard reader가 아니라 ingestion source 예제입니다.
+sample metadata와 feature metadata는 이미 parquet로 존재한다고 가정하고, Java builder가 필요한 값만 HTTP로 요청합니다.
+
+실행:
+
+```powershell
+python python\scripts\serve_synthetic_value_api.py --host 127.0.0.1 --port 8010
+```
+
+Scalar endpoint:
+
+- `POST /scalar/values`
+- 요청은 `sample_meta_path`, `feature_meta_path`, `sample_id` 또는 `sample_key`, `feature_ids` 또는 `feature_keys` 중 하나를 받습니다.
+- 응답은 `values: [{feature_id, feature_key, present, value}]` 형태입니다.
+
+Array endpoint:
+
+- `POST /array/traces`
+- 요청 규칙은 scalar와 같고, 응답은 `traces: [{feature_id, feature_key, present, trace_len, columns}]` 형태입니다.
+- 기본 point schema는 `time: float64`, `value: float64`, `ch_step: string categorical`입니다.
+
+이 서버는 deterministic synthetic 값을 만들기 때문에 같은 metadata, seed, sample/feature id 조합이면 항상 같은 값을 반환합니다.

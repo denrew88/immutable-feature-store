@@ -90,7 +90,9 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\synth\SyntheticGenera
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\validate\Validation.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BenchmarkArrayReaderModesMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BenchmarkArraySampleParquetJavaMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildArraySampleParquetFromValueApiMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildArrayShardsMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildScalarDenseLongFromValueApiMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildShardsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateArrayShardTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateArraySynthMain.java

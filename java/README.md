@@ -510,3 +510,37 @@ java -cp "java\lib\*;java\out" scripts.RunArraySampleParquetTestsMain
 
 - [docs/array_sample_parquet_format_v1.md](../docs/array_sample_parquet_format_v1.md)
 - [packages/array_sample_parquet_java/README.md](../packages/array_sample_parquet_java/README.md)
+
+## Python Value API 기반 생성 예제
+
+실제 데이터 값은 Python webservice에서 받고, Java는 metadata와 builder만 사용해서 전체 산출물을 만드는 예제입니다.
+sample metadata와 feature metadata는 이미 존재한다고 가정합니다.
+
+먼저 Python value API를 실행합니다.
+
+```powershell
+python python\scripts\serve_synthetic_value_api.py --host 127.0.0.1 --port 8010
+```
+
+Scalar dense-long shard 생성:
+
+```powershell
+java -cp "java\lib\*;java\out" scripts.BuildScalarDenseLongFromValueApiMain `
+  --base-url http://127.0.0.1:8010 `
+  --sample-meta C:\data\sample_meta.parquet `
+  --feature-meta C:\data\feature_meta.parquet `
+  --out-dir C:\data\scalar_from_api
+```
+
+Array sample parquet 생성:
+
+```powershell
+java -cp "java\lib\*;java\out" scripts.BuildArraySampleParquetFromValueApiMain `
+  --base-url http://127.0.0.1:8010 `
+  --sample-meta C:\data\sample_meta.parquet `
+  --feature-meta C:\data\feature_meta.parquet `
+  --out-dir C:\data\array_sample_parquet_from_api
+```
+
+두 스크립트 모두 `feature_ids`를 chunk로 나누어 Python API에 요청합니다.
+`--feature-chunk-size`와 `--seed`를 바꾸면 요청 단위와 synthetic 값 seed를 조정할 수 있습니다.
