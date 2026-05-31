@@ -135,6 +135,7 @@ public class ScalarPackageExample {
 jar classpath만으로 sample meta, feature meta, raw sample stage, dense-long scalar shard를 만드는 예제:
 
 - `packages/scalar_feature_shard_java/examples/BuildScalarFeatureShardWithJarExample.java`
+- `packages/scalar_feature_shard_java/examples/BuildScalarDenseLongFromValueApiWithJarExample.java`: 이미 존재하는 sample/feature meta를 기준으로 Python value API를 호출해서 dense-long shard를 생성합니다.
 
 컴파일:
 
@@ -147,6 +148,16 @@ New-Item -ItemType Directory -Force packages\scalar_feature_shard_java\examples\
   packages\scalar_feature_shard_java\examples\BuildScalarFeatureShardWithJarExample.java
 ```
 
+Python value API 호출 예제를 컴파일하려면 마지막 파일명만 바꾸면 됩니다.
+
+```powershell
+& "C:\Program Files\Java\jdk-1.8\bin\javac.exe" `
+  -encoding UTF-8 `
+  -cp "packages\scalar_feature_shard_java\dist\scalar-feature-shard-java-0.1.0.jar;java\lib\*" `
+  -d packages\scalar_feature_shard_java\examples\out `
+  packages\scalar_feature_shard_java\examples\BuildScalarDenseLongFromValueApiWithJarExample.java
+```
+
 실행:
 
 ```powershell
@@ -154,6 +165,67 @@ New-Item -ItemType Directory -Force packages\scalar_feature_shard_java\examples\
   -cp "packages\scalar_feature_shard_java\examples\out;packages\scalar_feature_shard_java\dist\scalar-feature-shard-java-0.1.0.jar;java\lib\*" `
   BuildScalarFeatureShardWithJarExample
 ```
+
+Python value API 호출 예제는 `python/scripts/serve_synthetic_value_api.py`가 먼저 떠 있어야 하며, sample meta와 feature meta는 이미 생성되어 있어야 합니다.
+
+```powershell
+& "C:\Program Files\Java\jdk-1.8\bin\java.exe" `
+  -cp "packages\scalar_feature_shard_java\examples\out;packages\scalar_feature_shard_java\dist\scalar-feature-shard-java-0.1.0.jar;java\lib\*" `
+  BuildScalarDenseLongFromValueApiWithJarExample `
+  --base-url http://127.0.0.1:8010 `
+  --sample-meta data\sample_meta.parquet `
+  --feature-meta data\feature_meta.parquet `
+  --out-dir data\scalar_dense_long_from_api
+```
+
+API 서버 실행:
+
+```powershell
+python python\scripts\serve_synthetic_value_api.py --host 127.0.0.1 --port 8010
+```
+
+`BuildScalarDenseLongFromValueApiWithJarExample`는 sample 하나와 feature id 묶음마다 `POST /scalar/values`를 호출합니다. 요청은 `sample_id` 또는 `sample_key` 중 하나, `feature_ids` 또는 `feature_keys` 중 하나만 허용합니다.
+
+요청 예:
+
+```json
+{
+  "sample_meta_path": "data/sample_meta.parquet",
+  "feature_meta_path": "data/feature_meta.parquet",
+  "sample_id": 0,
+  "feature_ids": [0, 1, 2],
+  "seed": 7,
+  "missing_rate": 0.1,
+  "n_latent_groups": 16,
+  "noise_scale": 0.25
+}
+```
+
+응답 예:
+
+```json
+{
+  "sample_id": 0,
+  "sample_key": "sample_000000",
+  "feature_count": 3,
+  "values": [
+    {
+      "feature_id": 0,
+      "feature_key": "feature_000000",
+      "present": true,
+      "value": 1.23
+    },
+    {
+      "feature_id": 1,
+      "feature_key": "feature_000001",
+      "present": false,
+      "value": null
+    }
+  ]
+}
+```
+
+Java 예제는 `present=true`이고 `value`가 null이 아닌 항목만 raw sample stage에 씁니다. 누락된 값은 dense-long shard 생성 시 `mask=0`으로 채워집니다.
 
 ## Tests
 

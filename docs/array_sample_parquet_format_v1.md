@@ -194,6 +194,85 @@ reader는 manifest를 읽고 sample 범위가 겹치는 candidate part만 선택
 5. trace index에는 있지만 point row가 없는 trace는 `trace_len=0` empty trace로 반환합니다.
 6. `include_missing=true`이면 명시된 sample-feature 조합 중 trace index에 없는 것을 `present=false`로 추가합니다.
 
+## Java Builder Value API
+
+Java가 외부 시스템에서 값을 받아 builder에 쓰는 경우, 예제 서버는 `python/scripts/serve_synthetic_value_api.py`를 사용합니다. 이 서버는 최종 shard 조회 API가 아니라, Java builder가 sample별 trace 값을 받아오기 위한 value source 예제입니다.
+
+실행:
+
+```powershell
+python python\scripts\serve_synthetic_value_api.py --host 127.0.0.1 --port 8010
+```
+
+### `POST /array/traces`
+
+요청은 `sample_id` 또는 `sample_key` 중 하나만, `feature_ids` 또는 `feature_keys` 중 하나만 받습니다. `sample_meta_path`와 `feature_meta_path`는 dense id와 key를 해석하기 위해 필요합니다.
+
+주요 요청 필드:
+
+| field | type | required | 설명 |
+| --- | --- | --- | --- |
+| `sample_meta_path` | string | yes | `sample_id`와 `sample_key`가 들어 있는 metadata parquet |
+| `feature_meta_path` | string | yes | `feature_id`와 `feature_key`가 들어 있는 metadata parquet |
+| `sample_id` | int | one of | 조회할 sample dense id |
+| `sample_key` | string | one of | 조회할 sample external key |
+| `feature_ids` | int[] | one of | 조회할 feature dense id 목록 |
+| `feature_keys` | string[] | one of | 조회할 feature external key 목록 |
+| `sample_key_col` | string | no | sample key column, 기본값 `sample_key` |
+| `feature_key_col` | string | no | feature key column, 기본값 `feature_key` |
+| `seed` | int | no | synthetic value 생성 seed |
+| `missing_feature_rate` | float | no | missing trace 비율 |
+| `empty_trace_rate` | float | no | present지만 길이가 0인 empty trace 비율 |
+| `min_trace_len` | int | no | 생성 trace 최소 길이 |
+| `max_trace_len` | int | no | 생성 trace 최대 길이 |
+| `include_missing` | bool | no | missing trace도 응답에 포함할지 여부 |
+
+요청 예:
+
+```json
+{
+  "sample_meta_path": "data/sample_meta.parquet",
+  "feature_meta_path": "data/feature_meta.parquet",
+  "sample_id": 0,
+  "feature_ids": [0, 1, 2],
+  "seed": 7,
+  "include_missing": false,
+  "min_trace_len": 24,
+  "max_trace_len": 48
+}
+```
+
+응답은 sample 하나에 대한 trace 목록입니다. `present=false` trace는 `include_missing=true`일 때만 포함됩니다. present trace의 `columns`는 point schema와 같은 이름의 배열을 가집니다.
+
+```json
+{
+  "sample_id": 0,
+  "sample_key": "sample_000000",
+  "feature_count": 3,
+  "trace_count": 3,
+  "point_schema": [
+    {"name": "time", "storage_type": "float64", "logical_type": "continuous"},
+    {"name": "value", "storage_type": "float64", "logical_type": "continuous"},
+    {"name": "ch_step", "storage_type": "string", "logical_type": "categorical"}
+  ],
+  "traces": [
+    {
+      "feature_id": 0,
+      "feature_key": "feature_000000",
+      "present": true,
+      "trace_len": 24,
+      "columns": {
+        "time": [0.0, 0.4347826087],
+        "value": [0.12, 0.18],
+        "ch_step": ["pre", "pre"]
+      }
+    }
+  ]
+}
+```
+
+`BuildArraySampleParquetFromValueApiMain`과 jar 예제 `BuildArraySampleParquetFromValueApiWithJarExample`는 이 응답의 `traces`를 순회하면서 `present=true`인 trace만 `sample.addTrace(...)`로 기록합니다.
+
 ## API Server
 
 권장 조회 서버는 `python/scripts/serve_feature_query_api.py`입니다.

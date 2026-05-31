@@ -153,6 +153,7 @@ String manifestPath = builder.compact();
 sample meta, feature meta, raw sample stage 재개, 최종 array sample parquet dataset 생성을 jar classpath만으로 실행하는 전체 예제는 다음 파일에 있습니다.
 
 - `examples/BuildArraySampleParquetWithJarExample.java`
+- `examples/BuildArraySampleParquetFromValueApiWithJarExample.java`: 이미 존재하는 sample/feature meta를 기준으로 Python value API를 호출해서 전체 part를 생성합니다.
 
 컴파일:
 
@@ -165,6 +166,16 @@ New-Item -ItemType Directory -Force packages\array_sample_parquet_java\examples\
   packages\array_sample_parquet_java\examples\BuildArraySampleParquetWithJarExample.java
 ```
 
+Python value API 호출 예제를 컴파일하려면 마지막 파일명만 바꾸면 됩니다.
+
+```powershell
+& "C:\Program Files\Java\jdk-1.8\bin\javac.exe" `
+  -encoding UTF-8 `
+  -cp "packages\array_sample_parquet_java\dist\array-sample-parquet-java-0.1.0.jar;java\lib\*" `
+  -d packages\array_sample_parquet_java\examples\out `
+  packages\array_sample_parquet_java\examples\BuildArraySampleParquetFromValueApiWithJarExample.java
+```
+
 실행:
 
 ```powershell
@@ -174,6 +185,72 @@ New-Item -ItemType Directory -Force packages\array_sample_parquet_java\examples\
 ```
 
 기본 출력 위치는 `data/tmp_array_sample_parquet_jar_example`입니다. 다른 위치에 쓰려면 실행 명령 끝에 출력 root directory를 인자로 넘기면 됩니다.
+
+Python value API 호출 예제는 `python/scripts/serve_synthetic_value_api.py`가 먼저 떠 있어야 하며, sample meta와 feature meta는 이미 생성되어 있어야 합니다.
+
+```powershell
+& "C:\Program Files\Java\jdk-1.8\bin\java.exe" `
+  -cp "packages\array_sample_parquet_java\examples\out;packages\array_sample_parquet_java\dist\array-sample-parquet-java-0.1.0.jar;java\lib\*" `
+  BuildArraySampleParquetFromValueApiWithJarExample `
+  --base-url http://127.0.0.1:8010 `
+  --sample-meta data\sample_meta.parquet `
+  --feature-meta data\feature_meta.parquet `
+  --out-dir data\array_sample_parquet_from_api
+```
+
+API 서버 실행:
+
+```powershell
+python python\scripts\serve_synthetic_value_api.py --host 127.0.0.1 --port 8010
+```
+
+`BuildArraySampleParquetFromValueApiWithJarExample`는 sample 하나와 feature id 묶음마다 `POST /array/traces`를 호출합니다. 요청은 `sample_id` 또는 `sample_key` 중 하나, `feature_ids` 또는 `feature_keys` 중 하나만 허용합니다.
+
+요청 예:
+
+```json
+{
+  "sample_meta_path": "data/sample_meta.parquet",
+  "feature_meta_path": "data/feature_meta.parquet",
+  "sample_id": 0,
+  "feature_ids": [0, 1, 2],
+  "seed": 7,
+  "include_missing": false,
+  "min_trace_len": 24,
+  "max_trace_len": 48
+}
+```
+
+응답 예:
+
+```json
+{
+  "sample_id": 0,
+  "sample_key": "sample_000000",
+  "feature_count": 3,
+  "trace_count": 3,
+  "point_schema": [
+    {"name": "time", "storage_type": "float64", "logical_type": "continuous"},
+    {"name": "value", "storage_type": "float64", "logical_type": "continuous"},
+    {"name": "ch_step", "storage_type": "string", "logical_type": "categorical"}
+  ],
+  "traces": [
+    {
+      "feature_id": 0,
+      "feature_key": "feature_000000",
+      "present": true,
+      "trace_len": 24,
+      "columns": {
+        "time": [0.0, 0.4347826087],
+        "value": [0.12, 0.18],
+        "ch_step": ["pre", "pre"]
+      }
+    }
+  ]
+}
+```
+
+`present=false` trace는 `include_missing=true`일 때만 응답에 포함됩니다. 이 경우 `trace_len=0`이고 `columns`는 빈 배열입니다.
 
 ## When To Use
 

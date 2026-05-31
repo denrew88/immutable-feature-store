@@ -225,6 +225,78 @@ try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
 }
 ```
 
+## Java Builder Value API
+
+Java가 외부 시스템에서 값을 받아 builder에 쓰는 경우, 예제 서버는 `python/scripts/serve_synthetic_value_api.py`를 사용합니다. 이 서버는 최종 dense-long shard 조회 API가 아니라, Java builder가 sample별 scalar 값을 받아오기 위한 value source 예제입니다.
+
+실행:
+
+```powershell
+python python\scripts\serve_synthetic_value_api.py --host 127.0.0.1 --port 8010
+```
+
+### `POST /scalar/values`
+
+요청은 `sample_id` 또는 `sample_key` 중 하나만, `feature_ids` 또는 `feature_keys` 중 하나만 받습니다. `sample_meta_path`와 `feature_meta_path`는 dense id와 key를 해석하기 위해 필요합니다.
+
+주요 요청 필드:
+
+| field | type | required | 설명 |
+| --- | --- | --- | --- |
+| `sample_meta_path` | string | yes | `sample_id`와 `sample_key`가 들어 있는 metadata parquet |
+| `feature_meta_path` | string | yes | `feature_id`와 `feature_key`가 들어 있는 metadata parquet |
+| `sample_id` | int | one of | 조회할 sample dense id |
+| `sample_key` | string | one of | 조회할 sample external key |
+| `feature_ids` | int[] | one of | 조회할 feature dense id 목록 |
+| `feature_keys` | string[] | one of | 조회할 feature external key 목록 |
+| `sample_key_col` | string | no | sample key column, 기본값 `sample_key` |
+| `feature_key_col` | string | no | feature key column, 기본값 `feature_key` |
+| `seed` | int | no | synthetic value 생성 seed |
+| `missing_rate` | float | no | missing scalar value 비율 |
+| `n_latent_groups` | int | no | synthetic latent group 수 |
+| `noise_scale` | float | no | synthetic noise scale |
+
+요청 예:
+
+```json
+{
+  "sample_meta_path": "data/sample_meta.parquet",
+  "feature_meta_path": "data/feature_meta.parquet",
+  "sample_id": 0,
+  "feature_ids": [0, 1, 2],
+  "seed": 7,
+  "missing_rate": 0.1,
+  "n_latent_groups": 16,
+  "noise_scale": 0.25
+}
+```
+
+응답은 sample 하나에 대한 scalar value 목록입니다. `present=false`이면 `value`는 `null`입니다.
+
+```json
+{
+  "sample_id": 0,
+  "sample_key": "sample_000000",
+  "feature_count": 3,
+  "values": [
+    {
+      "feature_id": 0,
+      "feature_key": "feature_000000",
+      "present": true,
+      "value": 1.23
+    },
+    {
+      "feature_id": 1,
+      "feature_key": "feature_000001",
+      "present": false,
+      "value": null
+    }
+  ]
+}
+```
+
+`BuildScalarDenseLongFromValueApiMain`과 jar 예제 `BuildScalarDenseLongFromValueApiWithJarExample`는 `present=true`이고 `value`가 null이 아닌 항목만 `writeSample(...)`에 넘깁니다. 나머지는 raw row를 만들지 않고, dense-long materialize 단계에서 `mask=0` missing row로 채워집니다.
+
 ## 조회 API 서버
 
 권장 조회 서버는 `python/scripts/serve_feature_query_api.py`입니다.
