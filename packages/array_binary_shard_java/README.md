@@ -39,7 +39,9 @@ powershell -ExecutionPolicy Bypass -File packages\array_binary_shard_java\build.
 - `dist/array-binary-shard-java-0.3.0-sources.jar`
 - `dist/array-binary-shard-java-0.3.0-javadoc.jar`
 
-thin jar이므로 실행 시 DuckDB JDBC와 Jackson jars를 classpath에 같이 넣어야 합니다.
+thin jar이므로 실행 시 DuckDB JDBC와 Jackson jars를 classpath에 같이 넣어야 합니다. Hadoop/Parquet Java writer, Arrow, SLF4J, Woodstox, stax2, commons jar는 필요하지 않습니다.
+
+Java 구현의 custom binary shard codec은 현재 `none`만 지원합니다. array sample parquet나 scalar dense-long parquet처럼 DuckDB parquet writer를 쓰는 경로는 `zstd` 압축을 사용할 수 있지만, 이 custom binary shard jar 자체에는 zstd codec 구현이 들어 있지 않습니다.
 
 ## Public API
 

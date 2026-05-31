@@ -16,9 +16,26 @@ if (-not (Test-Path $javac)) { throw "javac.exe not found at $javac" }
 if (-not (Test-Path $jar)) { throw "jar.exe not found at $jar" }
 if (-not (Test-Path $javadoc)) { throw "javadoc.exe not found at $javadoc" }
 
-$libJars = Get-ChildItem (Join-Path $repoRoot "java\lib\*.jar") | ForEach-Object { $_.FullName }
-if ($libJars.Count -eq 0) {
-    throw "runtime jars not found under java\lib"
+$requiredJarNames = @(
+    "duckdb_jdbc-1.1.3.jar",
+    "jackson-core-2.20.0.jar",
+    "jackson-databind-2.20.0.jar",
+    "jackson-annotations-2.20.jar",
+    "arrow-c-data-14.0.2.jar",
+    "arrow-memory-core-14.0.2.jar",
+    "arrow-memory-unsafe-14.0.2.jar",
+    "arrow-vector-14.0.2-shade-format-flatbuffers.jar",
+    "netty-common-4.1.96.Final.jar",
+    "slf4j-api-1.7.36.jar"
+)
+
+$libJars = @()
+foreach ($jarName in $requiredJarNames) {
+    $jarPath = Join-Path $repoRoot ("java\lib\" + $jarName)
+    if (-not (Test-Path $jarPath)) {
+        throw "$jarName not found at $jarPath. Run: powershell -ExecutionPolicy Bypass -File java\\download_java_libs.ps1"
+    }
+    $libJars += $jarPath
 }
 $classpath = $libJars -join ";"
 

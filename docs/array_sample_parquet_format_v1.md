@@ -195,6 +195,8 @@ raw 파일을 long point row로 저장하면 sample별 raw write 단계에서 `p
 
 Java raw builder도 같은 포맷을 만들며, point row 단위 `DuckDBAppender` 대신 Java 8 호환 Apache Arrow vector batch를 DuckDB `registerArrowStream(...)`으로 넘깁니다. sample close 직전에 trace 목록을 `(sample_id, feature_id)` 순서로 정렬하고, raw write와 compact 단계에서는 DuckDB SQL `ORDER BY` 없이 `COPY ... TO parquet`를 수행합니다.
 
+Java runtime dependency는 DuckDB/Jackson과 Arrow bridge jar입니다. DuckDB JDBC는 parquet read/write와 `zstd` 압축을 담당하고, Jackson은 manifest/state JSON을 담당합니다. Arrow bridge는 raw sample write에서 Java 배열을 columnar vector batch로 DuckDB에 넘기기 위한 용도입니다. 필요한 Arrow 계열 jar는 `arrow-c-data`, `arrow-memory-core`, `arrow-memory-unsafe`, `arrow-vector-14.0.2-shade-format-flatbuffers`, `netty-common`, `slf4j-api`입니다. Hadoop/Parquet Java writer jar는 사용하지 않습니다.
+
 같은 크기 로컬 측정에서 Java 전체 build는 약 `8.2s ~ 10.0s`, raw sample close/write 합계는 약 `4.9s ~ 6.2s`, compact는 약 `2.9s ~ 3.3s`였습니다. raw point files는 약 `166.47MB`, final `sample_parts`는 약 `166.38MB`, part 수는 3개였습니다. raw sample, raw trace index, final sample part, final trace index 모두 물리 row 정렬 검사를 통과했습니다.
 
 ## Reader Algorithm

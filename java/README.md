@@ -16,15 +16,22 @@
 powershell -ExecutionPolicy Bypass -File java\download_java_libs.ps1
 ```
 
-주요 dependency:
+이 저장소의 Java package는 thin jar입니다. package jar 안에 dependency를 묶지 않으므로 실행 시 필요한 jar를 classpath에 같이 넣어야 합니다.
 
-- DuckDB JDBC
-- Jackson
-- parquet-hadoop-bundle
-- Hadoop common/mapreduce core
-- SLF4J API
-- Woodstox
-- commons-collections, commons-lang3
+공통 dependency:
+
+- `duckdb_jdbc-1.1.3.jar`: metadata parquet, scalar dense-long parquet, array sample parquet를 DuckDB로 읽고 씁니다.
+- `jackson-core-2.20.0.jar`, `jackson-databind-2.20.0.jar`, `jackson-annotations-2.20.jar`: manifest/state JSON을 읽고 씁니다.
+
+package별 추가 dependency:
+
+- `array-binary-shard-java`: 공통 dependency만 필요합니다.
+- `scalar-feature-shard-java`: 공통 dependency만 필요합니다. scalar parquet 쓰기는 DuckDB가 담당하므로 Hadoop/Parquet Java stack은 필요하지 않습니다.
+- `array-sample-parquet-java`: 공통 dependency에 더해 Arrow bridge용 `arrow-c-data-14.0.2.jar`, `arrow-memory-core-14.0.2.jar`, `arrow-memory-unsafe-14.0.2.jar`, `arrow-vector-14.0.2-shade-format-flatbuffers.jar`, `netty-common-4.1.96.Final.jar`, `slf4j-api-1.7.36.jar`가 필요합니다.
+
+`array-sample-parquet-java`의 Arrow bridge는 Java trace 배열을 Arrow vector batch로 묶어 DuckDB `registerArrowStream(...)`에 넘기는 경로입니다. row마다 JDBC append를 호출하지 않고 columnar batch를 DuckDB에 넘기기 위한 용도이며, 실제 parquet 파일 쓰기와 zstd 압축은 DuckDB `COPY ... TO parquet`가 수행합니다.
+
+Hadoop, Parquet Java writer, Woodstox, stax2, commons jar는 현재 Java package 3개 기준으로 필요하지 않습니다.
 
 ## 디렉터리 구조
 

@@ -12,15 +12,14 @@ Java 8에서 scalar dense-long shard를 생성하고 조회하기 위한 jar 패
 powershell -ExecutionPolicy Bypass -File java\download_java_libs.ps1
 ```
 
-주요 dependency:
+이 package는 thin jar입니다. 실행 시 package jar와 함께 다음 runtime jar만 classpath에 넣으면 됩니다.
 
-- DuckDB JDBC
-- Jackson
-- parquet-hadoop-bundle
-- Hadoop common/mapreduce core
-- SLF4J API
-- Woodstox
-- commons-collections, commons-lang3
+- `duckdb_jdbc-1.1.3.jar`
+- `jackson-core-2.20.0.jar`
+- `jackson-databind-2.20.0.jar`
+- `jackson-annotations-2.20.jar`
+
+scalar dense-long parquet 생성, raw sample parquet 생성, `zstd` 압축은 DuckDB JDBC가 수행합니다. manifest/state JSON은 Jackson이 담당합니다. Hadoop/Parquet Java writer, SLF4J, Woodstox, stax2, commons jar는 현재 구현에 필요하지 않습니다.
 
 ## 빌드
 

@@ -1063,3 +1063,7 @@ v3를 한 문장으로 정리하면:
 - temporal은 `int64` + `timestamp_ns` / `timedelta_ns`
 - payload는 `[flags][offsets][encoded_columns_payload]`
 - 빠른 조회는 `record_index` 계산 + `data_offset` seek로 유지
+
+Java package는 thin jar이며 DuckDB JDBC와 Jackson만 runtime dependency로 필요합니다. DuckDB JDBC는 bundle/metadata parquet와 lookup helper를 읽고 쓰는 데 사용하고, Jackson은 manifest/state JSON을 담당합니다. Hadoop/Parquet Java writer, Arrow, SLF4J, Woodstox, stax2, commons jar는 array binary shard Java 구현에 필요하지 않습니다.
+
+현재 Java custom binary shard codec은 `none`만 지원합니다. parquet 기반 포맷과 달리 `blocks.bin` 자체를 `zstd`로 압축하는 codec 구현은 포함되어 있지 않습니다.

@@ -154,6 +154,15 @@ n_y_overlap      Int64
 
 selection은 최종 parquet 전체를 다시 훑지 않고 이 stats 파일을 사용합니다.
 
+## Java Runtime Dependency
+
+`scalar-feature-shard-java`는 thin jar입니다. 실행 시 package jar와 함께 DuckDB JDBC와 Jackson만 classpath에 넣으면 됩니다.
+
+- DuckDB JDBC: raw sample parquet, dense-long part parquet, selection stats parquet 생성과 조회를 담당합니다. `zstd` 압축도 DuckDB parquet writer가 처리합니다.
+- Jackson: `sample_major_manifest.json`, `dense_long_shard_manifest.json` 같은 JSON manifest/state 파일을 읽고 씁니다.
+
+Hadoop/Parquet Java writer, Arrow, SLF4J, Woodstox, stax2, commons jar는 현재 scalar dense-long 구현에 필요하지 않습니다.
+
 ## 조회 서버
 
 권장 조회 서버:

@@ -78,15 +78,22 @@ powershell -ExecutionPolicy Bypass -File packages\array_sample_parquet_java\buil
 - `dist/array-sample-parquet-java-0.1.0-sources.jar`
 - `dist/array-sample-parquet-java-0.1.0-javadoc.jar`
 
-thin jar이므로 실행 시 `java/lib/*.jar`를 classpath에 같이 넣어야 합니다.
+thin jar이므로 실행 시 필요한 runtime jar를 classpath에 같이 넣어야 합니다. 현재 구현의 최소 runtime dependency는 다음과 같습니다.
 
-현재 표준 경로에 필요한 추가 런타임 jar는 DuckDB/Jackson/Hadoop/Parquet 기본 jar 외에 다음 Arrow vector bridge jar입니다.
-
+- `duckdb_jdbc-1.1.3.jar`
+- `jackson-core-2.20.0.jar`
+- `jackson-databind-2.20.0.jar`
+- `jackson-annotations-2.20.jar`
 - `arrow-c-data-14.0.2.jar`
 - `arrow-memory-core-14.0.2.jar`
 - `arrow-memory-unsafe-14.0.2.jar`
 - `arrow-vector-14.0.2-shade-format-flatbuffers.jar`
 - `netty-common-4.1.96.Final.jar`
+- `slf4j-api-1.7.36.jar`
+
+Hadoop/Parquet Java writer jar는 필요하지 않습니다. parquet 파일 생성과 `zstd` 압축은 DuckDB JDBC가 수행합니다.
+
+Arrow 관련 jar는 raw sample write fast path에 필요합니다. Java trace 배열을 Arrow vector batch로 묶고 `ArrowArrayStream`을 DuckDB `registerArrowStream(...)`에 등록한 뒤, DuckDB `COPY ... TO parquet`로 파일을 씁니다. 이 구조 덕분에 point row마다 JDBC append를 호출하지 않습니다. `slf4j-api`는 Arrow의 logging API 의존성입니다. 별도 binding이 없으면 SLF4J NOP 경고가 출력될 수 있지만 실행에는 문제가 없습니다.
 
 ## Performance Notes
 
