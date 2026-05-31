@@ -9,7 +9,6 @@ import fs.io.scalar.ScalarDenseLongShardBuilder;
 import fs.io.scalar.ScalarMetadataWriter;
 import fs.io.scalar.ScalarRawSampleWriter;
 import fs.io.scalar.ScalarSampleBundleManifestIO;
-import fs.io.scalar.ShardBuilder;
 import fs.model.scalar.ScalarRawBuildStatus;
 import fs.model.scalar.ScalarSampleBundleManifest;
 
@@ -183,15 +182,6 @@ public class ScalarRawDatasetBuilder implements AutoCloseable {
         finishedStage = true;
         saveState();
         return sampleMajorManifestPath;
-    }
-
-    public String buildBlobShards(boolean requireAll, boolean keepRaw) throws Exception {
-        String stageManifest = finishStage(requireAll);
-        String manifest = ShardBuilder.buildShardsFromSampleBundles(stageManifest, outDir.getAbsolutePath(), buildConfig);
-        if (!keepRaw) {
-            deleteRecursively(rawSamplesDir);
-        }
-        return manifest;
     }
 
     public String buildDenseLongShards(boolean requireAll, String denseLongOutDir) throws Exception {

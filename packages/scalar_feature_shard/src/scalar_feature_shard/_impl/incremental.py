@@ -2,7 +2,7 @@ from typing import Dict, List
 
 import numpy as np
 
-from .pearson import batch_r2_many_vs_many, batch_r2_one_vs_many
+from .pearson import batch_r2_many_vs_many
 
 
 def grow_cap(current_cap: int, max_step: int) -> int:
@@ -19,14 +19,6 @@ def _rebucket_candidates(candidates, start: int, end: int) -> Dict[int, List[int
     for shard_id in buckets:
         buckets[shard_id].sort(key=lambda i: candidates[i].offset_in_shard)
     return buckets
-
-
-def _iter_batches(candidates, idxs: List[int], batch_size: int):
-    """Yield shard-local candidate batches and their row offsets."""
-    for i in range(0, len(idxs), batch_size):
-        batch = idxs[i : i + batch_size]
-        offsets = [candidates[j].offset_in_shard for j in batch]
-        yield batch, offsets
 
 
 def _pack_valid_rows(valid):
@@ -56,11 +48,6 @@ def _pack_bool_rows(mask):
         packed = np.pad(packed, ((0, 0), (0, pad)), mode="constant")
     packed = np.ascontiguousarray(packed)
     return packed.view(np.uint64)
-
-
-def _overlap_counts_one_to_many(valid_words, batch_valid_words):
-    """Count valid overlaps between one feature and a feature batch."""
-    return np.bitwise_count(np.bitwise_and(batch_valid_words, valid_words[None, :])).sum(axis=1, dtype=np.int32)
 
 
 def _overlap_counts_many_to_many(valid_words_left, valid_words_right):

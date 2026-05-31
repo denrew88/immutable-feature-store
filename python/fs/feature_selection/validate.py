@@ -3,7 +3,31 @@ import numpy as np
 from .pearson import pairwise_r2, batch_r2_one_vs_many
 from .incremental import select_features_incremental
 from .candidates import build_candidates_from_inmemory
-from ..scalar.parquet_storage import InMemoryShardReader
+
+
+class InMemoryShardReader:
+    """Minimal in-memory reader used by selection validation tests."""
+
+    def __init__(self, shards):
+        self.shards = shards
+        self.n_samples = shards[0]["values"].shape[1] if shards else 0
+
+    def load_rows(self, shard_id: int, offsets):
+        if not offsets:
+            return (
+                np.empty((0, self.n_samples), dtype=np.float64),
+                np.empty((0, self.n_samples), dtype=np.uint8),
+            )
+        return (
+            self.shards[int(shard_id)]["values"][offsets],
+            self.shards[int(shard_id)]["valid"][offsets],
+        )
+
+    def load_feature_by_offset(self, shard_id: int, offset: int):
+        return (
+            self.shards[int(shard_id)]["values"][int(offset)],
+            self.shards[int(shard_id)]["valid"][int(offset)],
+        )
 
 
 def build_inmemory_shards(X, M, shard_size=128):

@@ -638,18 +638,6 @@ public class ArrayShardBuilder {
     }
 
     /**
-     * point schema에 특정 컬럼 이름이 있는지 확인한다.
-     */
-    private static boolean hasColumn(List<PointColumnSpec> pointSchema, String name) {
-        for (PointColumnSpec spec : pointSchema) {
-            if (spec.name.equals(name)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
      * point column 이름으로부터 bundle parquet 안의 blob 컬럼 이름을 만든다.
      */
     private static String blobColumnName(String name) {

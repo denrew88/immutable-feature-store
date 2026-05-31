@@ -1,17 +1,14 @@
 package scripts;
 
 import fs.config.BuildShardConfig;
-import fs.config.SelectionConfig;
 import fs.io.ScalarDatasetBuilder;
 import fs.io.ScalarDenseLongDataset;
 import fs.io.ScalarFeatureShards;
 import fs.io.ScalarRawDatasetBuilder;
-import fs.io.ScalarShardDataset;
-import fs.model.selection.Candidate;
+import fs.model.scalar.ScalarDenseLongManifest;
 import fs.model.scalar.ScalarFeatureValues;
 import fs.model.scalar.ScalarRawBuildStatus;
 import fs.model.scalar.ScalarValue;
-import fs.model.scalar.ShardManifest;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -66,7 +63,7 @@ public class RunScalarBuilderTestsMain {
             discoveredManifestPath = builder.buildShards(true);
         }
 
-        ShardManifest discoveredManifest = ScalarFeatureShards.loadManifest(discoveredManifestPath);
+        ScalarDenseLongManifest discoveredManifest = ScalarFeatureShards.loadManifest(discoveredManifestPath);
         require(discoveredManifest.nSamples == 4, "n_samples mismatch");
         require(discoveredManifest.nFeatures == 3, "n_features mismatch");
         require(!discoveredManifest.selectionStats.isEmpty(), "selection_stats should be populated");
@@ -74,26 +71,18 @@ public class RunScalarBuilderTestsMain {
         require(new File(discoveredManifest.featureMetaPath).exists(), "missing feature_meta.parquet");
         require(new File(discoveredManifest.sampleMetaPath).exists(), "missing sample_meta.parquet");
 
-        try (ScalarShardDataset dataset = ScalarFeatureShards.open(discoveredManifestPath)) {
-            ScalarFeatureValues featureB = dataset.getValuesByKeys("feature_b", new String[]{"sample_000000", "sample_000001", "sample_000002", "sample_000003"});
+        try (ScalarDenseLongDataset dataset = ScalarFeatureShards.open(discoveredManifestPath)) {
+            ScalarFeatureValues featureB = dataset.loadFeatureByKey("feature_b");
             require(featureB.featureId == 1, "feature_b id mismatch");
             assertValue(featureB.values.get(0), 0L, "sample_000000", true, 0.1);
             assertValue(featureB.values.get(1), 1L, "sample_000001", true, 1.0);
             assertValue(featureB.values.get(2), 2L, "sample_000002", false, null);
             assertValue(featureB.values.get(3), 3L, "sample_000003", true, 0.2);
 
-            ScalarValue single = dataset.getValueByKey("feature_c", "sample_000002");
-            assertValue(single, 2L, "sample_000002", true, 1.0);
+            ScalarFeatureValues featureC = dataset.loadFeatureByKey("feature_c");
+            assertValue(featureC.values.get(2), 2L, "sample_000002", true, 1.0);
+            require(!dataset.topFeaturesFromStats("y", 2).isEmpty(), "selection stats should produce candidates");
         }
-
-        SelectionConfig selCfg = new SelectionConfig();
-        selCfg.topM = 2;
-        selCfg.minNonNullY = 1;
-        selCfg.minNonNullPair = 1;
-        selCfg.yR2Threshold = -1.0;
-        selCfg.ffR2Threshold = 1.1;
-        List<Candidate> selected = ScalarFeatureShards.selectFeatures(discoveredManifestPath, "y", selCfg);
-        require(!selected.isEmpty(), "selection should return at least one feature");
 
         String featureMetaPath = new File(root, "known_feature_meta.parquet").getAbsolutePath();
         ScalarFeatureShards.writeFeatureMeta(knownFeatureRows(), featureMetaPath);
@@ -137,24 +126,12 @@ public class RunScalarBuilderTestsMain {
             orderedManifestPath = builder.buildShards(false);
         }
 
-        try (ScalarShardDataset dataset = ScalarFeatureShards.open(orderedManifestPath)) {
-            List<Integer> keptOrderIds = collectFeatureIds(
-                    dataset.iterMany(new int[]{4, 1, 5, 0}, new long[]{0L}, 4, true)
-            );
-            List<Integer> shardOrderIds = collectFeatureIds(
-                    dataset.iterMany(new int[]{4, 1, 5, 0}, new long[]{0L}, 4, false)
-            );
-            require(keptOrderIds.equals(java.util.Arrays.asList(4, 1, 5, 0)), "iterMany maintainOrder=true mismatch");
-            require(shardOrderIds.equals(java.util.Arrays.asList(0, 1, 4, 5)), "iterMany maintainOrder=false mismatch");
-
-            List<String> keptOrderKeys = collectFeatureKeys(
-                    dataset.iterManyByKey(new String[]{"feature_04", "feature_01", "feature_05", "feature_00"}, new String[]{"sample_000000"}, 4, true)
-            );
-            List<String> shardOrderKeys = collectFeatureKeys(
-                    dataset.iterManyByKey(new String[]{"feature_04", "feature_01", "feature_05", "feature_00"}, new String[]{"sample_000000"}, 4, false)
-            );
-            require(keptOrderKeys.equals(java.util.Arrays.asList("feature_04", "feature_01", "feature_05", "feature_00")), "iterManyByKey maintainOrder=true mismatch");
-            require(shardOrderKeys.equals(java.util.Arrays.asList("feature_00", "feature_01", "feature_04", "feature_05")), "iterManyByKey maintainOrder=false mismatch");
+        try (ScalarDenseLongDataset dataset = ScalarFeatureShards.open(orderedManifestPath)) {
+            ScalarFeatureValues feature04 = dataset.loadFeatureByKey("feature_04");
+            assertValue(feature04.values.get(0), 0L, "sample_000000", true, 4.0);
+            ScalarDenseLongDataset.SampleValues sample0 = dataset.loadSampleByKey("sample_000000");
+            require(sample0.valid[4] == 1, "sample feature_04 should be present");
+            require(Math.abs(sample0.values[4] - 4.0) <= 1e-12, "sample feature_04 mismatch");
         }
 
         BuildShardConfig rawCfg = new BuildShardConfig();
@@ -264,22 +241,6 @@ public class RunScalarBuilderTestsMain {
         }
         require(actual.value != null, "present value should not be null");
         require(Math.abs(actual.value.doubleValue() - value.doubleValue()) <= 1e-12, "value mismatch for sample_id=" + sampleId);
-    }
-
-    private static List<Integer> collectFeatureIds(Iterable<ScalarFeatureValues> rows) {
-        ArrayList<Integer> out = new ArrayList<Integer>();
-        for (ScalarFeatureValues row : rows) {
-            out.add(Integer.valueOf(row.featureId));
-        }
-        return out;
-    }
-
-    private static List<String> collectFeatureKeys(Iterable<ScalarFeatureValues> rows) {
-        ArrayList<String> out = new ArrayList<String>();
-        for (ScalarFeatureValues row : rows) {
-            out.add(row.featureKey);
-        }
-        return out;
     }
 
     private static void require(boolean condition, String message) {

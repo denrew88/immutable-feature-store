@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 
 from ..config import ScalarShardBuildOptions
-from .parquet_storage import build_shards_from_sample_bundles
+from .dense_long import build_dense_long_shards_from_sample_bundles
 
 
 def _write_json_atomic(path: str, payload: dict):
@@ -642,22 +642,19 @@ class ScalarDatasetBuilder:
             return (self._manifest_path, None) if return_stats else self._manifest_path
         self._ensure_open()
         sample_major_manifest_path = self.finish_stage()
-        build_result = build_shards_from_sample_bundles(
+        build_result = build_dense_long_shards_from_sample_bundles(
             sample_major_manifest_path,
             self.out_dir,
             feature_meta_path=self.sample_major_feature_meta_path,
-            n_shards=None if self.build_options.n_shards is None else int(self.build_options.n_shards),
-            target_shard_bytes=int(self.build_options.target_shard_mb) * 1024 * 1024,
+            target_part_bytes=int(self.build_options.target_shard_mb) * 1024 * 1024,
             feature_id_col=str(self.build_options.feature_id_col),
             value_col=str(self.build_options.value_col),
             sample_id_col=str(self.build_options.sample_id_col),
             sample_key_col=str(self.build_options.sample_key_col),
             feature_key_col=str(self.build_options.feature_key_col),
-            path_col=str(self.build_options.path_col),
             y_col=str(self.build_options.y_col),
             stats_y_cols=self._stats_y_cols(),
-            values_dtype=str(self.build_options.values_dtype),
-            valid_dtype=str(self.build_options.valid_dtype),
+            compression="zstd",
             return_stats=bool(return_stats),
         )
         if return_stats:

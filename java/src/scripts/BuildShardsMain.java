@@ -2,7 +2,7 @@ package scripts;
 
 import fs.config.BuildShardConfig;
 import fs.io.scalar.ScalarSampleBundleManifestIO;
-import fs.io.scalar.ShardBuilder;
+import fs.io.scalar.ScalarDenseLongShardBuilder;
 import fs.model.scalar.ScalarSampleBundleManifest;
 import java.io.File;
 import java.util.ArrayList;
@@ -16,19 +16,15 @@ public class BuildShardsMain {
         String sampleMeta = getArg(args, "--sample-meta", null);
         String sampleBundleManifest = getArg(args, "--sample-bundle-manifest", null);
         String outDir = getArg(args, "--out-dir", null);
-        if ((sampleMeta == null && sampleBundleManifest == null) || outDir == null) {
-            System.err.println("Usage: (--sample-meta <path> | --sample-bundle-manifest <path>) --out-dir <dir> [--feature-meta <path>] [--target-shard-mb MB] [--n-shards N] [--stats-y-col COL ...]");
+        if (sampleBundleManifest == null || outDir == null) {
+            System.err.println("Usage: --sample-bundle-manifest <path> --out-dir <dir> [--feature-meta <path>] [--target-shard-mb MB] [--stats-y-col COL ...]");
             System.exit(1);
         }
-        if (sampleMeta != null && sampleBundleManifest != null) {
-            System.err.println("Provide at most one of --sample-meta and --sample-bundle-manifest");
+        if (sampleMeta != null) {
+            System.err.println("--sample-meta is no longer supported here; pass --sample-bundle-manifest");
             System.exit(1);
         }
         BuildShardConfig cfg = new BuildShardConfig();
-        String nShards = getArg(args, "--n-shards", null);
-        if (nShards != null) {
-            cfg.nShards = Integer.parseInt(nShards);
-        }
         String targetShardMb = getArg(args, "--target-shard-mb", null);
         if (targetShardMb != null) {
             cfg.targetShardBytes = Long.parseLong(targetShardMb) * 1024L * 1024L;
@@ -92,9 +88,7 @@ public class BuildShardsMain {
         int exitCode = 0;
         long startedAt = System.currentTimeMillis();
         try {
-            String manifestPath = (sampleBundleManifest != null)
-                    ? ShardBuilder.buildShardsFromSampleBundles(sampleBundleManifest, outDir, cfg)
-                    : ShardBuilder.buildShardsFromSampleMajor(sampleMeta, outDir, cfg);
+            String manifestPath = ScalarDenseLongShardBuilder.buildFromSampleBundles(sampleBundleManifest, outDir, cfg);
             System.out.println(manifestPath);
         } catch (Exception e) {
             exitCode = 2;

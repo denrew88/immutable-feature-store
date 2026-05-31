@@ -3,7 +3,6 @@ import shutil
 from pathlib import Path
 
 import numpy as np
-import polars as pl
 from fastapi.testclient import TestClient
 
 from fs.array.binary_storage import build_array_binary_shards_from_bundles

@@ -1,12 +1,15 @@
 package scripts;
 
-import fs.io.scalar.FeatureLocatorIndex;
-import fs.io.scalar.ManifestIO;
-import fs.model.common.FeatureLocation;
-import fs.model.scalar.ShardManifest;
+import fs.io.common.DuckDBUtils;
+import fs.io.scalar.ScalarDenseLongManifestIO;
+import fs.model.scalar.ScalarDenseLongManifest;
+
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 
 /**
- * Scalar feature가 어느 shard row에 저장돼 있는지 출력하는 디버그용 CLI다.
+ * Dense-long scalar feature가 어느 part row에 있는지 출력하는 디버그 CLI다.
  */
 public class LocateFeatureMain {
     public static void main(String[] args) throws Exception {
@@ -17,21 +20,24 @@ public class LocateFeatureMain {
             System.exit(1);
         }
         int featureId = Integer.parseInt(featureIdArg);
-        ShardManifest manifest = ManifestIO.read(manifestPath);
-        try (FeatureLocatorIndex idx = FeatureLocatorIndex.load(manifest)) {
-            FeatureLocation loc = idx.find(featureId);
-            if (loc == null) {
+        ScalarDenseLongManifest manifest = ScalarDenseLongManifestIO.read(manifestPath);
+        try (Connection conn = DuckDBUtils.connect(null);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT feature_id, global_rank, part_id, offset_in_part, first_row_in_part "
+                             + "FROM read_parquet(" + DuckDBUtils.quotePath(manifest.featureLocatorPath) + ") "
+                             + "WHERE feature_id = " + featureId)) {
+            if (!rs.next()) {
                 System.out.println("NOT_FOUND\tfeature_id=" + featureId);
                 return;
             }
-            String shardPath = manifest.shardFilePath(loc.shardId);
-            System.out.println("feature_id=" + loc.featureId
-                    + "\tglobal_rank=" + loc.globalRank
-                    + "\tshard_id=" + loc.shardId
-                    + "\toffset_in_shard=" + loc.offsetInShard
-                    + "\tr2y=" + loc.r2y
-                    + "\tn_y_overlap=" + loc.nYOverlap
-                    + "\tshard_path=" + shardPath);
+            int partId = rs.getInt(3);
+            System.out.println("feature_id=" + rs.getInt(1)
+                    + "\tglobal_rank=" + rs.getInt(2)
+                    + "\tpart_id=" + partId
+                    + "\toffset_in_part=" + rs.getInt(4)
+                    + "\tfirst_row_in_part=" + rs.getLong(5)
+                    + "\tpart_path=" + manifest.parts.get(partId).path);
         }
     }
 

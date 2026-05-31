@@ -8,7 +8,7 @@ import shutil
 from collections import OrderedDict
 from dataclasses import asdict
 from pathlib import Path
-from typing import Mapping, Optional, Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 import polars as pl

@@ -4,10 +4,8 @@ import fs.io.ArrayBinaryShardReader;
 import fs.io.array.ArrayFeatureLocatorIndex;
 import fs.io.array.ArrayShardManifestIO;
 import fs.model.array.ArrayShardManifest;
-import fs.model.array.ArrayTrace;
 
 import java.util.Arrays;
-import java.util.Map;
 
 /**
  * Array reader 모드별 조회 시간을 비교하는 벤치마크 엔트리포인트다.

@@ -107,11 +107,8 @@ $sourceSpecs = @(
     "java\src\fs\io\array\ArraySampleIdIndex.java",
     "java\src\fs\io\common\ArrayUtils.java",
     "java\src\fs\io\common\JsonUtils.java",
-    "java\src\fs\io\scalar\DuckDBShardReader.java",
     "java\src\fs\io\common\DuckDBUtils.java",
     "java\src\fs\io\scalar\FeatureIdIndex.java",
-    "java\src\fs\io\scalar\FeatureLocatorIndex.java",
-    "java\src\fs\io\scalar\ManifestIO.java",
     "java\src\fs\io\scalar\SampleIdIndex.java",
     "java\src\fs\io\scalar\SampleMetaLoader.java",
     "java\src\fs\io\ScalarDatasetBuilder.java",
@@ -124,9 +121,6 @@ $sourceSpecs = @(
     "java\src\fs\io\scalar\ScalarRawSampleWriter.java",
     "java\src\fs\io\scalar\ScalarSampleBundleManifestIO.java",
     "java\src\fs\io\scalar\ScalarSampleBundleWriter.java",
-    "java\src\fs\io\scalar\ScalarShardParquetWriter.java",
-    "java\src\fs\io\ScalarShardDataset.java",
-    "java\src\fs\io\scalar\ShardBuilder.java",
     "java\src\fs\io\scalar\ShardReader.java",
     "java\src\fs\math\Pearson.java",
     "java\src\fs\model\selection\Candidate.java",
@@ -143,7 +137,6 @@ $sourceSpecs = @(
     "java\src\fs\model\scalar\ScalarRawBuildStatus.java",
     "java\src\fs\model\scalar\ScalarSampleBundleManifest.java",
     "java\src\fs\model\scalar\ScalarValue.java",
-    "java\src\fs\model\scalar\ShardManifest.java",
     "java\src\fs\model\common\StorageType.java",
     "java\src\fs\pipeline\CandidateBuilder.java",
     "java\src\fs\pipeline\Selector.java"
@@ -190,6 +183,7 @@ if ($LASTEXITCODE -ne 0) {
     -encoding UTF-8 `
     -docencoding UTF-8 `
     -charset UTF-8 `
+    -Xdoclint:none `
     -quiet `
     -cp $classpath `
     -d $javadocDir `

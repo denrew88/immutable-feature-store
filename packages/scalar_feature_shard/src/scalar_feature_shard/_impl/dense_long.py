@@ -16,15 +16,16 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .parquet_storage import (
-    _cleanup_backing_file,
-    _cleanup_empty_dir,
-    _close_memmap,
-    _load_sample_bundle_manifest,
+from ..models import FeatureValues, QueryResult, ScalarValue
+from .pearson import batch_r2_one_vs_many
+from .storage_common import (
+    cleanup_backing_file,
+    cleanup_empty_dir,
+    close_memmap,
     load_feature_meta,
+    load_sample_bundle_manifest,
     load_sample_targets,
 )
-from .pearson import batch_r2_one_vs_many
 
 
 DENSE_LONG_FORMAT_NAME = "scalar-dense-long-shard-v1"
@@ -119,10 +120,22 @@ def _assign_parts_by_target_bytes(
     return starts, ends
 
 
-def _read_bundle_batch(paths: list[str], columns: list[str]) -> pl.DataFrame:
+def _read_bundle_batch(paths: list[str], columns: list[str], sample_ids: list[int] | None = None) -> pl.DataFrame:
     if not paths:
         return pl.DataFrame(schema={columns[0]: pl.Int64, columns[1]: pl.Int32, columns[2]: pl.Float64})
-    return pl.scan_parquet(paths, glob=False).select(columns).collect()
+    try:
+        return pl.scan_parquet(paths, glob=False).select(columns).collect()
+    except Exception as exc:
+        if sample_ids is None or "unable to find column" not in str(exc):
+            raise
+        sample_id_col, feature_id_col, value_col = columns
+        frames = []
+        for path, sample_id in zip(paths, sample_ids):
+            frame = pl.read_parquet(path, columns=[feature_id_col, value_col])
+            frames.append(frame.with_columns(pl.lit(int(sample_id), dtype=pl.Int64).alias(sample_id_col)).select(columns))
+        if not frames:
+            return pl.DataFrame(schema={sample_id_col: pl.Int64, feature_id_col: pl.Int32, value_col: pl.Float64})
+        return pl.concat(frames, how="vertical")
 
 
 def _write_dense_long_part(
@@ -234,11 +247,15 @@ def build_dense_long_shards_from_sample_bundles(
     os.makedirs(tmp_dir, exist_ok=True)
 
     phase_t0 = time.perf_counter()
-    stage_manifest = _load_sample_bundle_manifest(sample_major_manifest_path)
+    stage_manifest = load_sample_bundle_manifest(sample_major_manifest_path)
     sample_meta_path = str(stage_manifest["sample_meta_path"])
     if feature_meta_path is None:
         feature_meta_path = str(stage_manifest["feature_meta_path"])
     bundle_paths = list(stage_manifest["bundle_paths"])
+    bundle_sample_ids_raw = stage_manifest.get("bundle_sample_ids")
+    bundle_sample_ids = None if bundle_sample_ids_raw is None else [int(value) for value in bundle_sample_ids_raw]
+    if bundle_sample_ids is not None and len(bundle_sample_ids) != len(bundle_paths):
+        raise ValueError("bundle_sample_ids length must match bundle_paths length")
     sample_id_col = str(stage_manifest.get("sample_id_col", sample_id_col))
     feature_id_col = str(stage_manifest.get("feature_id_col", feature_id_col))
     value_col = str(stage_manifest.get("value_col", value_col))
@@ -310,7 +327,8 @@ def build_dense_long_shards_from_sample_bundles(
         batch_size = max(1, int(input_batch_files))
         for batch_start in range(0, len(bundle_paths), batch_size):
             paths = bundle_paths[batch_start : batch_start + batch_size]
-            df = _read_bundle_batch(paths, [sample_id_col, feature_id_col, value_col])
+            path_sample_ids = None if bundle_sample_ids is None else bundle_sample_ids[batch_start : batch_start + batch_size]
+            df = _read_bundle_batch(paths, [sample_id_col, feature_id_col, value_col], path_sample_ids)
             if df.height <= 0:
                 continue
             sids = df[sample_id_col].to_numpy().astype(np.int64, copy=False)
@@ -429,26 +447,26 @@ def build_dense_long_shards_from_sample_bundles(
                 )
             )
             cleanup_t0 = time.perf_counter()
-            _close_memmap(values_mm)
-            _close_memmap(valid_mm)
+            close_memmap(values_mm)
+            close_memmap(valid_mm)
             values_maps[part_id] = None
             valid_maps[part_id] = None
-            _cleanup_backing_file(values_paths[part_id])
-            _cleanup_backing_file(valid_paths[part_id])
+            cleanup_backing_file(values_paths[part_id])
+            cleanup_backing_file(valid_paths[part_id])
             cleanup_s += time.perf_counter() - cleanup_t0
         stats["compute_selection_stats_s"] = compute_stats_s
         stats["write_parts_s"] = write_parts_s
         stats["cleanup_backing_files_s"] = cleanup_s
     finally:
         for mm in values_maps:
-            _close_memmap(mm)
+            close_memmap(mm)
         for mm in valid_maps:
-            _close_memmap(mm)
+            close_memmap(mm)
         for path in values_paths:
-            _cleanup_backing_file(path)
+            cleanup_backing_file(path)
         for path in valid_paths:
-            _cleanup_backing_file(path)
-        _cleanup_empty_dir(tmp_dir)
+            cleanup_backing_file(path)
+        cleanup_empty_dir(tmp_dir)
 
     phase_t0 = time.perf_counter()
     sample_meta_out = os.path.join(out_dir, "sample_meta.parquet")
@@ -595,6 +613,10 @@ class ScalarDenseLongDataset:
     def __init__(self, manifest_path: str):
         self.manifest = load_dense_long_manifest(manifest_path)
         self._locator = None
+        self._sample_keys = None
+        self._sample_key_to_id = None
+        self._feature_keys = None
+        self._feature_key_to_id = None
 
     def __enter__(self):
         return self
@@ -606,6 +628,64 @@ class ScalarDenseLongDataset:
         if self._locator is None:
             self._locator = pl.read_parquet(self.manifest.feature_locator_path)
         return self._locator
+
+    @property
+    def n_samples(self) -> int:
+        return int(self.manifest.n_samples)
+
+    @property
+    def feature_count(self) -> int:
+        return int(self.manifest.n_features)
+
+    @property
+    def n_shards(self) -> int:
+        return int(len(self.manifest.parts))
+
+    def feature_ids(self):
+        return tuple(range(int(self.manifest.n_features)))
+
+    def sample_ids(self):
+        return tuple(range(int(self.manifest.n_samples)))
+
+    def _load_sample_keys(self):
+        if self._sample_keys is not None:
+            return
+        key_col = str(self.manifest.sample_key_col)
+        df = pl.read_parquet(self.manifest.sample_meta_path, columns=[key_col])
+        keys = tuple(None if value is None else str(value) for value in df[key_col].to_list())
+        self._sample_keys = keys
+        self._sample_key_to_id = {str(key): idx for idx, key in enumerate(keys) if key is not None}
+
+    def _load_feature_keys(self):
+        if self._feature_keys is not None:
+            return
+        key_col = str(self.manifest.feature_key_col)
+        df = pl.read_parquet(self.manifest.feature_meta_path, columns=[key_col])
+        keys = tuple(None if value is None else str(value) for value in df[key_col].to_list())
+        self._feature_keys = keys
+        self._feature_key_to_id = {str(key): idx for idx, key in enumerate(keys) if key is not None}
+
+    def sample_keys(self):
+        self._load_sample_keys()
+        return self._sample_keys
+
+    def feature_keys(self):
+        self._load_feature_keys()
+        return self._feature_keys
+
+    def resolve_sample_key(self, sample_key: str) -> int:
+        self._load_sample_keys()
+        sample_id = self._sample_key_to_id.get(str(sample_key))
+        if sample_id is None:
+            raise KeyError(f"sample key not found: {sample_key}")
+        return int(sample_id)
+
+    def resolve_feature_key(self, feature_key: str) -> int:
+        self._load_feature_keys()
+        feature_id = self._feature_key_to_id.get(str(feature_key))
+        if feature_id is None:
+            raise KeyError(f"feature key not found: {feature_key}")
+        return int(feature_id)
 
     def _part_path_for_feature(self, feature_id: int) -> str:
         feature_id = int(feature_id)
@@ -633,6 +713,9 @@ class ScalarDenseLongDataset:
             values[sample_ids] = df["value"].to_numpy().astype(np.float64, copy=False)
             valid[sample_ids] = df["mask"].to_numpy().astype(np.uint8, copy=False)
         return values, valid
+
+    def load_feature_by_key(self, feature_key: str):
+        return self.load_feature_by_id(self.resolve_feature_key(feature_key))
 
     def load_features_by_ids(self, feature_ids):
         feature_ids = [int(value) for value in feature_ids]
@@ -662,6 +745,24 @@ class ScalarDenseLongDataset:
                 valid[out_idx, sample_ids] = group["mask"].to_numpy().astype(np.uint8, copy=False)
         return values, valid
 
+    def load_rows(self, part_id: int, offsets):
+        """Load feature rows by dense-long part id and feature offset.
+
+        The selection pipeline uses a generic `(shard_id, offset)` reader
+        interface. For dense-long shards, `shard_id` means `part_id` and
+        `offset` means the feature offset inside that part.
+        """
+
+        part = self.manifest.parts[int(part_id)]
+        feature_ids = [int(part.first_feature_id) + int(offset) for offset in offsets]
+        return self.load_features_by_ids(feature_ids)
+
+    def load_feature_by_offset(self, part_id: int, offset: int):
+        """Load one feature row by dense-long part id and offset."""
+
+        values, valid = self.load_rows(int(part_id), [int(offset)])
+        return values[0], valid[0]
+
     def load_sample_by_id(self, sample_id: int):
         sample_id = int(sample_id)
         if sample_id < 0 or sample_id >= int(self.manifest.n_samples):
@@ -680,6 +781,140 @@ class ScalarDenseLongDataset:
             values[feature_ids] = df["value"].to_numpy().astype(np.float64, copy=False)
             valid[feature_ids] = df["mask"].to_numpy().astype(np.uint8, copy=False)
         return values, valid
+
+    def load_sample_by_key(self, sample_key: str):
+        return self.load_sample_by_id(self.resolve_sample_key(sample_key))
+
+    def _sample_key_for_id(self, sample_id: int):
+        self._load_sample_keys()
+        if sample_id < 0 or sample_id >= len(self._sample_keys):
+            return None
+        return self._sample_keys[int(sample_id)]
+
+    def _feature_key_for_id(self, feature_id: int):
+        self._load_feature_keys()
+        if feature_id < 0 or feature_id >= len(self._feature_keys):
+            return None
+        return self._feature_keys[int(feature_id)]
+
+    def _value_model(self, feature_id: int, sample_id: int, values, valid, *, feature_key=None, sample_key=None):
+        present = 0 <= sample_id < int(valid.shape[0]) and bool(valid[int(sample_id)])
+        return ScalarValue(
+            feature_id=int(feature_id),
+            sample_id=int(sample_id),
+            present=present,
+            value=float(values[int(sample_id)]) if present else None,
+            feature_key=self._feature_key_for_id(feature_id) if feature_key is None else feature_key,
+            sample_key=self._sample_key_for_id(sample_id) if sample_key is None else sample_key,
+        )
+
+    def get_value(self, feature_id: int, sample_id: int, strict: bool = False) -> ScalarValue:
+        if strict and (int(feature_id) < 0 or int(feature_id) >= int(self.manifest.n_features)):
+            raise KeyError(f"feature id not found: {feature_id}")
+        if strict and (int(sample_id) < 0 or int(sample_id) >= int(self.manifest.n_samples)):
+            raise KeyError(f"sample id not found: {sample_id}")
+        batch = self.get_values(feature_id=int(feature_id), sample_ids=[int(sample_id)], strict=False)
+        return batch.values[0]
+
+    def get_value_by_key(self, feature_key: str, sample_key: str, strict: bool = True) -> ScalarValue:
+        del strict
+        return self.get_value(self.resolve_feature_key(feature_key), self.resolve_sample_key(sample_key), strict=True)
+
+    def get_values(self, feature_id: int, sample_ids, strict: bool = False) -> FeatureValues:
+        if strict and (int(feature_id) < 0 or int(feature_id) >= int(self.manifest.n_features)):
+            raise KeyError(f"feature id not found: {feature_id}")
+        values, valid = self.load_features_by_ids([int(feature_id)])
+        sample_ids = [int(value) for value in sample_ids]
+        feature_key = self._feature_key_for_id(int(feature_id))
+        items = [
+            self._value_model(int(feature_id), sample_id, values[0], valid[0], feature_key=feature_key)
+            for sample_id in sample_ids
+        ]
+        return FeatureValues(
+            feature_id=int(feature_id),
+            sample_ids=tuple(sample_ids),
+            values=tuple(items),
+            feature_key=feature_key,
+            sample_keys=tuple(item.sample_key for item in items),
+        )
+
+    def get_values_by_key(self, feature_key: str, sample_keys, strict: bool = True) -> FeatureValues:
+        del strict
+        feature_id = self.resolve_feature_key(feature_key)
+        sample_ids = [self.resolve_sample_key(value) for value in sample_keys]
+        return self.get_values(feature_id, sample_ids, strict=True)
+
+    def _ordered_feature_ids(self, feature_ids, maintain_order: bool):
+        feature_ids = [int(value) for value in feature_ids]
+        if maintain_order:
+            return feature_ids
+        locator = self._locator_df().filter(pl.col("feature_id").is_in(feature_ids))
+        rank = {
+            int(row["feature_id"]): (int(row["part_id"]), int(row["offset_in_part"]))
+            for row in locator.iter_rows(named=True)
+        }
+        return sorted(feature_ids, key=lambda fid: rank.get(int(fid), (10**9, int(fid))))
+
+    def iter_many(self, feature_ids, sample_ids, strict: bool = False, batch_size: int = 128, maintain_order: bool = True):
+        del batch_size
+        ordered = self._ordered_feature_ids(feature_ids, bool(maintain_order))
+        for feature_id in ordered:
+            yield self.get_values(feature_id, sample_ids, strict=bool(strict))
+
+    def get_many(
+        self,
+        feature_ids,
+        sample_ids,
+        strict: bool = False,
+        batch_size: int = 128,
+        stream: bool = False,
+        maintain_order: bool = True,
+    ) -> QueryResult:
+        ordered = self._ordered_feature_ids(feature_ids, bool(maintain_order))
+        features_iter = self.iter_many(ordered, sample_ids, strict=bool(strict), batch_size=int(batch_size), maintain_order=True)
+        self._load_feature_keys()
+        self._load_sample_keys()
+        return QueryResult(
+            feature_ids=tuple(ordered),
+            sample_ids=tuple(int(value) for value in sample_ids),
+            features=features_iter if bool(stream) else tuple(features_iter),
+            feature_keys=tuple(self._feature_key_for_id(feature_id) for feature_id in ordered),
+            sample_keys=tuple(self._sample_key_for_id(int(sample_id)) for sample_id in sample_ids),
+        )
+
+    def iter_many_by_key(
+        self,
+        feature_keys,
+        sample_keys,
+        strict: bool = True,
+        batch_size: int = 128,
+        maintain_order: bool = True,
+    ):
+        del strict
+        feature_ids = [self.resolve_feature_key(value) for value in feature_keys]
+        sample_ids = [self.resolve_sample_key(value) for value in sample_keys]
+        return self.iter_many(feature_ids, sample_ids, strict=True, batch_size=batch_size, maintain_order=maintain_order)
+
+    def get_many_by_key(
+        self,
+        feature_keys,
+        sample_keys,
+        strict: bool = True,
+        batch_size: int = 128,
+        stream: bool = False,
+        maintain_order: bool = True,
+    ) -> QueryResult:
+        del strict
+        feature_ids = [self.resolve_feature_key(value) for value in feature_keys]
+        sample_ids = [self.resolve_sample_key(value) for value in sample_keys]
+        return self.get_many(
+            feature_ids,
+            sample_ids,
+            strict=True,
+            batch_size=batch_size,
+            stream=stream,
+            maintain_order=maintain_order,
+        )
 
     def top_features_from_stats(self, y_col: str = "y", top_k: int = 256) -> pl.DataFrame:
         mapping = self.manifest.selection_stats or {}

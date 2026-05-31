@@ -19,7 +19,6 @@ import pyarrow.parquet as pq
 from ..config import ScalarShardBuildOptions
 from .builder import _load_dense_metadata, _write_json_atomic
 from .dense_long import build_dense_long_shards_from_sample_bundles
-from .parquet_storage import build_shards_from_sample_bundles
 
 
 RAW_STATE_VERSION = 1
@@ -450,9 +449,9 @@ class ScalarRawDatasetBuilder:
         """Finalize raw sample rows as a sample-major manifest.
 
         The manifest references committed raw sample parquet files directly;
-        it does not rewrite them into bundle files. Existing blob and dense-long
-        shard builders can consume those paths because the row schema is the
-        same `(sample_id, feature_id, value)` long schema.
+        it does not rewrite them into bundle files. Dense-long materialization
+        consumes those paths because the row schema is the same
+        `(sample_id, feature_id, value)` long schema.
         """
 
         if self._finished_stage:
@@ -477,33 +476,6 @@ class ScalarRawDatasetBuilder:
         self._finished_stage = True
         self._save_state()
         return self.sample_major_manifest_path
-
-    def build_blob_shards(self, *, require_all: bool = True, keep_raw: bool = True, return_stats: bool = False):
-        if require_all:
-            pending = self.pending_sample_ids()
-            if pending:
-                raise ValueError(f"cannot build shards: {len(pending)} samples are still pending")
-        manifest_path = self.finish_stage()
-        result = build_shards_from_sample_bundles(
-            manifest_path,
-            self.out_dir,
-            feature_meta_path=self.feature_meta_path,
-            target_shard_bytes=int(self.build_options.target_shard_mb) * 1024 * 1024,
-            n_shards=self.build_options.n_shards,
-            feature_id_col=str(self.build_options.feature_id_col),
-            value_col=str(self.build_options.value_col),
-            sample_id_col=str(self.build_options.sample_id_col),
-            sample_key_col=str(self.build_options.sample_key_col),
-            feature_key_col=str(self.build_options.feature_key_col),
-            y_col=str(self.build_options.y_col),
-            stats_y_cols=list(self._stats_y_cols()),
-            values_dtype=str(self.build_options.values_dtype),
-            valid_dtype=str(self.build_options.valid_dtype),
-            return_stats=bool(return_stats),
-        )
-        if not keep_raw:
-            shutil.rmtree(self.raw_samples_path, ignore_errors=True)
-        return result
 
     def build_dense_long_shards(
         self,

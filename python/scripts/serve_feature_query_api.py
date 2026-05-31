@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import sys
 import threading
 import time
@@ -12,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-import numpy as np
 import polars as pl
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -31,8 +29,8 @@ for package_src in [
     if str(package_src) not in sys.path:
         sys.path.insert(0, str(package_src))
 
-from array_sample_parquet import load_array_sample_parquet_manifest, open_array_sample_parquet
-from scalar_feature_shard import open_dense_long_shard, open_shard
+from array_sample_parquet import open_array_sample_parquet
+from scalar_feature_shard import open_dense_long_shard
 
 
 SCALAR_DENSE_LONG_FORMAT = "scalar-dense-long-shard-v1"
@@ -173,12 +171,8 @@ def _detect_kind(manifest_path: str, scalar_format: str = "auto") -> str:
         return "array-sample-parquet"
     if requested in {"dense-long", "scalar-dense-long"}:
         return "scalar-dense-long"
-    if requested in {"blob", "scalar-blob"}:
-        return "scalar-blob"
     if manifest_format == SCALAR_DENSE_LONG_FORMAT:
         return "scalar-dense-long"
-    if "values_dtype" in payload or "shard_path" in payload:
-        return "scalar-blob"
     raise ValueError(f"unsupported manifest format: {manifest_format or '<missing>'}")
 
 
@@ -260,9 +254,6 @@ def _get_dataset(manifest_path: str, scalar_format: str = "auto") -> _CachedData
             metadata = None
         elif kind == "scalar-dense-long":
             reader = open_dense_long_shard(normalized)
-            metadata = _build_metadata_index(normalized, manifest_json)
-        elif kind == "scalar-blob":
-            reader = open_shard(normalized)
             metadata = _build_metadata_index(normalized, manifest_json)
         else:
             raise ValueError(f"unsupported dataset kind: {kind}")
@@ -400,25 +391,7 @@ def _scalar_feature_rows(entry: _CachedDataset, feature_ids: list[int], sample_i
                 }
             )
         return rows
-
-    result = entry.reader.get_many(feature_ids=feature_ids, sample_ids=sample_ids, strict=False)
-    for feature in result.features:
-        rows.append(
-            {
-                "feature_id": int(feature.feature_id),
-                "feature_key": feature.feature_key,
-                "values": [
-                    {
-                        "sample_id": int(value.sample_id),
-                        "sample_key": value.sample_key,
-                        "present": bool(value.present),
-                        "value": _json_float(value.value),
-                    }
-                    for value in feature.values
-                ],
-            }
-        )
-    return rows
+    raise HTTPException(status_code=400, detail=f"unsupported scalar dataset kind: {entry.kind}")
 
 
 @app.get("/healthz")

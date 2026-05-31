@@ -1,16 +1,15 @@
 import argparse
 
-from fs.scalar.parquet_storage import build_shards_from_sample_major
+from scalar_feature_shard import build_shard
 
 
 def main():
-    """CLI entry point for building scalar parquet shards from sample-major data."""
+    """CLI entry point for building dense-long scalar shards from sample-major data."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample-meta", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--feature-meta")
     ap.add_argument("--target-shard-mb", type=int, default=256)
-    ap.add_argument("--n-shards", type=int)
     ap.add_argument("--feature-id-col", default="feature_id")
     ap.add_argument("--value-col", default="value")
     ap.add_argument("--sample-id-col", default="sample_id")
@@ -26,12 +25,11 @@ def main():
     else:
         stats_y_cols = [str(args.y_col)]
 
-    manifest_path = build_shards_from_sample_major(
+    manifest_path = build_shard(
         args.sample_meta,
         args.out_dir,
         feature_meta_path=args.feature_meta,
-        target_shard_bytes=int(args.target_shard_mb) * 1024 * 1024,
-        n_shards=args.n_shards,
+        target_shard_mb=int(args.target_shard_mb),
         feature_id_col=args.feature_id_col,
         value_col=args.value_col,
         sample_id_col=args.sample_id_col,

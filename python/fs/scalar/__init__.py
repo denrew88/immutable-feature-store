@@ -1,17 +1,26 @@
-"""scalar feature 저장 서브패키지."""
+"""Dense-long scalar feature compatibility package."""
 
 from .builder import ScalarBuildSessionStatus, ScalarDatasetBuilder
 from .metadata import write_feature_meta, write_sample_meta
-from .reader import FeatureValues, QueryResult, ScalarShardDataset, ScalarValue, open_shard
+from scalar_feature_shard import build_shard, select_features
+from .reader import (
+    FeatureValues,
+    QueryResult,
+    ScalarDenseLongDataset,
+    ScalarValue,
+    open_dense_long_shard,
+)
 
 __all__ = [
-    "ScalarDatasetBuilder",
-    "ScalarShardDataset",
-    "ScalarBuildSessionStatus",
-    "ScalarValue",
     "FeatureValues",
     "QueryResult",
-    "open_shard",
-    "write_sample_meta",
+    "ScalarBuildSessionStatus",
+    "ScalarDatasetBuilder",
+    "ScalarDenseLongDataset",
+    "ScalarValue",
+    "build_shard",
+    "open_dense_long_shard",
+    "select_features",
     "write_feature_meta",
+    "write_sample_meta",
 ]

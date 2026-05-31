@@ -7,9 +7,9 @@ import fs.config.BuildShardConfig;
 import fs.io.common.ArrayMetadataWriter;
 import fs.io.common.JsonUtils;
 import fs.io.scalar.ScalarMetadataWriter;
+import fs.io.scalar.ScalarDenseLongShardBuilder;
 import fs.io.scalar.ScalarSampleBundleManifestIO;
 import fs.io.scalar.ScalarSampleBundleWriter;
-import fs.io.scalar.ShardBuilder;
 import fs.model.scalar.ScalarBuildSessionStatus;
 import fs.model.scalar.ScalarSampleBundleManifest;
 
@@ -342,7 +342,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         }
         ensureOpen();
         String stageManifestPath = finishStage();
-        manifestPath = ShardBuilder.buildShardsFromSampleBundles(stageManifestPath, outDir, buildConfig);
+        manifestPath = ScalarDenseLongShardBuilder.buildFromSampleBundles(stageManifestPath, outDir, buildConfig);
         if (!keepSampleMajor) {
             deleteRecursively(new File(sampleMajorOutDir));
         }

@@ -17,14 +17,13 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * scalar sample-bundle/raw-sample stage를 dense-long parquet shard로 materialize한다.
  *
  * <p>입력 parquet는 present 값만 가진 {@code (sample_id, feature_id, value)} row이다.
  * dense-long 최종 part는 모든 feature/sample 조합을 만들고, 입력 row가 없으면
- * {@code mask=0, value=0.0}으로 채운다. 이 방식은 파일 크기는 blob shard보다 커질 수 있지만,
+ * {@code mask=0, value=0.0}으로 채운다. 이 방식은 파일 크기는 dense-long format
  * 표준 parquet 도구로 직접 디버깅하기 쉽고 sample 기준 batch 조회가 단순하다.
  */
 public final class ScalarDenseLongShardBuilder {

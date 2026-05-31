@@ -1,39 +1,27 @@
 package scripts;
 
 import fs.config.BuildShardConfig;
-import fs.config.SelectionConfig;
 import fs.config.SyntheticConfig;
 import fs.io.ScalarDatasetBuilder;
+import fs.io.ScalarDenseLongDataset;
 import fs.io.ScalarFeatureShards;
-import fs.io.ScalarShardDataset;
 import fs.model.selection.Candidate;
+import fs.model.scalar.ScalarDenseLongManifest;
 import fs.model.scalar.ScalarFeatureValues;
 import fs.model.scalar.ScalarValue;
-import fs.model.scalar.ShardManifest;
 import fs.model.synthetic.SyntheticData;
 import fs.synth.SyntheticGenerator;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
 /**
- * check_scalar.ipynb의 Builder Test 흐름을 자바 public API로 재현하는 종합 테스트 스크립트다.
- *
- * <p>이 스크립트는 다음 순서로 동작한다.
- * 1) synthetic scalar X/Y 원본 생성
- * 2) sample/feature metadata parquet 작성
- * 3) ScalarDatasetBuilder로 최종 shard build
- * 4) getValues, iterMany 경로로 원본과 복원 결과 비교
- * 5) buildCandidates, selectFeatures 예제 실행
- *
- * <p>기본 크기는 sample 1000개, feature 1024개로 맞춰 두었다.
- * 필요하면 상수만 바꿔서 더 큰 조건으로 다시 돌릴 수 있다.
+ * check_scalar.ipynb의 builder test 흐름을 Java dense-long API로 검증한다.
  */
 public final class RunScalarNotebookBuilderTestsMain {
     private static final int N_SAMPLES = 1000;
@@ -68,8 +56,9 @@ public final class RunScalarNotebookBuilderTestsMain {
         buildConfig.targetShardBytes = 4L * 1024L * 1024L;
         buildConfig.yCol = Y_COLS[0];
         buildConfig.statsYCols = Arrays.asList(Y_COLS);
+        buildConfig.denseLongRowGroupFeatures = 128;
 
-        String outDir = new File(root, "scalar_shards").getAbsolutePath();
+        String outDir = new File(root, "scalar_dense_long").getAbsolutePath();
         String stageDir = new File(root, "sample_major_stage").getAbsolutePath();
         String manifestPath;
         try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
@@ -92,10 +81,7 @@ public final class RunScalarNotebookBuilderTestsMain {
             manifestPath = builder.buildShards(true);
         }
 
-        require(new File(manifestPath).exists(), "missing shard manifest");
-        require(new File(stageDir).exists(), "sample-major stage should remain when keepSampleMajor=true");
-
-        ShardManifest manifest = ScalarFeatureShards.loadManifest(manifestPath);
+        ScalarDenseLongManifest manifest = ScalarFeatureShards.loadManifest(manifestPath);
         require(manifest.nSamples == N_SAMPLES, "nSamples mismatch");
         require(manifest.nFeatures == N_FEATURES, "nFeatures mismatch");
         for (String yCol : Y_COLS) {
@@ -108,42 +94,30 @@ public final class RunScalarNotebookBuilderTestsMain {
         int[] queryFeatureIds = shuffledFeatureIds(N_FEATURES, rng);
         long[] querySampleIds = shuffledSampleIds(N_SAMPLES, QUERY_SAMPLE_COUNT, rng);
 
-        try (ScalarShardDataset dataset = ScalarFeatureShards.open(manifestPath)) {
-            ScalarValue single = dataset.getValueByKey(featureKeys.get(0), sampleKey(0));
-            assertExpectedValue(single, 0, 0, data);
+        try (ScalarDenseLongDataset dataset = ScalarFeatureShards.open(manifestPath)) {
+            ScalarFeatureValues feature0 = dataset.loadFeatureByKey(featureKeys.get(0));
+            assertExpectedValue(feature0.values.get(0), 0, 0, data);
 
-            verifyGetValues(dataset, queryFeatureIds, querySampleIds, data, featureKeys);
-            verifyIterMany(dataset, queryFeatureIds, querySampleIds, data, featureKeys, false, 128);
-            verifyIterMany(dataset, queryFeatureIds, querySampleIds, data, featureKeys, true, 8);
-        }
+            for (int i = 0; i < 32; i++) {
+                int featureId = queryFeatureIds[i];
+                ScalarFeatureValues featureValues = dataset.loadFeatureById(featureId);
+                require(featureValues.featureId == featureId, "feature id mismatch");
+                require(featureKeys.get(featureId).equals(featureValues.featureKey), "feature key mismatch");
+                for (long sampleId : querySampleIds) {
+                    assertExpectedValue(featureValues.values.get((int) sampleId), featureId, (int) sampleId, data);
+                }
+            }
 
-        SelectionConfig selectionConfig = new SelectionConfig(
-                0.01,
-                100,
-                0.95,
-                100,
-                16,
-                256,
-                256,
-                128,
-                0,
-                0
-        );
+            ScalarDenseLongDataset.SampleValues sample = dataset.loadSampleById(querySampleIds[0]);
+            for (int i = 0; i < 32; i++) {
+                int featureId = queryFeatureIds[i];
+                boolean expectedPresent = data.M[featureId][(int) querySampleIds[0]] != 0;
+                require((sample.valid[featureId] != 0) == expectedPresent, "sample mask mismatch");
+            }
 
-        List<Candidate> candidates = ScalarFeatureShards.buildCandidates(manifestPath, Y_COLS[0], selectionConfig);
-        require(!candidates.isEmpty(), "selection candidates should not be empty");
-        assertCandidatesSorted(candidates);
-
-        List<Candidate> selected = ScalarFeatureShards.selectFeatures(manifestPath, Y_COLS[0], selectionConfig);
-        require(!selected.isEmpty(), "selected feature list should not be empty");
-        require(selected.size() <= selectionConfig.topM, "selected feature count exceeds topM");
-
-        HashSet<Integer> candidateFeatureIds = new HashSet<Integer>();
-        for (Candidate candidate : candidates) {
-            candidateFeatureIds.add(Integer.valueOf(candidate.featureId));
-        }
-        for (Candidate candidate : selected) {
-            require(candidateFeatureIds.contains(Integer.valueOf(candidate.featureId)), "selected feature is not present in candidate set");
+            List<Candidate> candidates = dataset.topFeaturesFromStats(Y_COLS[0], 32);
+            require(!candidates.isEmpty(), "selection candidates should not be empty");
+            assertCandidatesSorted(candidates);
         }
 
         System.out.println("java scalar notebook-style builder tests passed");
@@ -152,14 +126,11 @@ public final class RunScalarNotebookBuilderTestsMain {
     private static List<Map<String, Object>> sampleRows(SyntheticData data) {
         ArrayList<Map<String, Object>> rows = new ArrayList<Map<String, Object>>(N_SAMPLES);
         for (int sampleId = 0; sampleId < N_SAMPLES; sampleId++) {
-            double y1 = data.y[sampleId];
-            double y2 = -data.y[sampleId];
-            double y3 = 0.5 * data.y[sampleId] + Math.sin(sampleId * 0.01);
             rows.add(row(
                     "sample_key", sampleKey(sampleId),
-                    "y1", y1,
-                    "y2", y2,
-                    "y3", y3,
+                    "y1", data.y[sampleId],
+                    "y2", -data.y[sampleId],
+                    "y3", 0.5 * data.y[sampleId] + Math.sin(sampleId * 0.01),
                     "split", (sampleId % 5 == 0) ? "test" : "train"
             ));
         }
@@ -186,51 +157,6 @@ public final class RunScalarNotebookBuilderTestsMain {
         return keys;
     }
 
-    private static void verifyGetValues(
-            ScalarShardDataset dataset,
-            int[] queryFeatureIds,
-            long[] querySampleIds,
-            SyntheticData data,
-            List<String> featureKeys) throws Exception {
-        for (int featureId : queryFeatureIds) {
-            ScalarFeatureValues batch = dataset.getValues(featureId, querySampleIds);
-            assertFeatureBatch(batch, featureId, querySampleIds, data, featureKeys);
-        }
-    }
-
-    private static void verifyIterMany(
-            ScalarShardDataset dataset,
-            int[] queryFeatureIds,
-            long[] querySampleIds,
-            SyntheticData data,
-            List<String> featureKeys,
-            boolean maintainOrder,
-            int batchSize) throws Exception {
-        int position = 0;
-        for (ScalarFeatureValues batch : dataset.iterMany(queryFeatureIds, querySampleIds, batchSize, maintainOrder)) {
-            assertFeatureBatch(batch, batch.featureId, querySampleIds, data, featureKeys);
-            if (maintainOrder) {
-                require(batch.featureId == queryFeatureIds[position], "iterMany maintainOrder=true feature order mismatch");
-            }
-            position += 1;
-        }
-        require(position == queryFeatureIds.length, "iterMany did not yield expected feature count");
-    }
-
-    private static void assertFeatureBatch(
-            ScalarFeatureValues batch,
-            int expectedFeatureId,
-            long[] querySampleIds,
-            SyntheticData data,
-            List<String> featureKeys) {
-        require(batch.featureId == expectedFeatureId, "feature id mismatch");
-        require(featureKeys.get(expectedFeatureId).equals(batch.featureKey), "feature key mismatch");
-        require(batch.values.size() == querySampleIds.length, "sample count mismatch in feature batch");
-        for (int i = 0; i < querySampleIds.length; i++) {
-            assertExpectedValue(batch.values.get(i), expectedFeatureId, (int) querySampleIds[i], data);
-        }
-    }
-
     private static void assertExpectedValue(ScalarValue actual, int featureId, int sampleId, SyntheticData data) {
         require(actual != null, "scalar value should not be null");
         require(actual.sampleId == sampleId, "sample_id mismatch");
@@ -242,9 +168,8 @@ public final class RunScalarNotebookBuilderTestsMain {
             return;
         }
         require(actual.value != null, "present scalar value should not be null");
-        double expectedValue = data.X[featureId][sampleId];
         long actualBits = Double.doubleToLongBits(actual.value.doubleValue());
-        long expectedBits = Double.doubleToLongBits(expectedValue);
+        long expectedBits = Double.doubleToLongBits(data.X[featureId][sampleId]);
         require(actualBits == expectedBits, "scalar value mismatch");
     }
 

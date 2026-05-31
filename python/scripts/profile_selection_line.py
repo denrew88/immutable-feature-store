@@ -3,74 +3,38 @@ import io
 
 from line_profiler import LineProfiler
 
-from fs.feature_selection import incremental as selection
-from fs.feature_selection import pearson
-from fs.feature_selection.candidates import build_candidates_from_shards, build_candidates_from_stats
-from fs.config import SelectionConfig
-from fs.scalar.parquet_storage import (
-    ParquetShardReader,
-    list_shard_paths,
-    load_manifest,
-    load_sample_targets,
-    locator_has_candidate_stats,
-    resolve_selection_stats_path,
-)
-
-
-def _build_candidates(manifest, args):
-    """Build feature candidates for line-profiling the selection pipeline."""
-    stats_path = resolve_selection_stats_path(manifest, args.y_col)
-    if stats_path:
-        return build_candidates_from_stats(
-            stats_path,
-            min_non_null_y=args.min_non_null_y,
-            y_r2_threshold=args.y_r2,
-            max_candidates=args.max_candidates,
-        )
-    if manifest.stats_y_col == args.y_col and locator_has_candidate_stats(manifest.feature_locator_path):
-        return build_candidates_from_stats(
-            manifest.feature_locator_path,
-            min_non_null_y=args.min_non_null_y,
-            y_r2_threshold=args.y_r2,
-            max_candidates=args.max_candidates,
-        )
-
-    _, y, y_mask = load_sample_targets(manifest.sample_meta_path, y_col=args.y_col)
-    return build_candidates_from_shards(
-        list_shard_paths(manifest),
-        y,
-        y_mask,
-        min_non_null_y=args.min_non_null_y,
-        y_r2_threshold=args.y_r2,
-        max_candidates=args.max_candidates,
-        batch_size=args.batch_size,
-    )
+from scalar_feature_shard import SelectionOptions, select_features
+from scalar_feature_shard._impl import incremental as selection_incremental
+from scalar_feature_shard._impl import pearson
+from scalar_feature_shard._impl.candidates import build_candidates_from_stats
 
 
 def _run_selection(args):
-    """Run one full selection pass for profiling."""
-    manifest = load_manifest(args.manifest)
-    candidates = _build_candidates(manifest, args)
-    reader = ParquetShardReader(manifest, max_gap=args.max_gap)
-    config = SelectionConfig(
-        y_r2_threshold=args.y_r2,
-        min_non_null_y=args.min_non_null_y,
-        ff_r2_threshold=args.ff_r2,
-        min_non_null_pair=args.min_non_null_pair,
-        top_m=args.top_m,
-        initial_cap=args.initial_cap,
-        max_step=args.max_step,
-        batch_size=args.batch_size,
-        max_gap=args.max_gap,
-        max_candidates=args.max_candidates,
-        mask_fastpath_min_group=args.mask_fastpath_min_group,
-        mask_fastpath_min_pairs=args.mask_fastpath_min_pairs,
+    """Run one dense-long selection pass for line profiling."""
+
+    return select_features(
+        args.manifest,
+        y_col=args.y_col,
+        options=SelectionOptions(
+            y_r2_threshold=args.y_r2,
+            min_non_null_y=args.min_non_null_y,
+            ff_r2_threshold=args.ff_r2,
+            min_non_null_pair=args.min_non_null_pair,
+            top_m=args.top_m,
+            initial_cap=args.initial_cap,
+            max_step=args.max_step,
+            batch_size=args.batch_size,
+            max_gap=args.max_gap,
+            max_candidates=args.max_candidates,
+            mask_fastpath_min_group=args.mask_fastpath_min_group,
+            mask_fastpath_min_pairs=args.mask_fastpath_min_pairs,
+        ),
     )
-    return selection.select_features_incremental(candidates, reader, config)
 
 
 def main():
-    """Profile the scalar feature-selection pipeline with line_profiler."""
+    """Profile the dense-long scalar feature-selection pipeline."""
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--y-col", default="y")
@@ -92,29 +56,29 @@ def main():
     profiler = LineProfiler()
     for fn in [
         _run_selection,
-        selection.select_features_incremental,
-        selection._build_stage_cache,
-        selection._build_stage_adjacency,
-        selection._build_mask_groups,
-        selection._process_mask_group_pair,
-        selection._get_group_values,
-        selection._stack_local_values,
-        selection._same_mask_tile_stats,
-        selection._or_edge_rows,
-        selection._overlap_counts_many_to_many,
-        selection._stack_feature_tile,
-        selection._pack_valid_rows,
-        selection._pack_bool_rows,
+        select_features,
+        build_candidates_from_stats,
+        selection_incremental.select_features_incremental,
+        selection_incremental._build_stage_cache,
+        selection_incremental._build_stage_adjacency,
+        selection_incremental._build_mask_groups,
+        selection_incremental._process_mask_group_pair,
+        selection_incremental._get_group_values,
+        selection_incremental._stack_local_values,
+        selection_incremental._same_mask_tile_stats,
+        selection_incremental._or_edge_rows,
+        selection_incremental._overlap_counts_many_to_many,
+        selection_incremental._stack_feature_tile,
+        selection_incremental._pack_valid_rows,
+        selection_incremental._pack_bool_rows,
         pearson.batch_r2_many_vs_many,
         pearson.batch_r2_one_vs_many,
-        ParquetShardReader._group_offsets,
-        ParquetShardReader.load_rows,
     ]:
         profiler.add_function(fn)
 
-    selected = profiler(_run_selection)(args)
-    print(f"selected_count={len(selected)}")
-    print("selected_feature_ids=" + ",".join(str(c.feature_id) for c in selected[:10]))
+    result = profiler(_run_selection)(args)
+    print(f"selected_count={result.selected_count}")
+    print("selected_feature_ids=" + ",".join(str(feature_id) for feature_id in result.selected_feature_ids[:10]))
 
     if args.stats_out:
         with open(args.stats_out, "w", encoding="utf-8") as f:

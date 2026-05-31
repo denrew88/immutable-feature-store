@@ -14,7 +14,6 @@ import fs.io.common.JsonUtils;
 import fs.model.array.ArrayBuildSessionStatus;
 import fs.model.common.LogicalType;
 import fs.model.common.PointColumnSpec;
-import fs.model.common.StorageType;
 
 import java.io.File;
 import java.nio.file.Files;

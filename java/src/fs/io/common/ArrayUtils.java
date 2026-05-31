@@ -1,7 +1,6 @@
 package fs.io.common;
 
 import fs.model.common.PointColumnSpec;
-import fs.model.common.StorageType;
 
 import java.util.Arrays;
 import java.nio.ByteBuffer;

@@ -1,17 +1,10 @@
-"""scalar feature shard용 public feature-selection facade."""
+"""Dense-long scalar feature-selection facade."""
 
 import polars as pl
 
-from ._impl.candidates import build_candidates_from_shards, build_candidates_from_stats
+from ._impl.candidates import build_candidates_from_stats
+from ._impl.dense_long import ScalarDenseLongDataset, load_dense_long_manifest
 from ._impl.incremental import select_features_incremental
-from ._impl.parquet_storage import (
-    ParquetShardReader,
-    list_shard_paths,
-    load_manifest,
-    load_sample_targets,
-    locator_has_candidate_stats,
-    resolve_selection_stats_path,
-)
 from .config import SelectionConfig
 from .exceptions import ManifestFormatError
 from .models import SelectionCandidate, SelectionOptions, SelectionResult
@@ -34,7 +27,7 @@ def _resolve_selection_options(
     mask_fastpath_min_group,
     mask_fastpath_min_pairs,
 ):
-    """선택적 selection 옵션 객체 위에 명시적 keyword 인자를 덮어써서 병합한다."""
+    """Merge object-style selection options with explicit keyword overrides."""
 
     base = options or SelectionOptions()
     if isinstance(base, SelectionConfig):
@@ -75,8 +68,6 @@ def _resolve_selection_options(
 
 
 def _load_feature_keys_by_id(manifest):
-    """설정돼 있으면 dense feature id 순서에 맞는 feature key를 로드한다."""
-
     key_col = str(getattr(manifest, "feature_key_col", "") or "")
     if not key_col:
         return None
@@ -105,7 +96,7 @@ def select_features(
     mask_fastpath_min_pairs: int | None = None,
     include_candidates: bool = False,
 ):
-    """standalone shard manifest에서 scalar feature selection을 실행한다."""
+    """Run scalar feature selection against a dense-long shard manifest."""
 
     resolved = _resolve_selection_options(
         options,
@@ -124,59 +115,39 @@ def select_features(
         mask_fastpath_min_pairs=mask_fastpath_min_pairs,
     )
     try:
-        manifest = load_manifest(str(manifest_path))
-    except Exception as exc:  # pragma: no cover - parser 내부 예외 타입은 구현 세부사항이다.
-        raise ManifestFormatError(f"failed to load scalar shard manifest: {manifest_path}") from exc
+        manifest = load_dense_long_manifest(str(manifest_path))
+    except Exception as exc:
+        raise ManifestFormatError(f"failed to load dense-long scalar manifest: {manifest_path}") from exc
 
-    reader = ParquetShardReader(manifest, max_gap=resolved.max_gap)
-    stats_path = resolve_selection_stats_path(manifest, resolved.y_col)
-    used_precomputed_stats = False
-    if stats_path:
-        candidates = build_candidates_from_stats(
-            stats_path,
-            min_non_null_y=resolved.min_non_null_y,
-            y_r2_threshold=resolved.y_r2_threshold,
-            max_candidates=resolved.max_candidates,
-        )
-        used_precomputed_stats = True
-    elif manifest.stats_y_col == resolved.y_col and locator_has_candidate_stats(manifest.feature_locator_path):
-        candidates = build_candidates_from_stats(
-            manifest.feature_locator_path,
-            min_non_null_y=resolved.min_non_null_y,
-            y_r2_threshold=resolved.y_r2_threshold,
-            max_candidates=resolved.max_candidates,
-        )
-        used_precomputed_stats = True
-    else:
-        _, y, y_mask = load_sample_targets(manifest.sample_meta_path, y_col=resolved.y_col)
-        candidates = build_candidates_from_shards(
-            list_shard_paths(manifest),
-            y,
-            y_mask,
-            min_non_null_y=resolved.min_non_null_y,
-            y_r2_threshold=resolved.y_r2_threshold,
-            max_candidates=resolved.max_candidates,
-            batch_size=resolved.batch_size,
-        )
+    stats_path = (manifest.selection_stats or {}).get(resolved.y_col)
+    if not stats_path:
+        raise ValueError(f"dense-long selection stats not found for y column: {resolved.y_col}")
 
-    selected = select_features_incremental(
-        candidates,
-        reader,
-        SelectionConfig(
-            y_r2_threshold=resolved.y_r2_threshold,
-            min_non_null_y=resolved.min_non_null_y,
-            ff_r2_threshold=resolved.ff_r2_threshold,
-            min_non_null_pair=resolved.min_non_null_pair,
-            top_m=resolved.top_m,
-            initial_cap=resolved.initial_cap,
-            max_step=resolved.max_step,
-            batch_size=resolved.batch_size,
-            max_gap=resolved.max_gap,
-            max_candidates=resolved.max_candidates,
-            mask_fastpath_min_group=resolved.mask_fastpath_min_group,
-            mask_fastpath_min_pairs=resolved.mask_fastpath_min_pairs,
-        ),
+    candidates = build_candidates_from_stats(
+        stats_path,
+        min_non_null_y=resolved.min_non_null_y,
+        y_r2_threshold=resolved.y_r2_threshold,
+        max_candidates=resolved.max_candidates,
     )
+    with ScalarDenseLongDataset(str(manifest_path)) as reader:
+        selected = select_features_incremental(
+            candidates,
+            reader,
+            SelectionConfig(
+                y_r2_threshold=resolved.y_r2_threshold,
+                min_non_null_y=resolved.min_non_null_y,
+                ff_r2_threshold=resolved.ff_r2_threshold,
+                min_non_null_pair=resolved.min_non_null_pair,
+                top_m=resolved.top_m,
+                initial_cap=resolved.initial_cap,
+                max_step=resolved.max_step,
+                batch_size=resolved.batch_size,
+                max_gap=resolved.max_gap,
+                max_candidates=resolved.max_candidates,
+                mask_fastpath_min_group=resolved.mask_fastpath_min_group,
+                mask_fastpath_min_pairs=resolved.mask_fastpath_min_pairs,
+            ),
+        )
 
     feature_keys_by_id = _load_feature_keys_by_id(manifest)
     selected_feature_ids = tuple(int(candidate.feature_id) for candidate in selected)
@@ -202,11 +173,11 @@ def select_features(
         candidates=public_candidates,
         candidate_count=int(len(candidates)),
         selected_count=int(len(selected_feature_ids)),
-        used_precomputed_stats=bool(used_precomputed_stats),
+        used_precomputed_stats=True,
     )
 
 
 def run_selection(manifest_path, **kwargs) -> SelectionResult:
-    """`select_features(...)`와 동일한 alias입니다."""
+    """Alias for `select_features(...)`."""
 
     return select_features(manifest_path, **kwargs)

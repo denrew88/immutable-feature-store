@@ -1,9 +1,14 @@
-"""scalar feature shard를 위한 얇은 public writer facade."""
+"""Public dense-long scalar writer facade."""
+
+from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-from ._impl.parquet_storage import build_shards_from_sample_bundles, build_shards_from_sample_major
+import polars as pl
+
+from ._impl.dense_long import build_dense_long_shards_from_sample_bundles
 from .config import ScalarShardBuildOptions
 from .models import BuildOptions
 
@@ -12,7 +17,6 @@ def _resolve_options(
     options: BuildOptions | ScalarShardBuildOptions | None,
     *,
     target_shard_mb,
-    n_shards,
     feature_id_col,
     value_col,
     sample_id_col,
@@ -21,10 +25,8 @@ def _resolve_options(
     path_col,
     y_col,
     stats_y_cols,
-    values_dtype,
-    valid_dtype,
 ):
-    """선택적 build 옵션 위에 명시적 keyword 인자를 덮어써서 병합한다."""
+    """Merge object-style build options with explicit keyword overrides."""
 
     base = options or BuildOptions()
     if isinstance(base, ScalarShardBuildOptions):
@@ -39,12 +41,10 @@ def _resolve_options(
             path_col=base.path_col,
             y_col=base.y_col,
             stats_y_cols=base.stats_y_cols,
-            values_dtype=base.values_dtype,
-            valid_dtype=base.valid_dtype,
         )
     return BuildOptions(
         target_shard_mb=int(base.target_shard_mb if target_shard_mb is None else target_shard_mb),
-        n_shards=base.n_shards if n_shards is None else int(n_shards),
+        n_shards=None,
         feature_id_col=str(base.feature_id_col if feature_id_col is None else feature_id_col),
         value_col=str(base.value_col if value_col is None else value_col),
         sample_id_col=str(base.sample_id_col if sample_id_col is None else sample_id_col),
@@ -53,9 +53,57 @@ def _resolve_options(
         path_col=str(base.path_col if path_col is None else path_col),
         y_col=str(base.y_col if y_col is None else y_col),
         stats_y_cols=base.stats_y_cols if stats_y_cols is None else tuple(str(value) for value in stats_y_cols),
-        values_dtype=str(base.values_dtype if values_dtype is None else values_dtype),
-        valid_dtype=str(base.valid_dtype if valid_dtype is None else valid_dtype),
     )
+
+
+def _resolve_sample_paths_from_df(df: pl.DataFrame, sample_meta_path: str, path_col: str) -> list[str]:
+    if path_col not in df.columns:
+        raise ValueError(f"sample_meta parquet must contain sample path column: {path_col}")
+    base_dir = os.path.dirname(os.path.abspath(sample_meta_path))
+    out: list[str] = []
+    for raw_path in df[path_col].to_list():
+        value = str(raw_path)
+        out.append(value if os.path.isabs(value) else os.path.normpath(os.path.join(base_dir, value)))
+    return out
+
+
+def _stage_manifest_from_sample_meta(
+    source_path: str,
+    out_dir: str,
+    *,
+    feature_meta_path: str | None,
+    options: BuildOptions,
+) -> str:
+    sample_meta_path = str(Path(source_path).expanduser().resolve())
+    sample_meta_df = pl.read_parquet(sample_meta_path)
+    feature_meta = (
+        str(Path(feature_meta_path).expanduser().resolve())
+        if feature_meta_path is not None
+        else os.path.join(os.path.dirname(sample_meta_path), "feature_meta.parquet")
+    )
+    if not os.path.exists(feature_meta):
+        raise ValueError(f"feature_meta_path does not exist: {feature_meta}")
+
+    os.makedirs(out_dir, exist_ok=True)
+    manifest_path = os.path.join(out_dir, "sample_major_manifest.json")
+    payload = {
+        "format": "scalar-sample-bundles",
+        "version": 1,
+        "sample_meta_path": sample_meta_path,
+        "feature_meta_path": feature_meta,
+        "bundle_paths": _resolve_sample_paths_from_df(sample_meta_df, sample_meta_path, str(options.path_col)),
+        "bundle_sample_ids": (
+            [int(value) for value in sample_meta_df[str(options.sample_id_col)].to_list()]
+            if str(options.sample_id_col) in sample_meta_df.columns
+            else list(range(sample_meta_df.height))
+        ),
+        "sample_id_col": str(options.sample_id_col),
+        "feature_id_col": str(options.feature_id_col),
+        "value_col": str(options.value_col),
+    }
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return manifest_path
 
 
 def build_shard(
@@ -77,34 +125,26 @@ def build_shard(
     values_dtype: str | None = None,
     valid_dtype: str | None = None,
 ):
-    """sample-major metadata와 sample별 parquet 파일에서 scalar shard를 생성한다.
+    """Build a dense-long scalar shard from sample-major rows.
 
-    Args:
-        source: sample-major `sample_meta.parquet` 경로.
-        out_dir: standalone shard artifact를 쓸 출력 디렉터리.
-        feature_meta_path: 선택적 dense feature metadata 경로.
-        options: 선택적 `BuildOptions` 묶음.
-        target_shard_mb: 선호하는 최대 shard 크기(MB).
-        n_shards: 선택적 명시 shard 개수 override.
-        feature_id_col: sample 파일의 feature id 컬럼 이름.
-        value_col: sample 파일의 scalar value 컬럼 이름.
-        sample_id_col: sample metadata의 dense sample id 컬럼 이름.
-        sample_key_col: sample metadata의 외부 sample-key 컬럼 이름.
-        feature_key_col: feature metadata의 외부 feature-key 컬럼 이름.
-        path_col: sample metadata의 sample 파일 경로 컬럼 이름.
-        y_col: `stats_y_cols`를 생략했을 때 사용할 기본 target 컬럼 이름.
-        stats_y_cols: `selection_stats/`에 미리 계산해 둘 target 컬럼 목록.
-        values_dtype: 인코딩된 values dtype.
-        valid_dtype: 인코딩된 validity dtype.
-
-    Returns:
-        생성된 `shard_manifest.json` 경로.
+    `source` may be a `scalar-sample-bundles` manifest or a sample metadata
+    parquet containing `path_col`. The generated artifact is always
+    `dense_long_shard_manifest.json` plus `dense_long_parts/*.parquet`.
+    Deprecated fixed-shard options (`n_shards`, `values_dtype`, `valid_dtype`)
+    are accepted for call-site convenience but ignored.
     """
+
+    if n_shards is not None:
+        # dense-long partitions by target bytes, not fixed shard count.
+        n_shards = None
+    if values_dtype is not None and str(values_dtype).lower() not in {"float64", "double"}:
+        raise ValueError("dense-long scalar shards store value as float64")
+    if valid_dtype is not None and str(valid_dtype).lower() != "uint8":
+        raise ValueError("dense-long scalar shards store mask as uint8")
 
     resolved = _resolve_options(
         options,
         target_shard_mb=target_shard_mb,
-        n_shards=n_shards,
         feature_id_col=feature_id_col,
         value_col=value_col,
         sample_id_col=sample_id_col,
@@ -113,31 +153,33 @@ def build_shard(
         path_col=path_col,
         y_col=y_col,
         stats_y_cols=stats_y_cols,
-        values_dtype=values_dtype,
-        valid_dtype=valid_dtype,
     )
-    source_path = str(source)
-    build_fn = build_shards_from_sample_major
+    source_path = str(Path(source).expanduser().resolve())
     if Path(source_path).suffix.lower() == ".json":
         with open(source_path, "r", encoding="utf-8") as f:
             source_json = json.load(f)
-        if str(source_json.get("format", "")) == "scalar-sample-bundles":
-            build_fn = build_shards_from_sample_bundles
+        if str(source_json.get("format", "")) != "scalar-sample-bundles":
+            raise ValueError(f"unsupported scalar build manifest format: {source_json.get('format')}")
+        stage_manifest = source_path
+    else:
+        stage_manifest = _stage_manifest_from_sample_meta(
+            source_path,
+            str(Path(out_dir).expanduser().resolve()),
+            feature_meta_path=None if feature_meta_path is None else str(feature_meta_path),
+            options=resolved,
+        )
 
-    return build_fn(
-        source_path,
+    return build_dense_long_shards_from_sample_bundles(
+        stage_manifest,
         str(out_dir),
         feature_meta_path=None if feature_meta_path is None else str(feature_meta_path),
-        n_shards=None if resolved.n_shards is None else int(resolved.n_shards),
-        target_shard_bytes=int(resolved.target_shard_mb) * 1024 * 1024,
+        target_part_bytes=int(resolved.target_shard_mb) * 1024 * 1024,
         feature_id_col=resolved.feature_id_col,
         value_col=resolved.value_col,
         sample_id_col=resolved.sample_id_col,
         sample_key_col=resolved.sample_key_col,
         feature_key_col=resolved.feature_key_col,
-        path_col=resolved.path_col,
         y_col=resolved.y_col,
         stats_y_cols=None if resolved.stats_y_cols is None else list(resolved.stats_y_cols),
-        values_dtype=resolved.values_dtype,
-        valid_dtype=resolved.valid_dtype,
+        compression="zstd",
     )

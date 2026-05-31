@@ -1,10 +1,7 @@
 package fs.model.array;
 
-import fs.model.common.PointColumnSpec;
-
 import fs.io.common.ArrayUtils;
 
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;

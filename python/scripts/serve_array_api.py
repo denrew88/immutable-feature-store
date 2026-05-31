@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from fs.feature_selection.candidates import build_candidates_from_shards, build_candidates_from_stats
+from fs.feature_selection.candidates import build_candidates_from_stats
 from fs.config import SelectionConfig
 from fs.array.binary_storage import (
     ArrayBinaryShardReader,
@@ -27,15 +27,12 @@ from fs.array_sample_parquet import (
     load_array_sample_parquet_manifest,
 )
 from fs.scalar.parquet_storage import (
-    ParquetShardReader,
     build_feature_locator_index,
-    list_shard_paths,
-    load_sample_targets,
     load_manifest,
-    locator_has_candidate_stats,
     resolve_selection_stats_path,
     validate_dense_sample_ids,
 )
+from fs.scalar.reader import ScalarDenseLongDataset
 from fs.feature_selection.incremental import select_features_incremental
 from fs.types import LogicalType, StorageType, normalize_logical_type, normalize_storage_type
 
@@ -426,7 +423,7 @@ def _get_scalar_cache_entry(manifest_path: str) -> _ManifestCacheEntry:
             return entry
         manifest = load_manifest(normalized)
         validate_dense_sample_ids(manifest.sample_meta_path)
-        reader = ParquetShardReader(manifest)
+        reader = ScalarDenseLongDataset(manifest.manifest_path)
         locator_index = build_feature_locator_index(manifest.feature_locator_path)
         entry = _ManifestCacheEntry(
             manifest_path=normalized,
@@ -1015,7 +1012,7 @@ def scalar_feature(req: ScalarFeatureRequest):
     entry = _get_scalar_cache_entry(req.manifest_path)
     feature_id = _resolve_scalar_request_feature_id(req, entry)
     sample_ids = _resolve_scalar_request_sample_ids(req, entry)
-    values, valid = entry.reader.load_feature_by_id(feature_id, locator_index=entry.locator_index)
+    values, valid = entry.reader.load_feature_by_id(feature_id)
     sample_keys_by_id = _get_scalar_sample_keys_by_id(entry)
     feature_keys_by_id = _get_scalar_feature_keys_by_id(entry)
     response_values = []
@@ -1068,35 +1065,16 @@ def run_selection(req: SelectionRequest):
     candidate_started = time.perf_counter()
     stats_path = resolve_selection_stats_path(entry.manifest, req.y_col)
     used_locator_stats = bool(stats_path)
-    if used_locator_stats:
-        candidates = build_candidates_from_stats(
-            stats_path,
-            min_non_null_y=req.min_non_null_y,
-            y_r2_threshold=req.y_r2,
-            max_candidates=req.max_candidates,
-        )
-    elif entry.manifest.stats_y_col == req.y_col and locator_has_candidate_stats(entry.manifest.feature_locator_path):
-        used_locator_stats = True
-        candidates = build_candidates_from_stats(
-            entry.manifest.feature_locator_path,
-            min_non_null_y=req.min_non_null_y,
-            y_r2_threshold=req.y_r2,
-            max_candidates=req.max_candidates,
-        )
-    else:
-        _, y, y_mask = load_sample_targets(entry.manifest.sample_meta_path, y_col=req.y_col)
-        candidates = build_candidates_from_shards(
-            list_shard_paths(entry.manifest),
-            y,
-            y_mask,
-            min_non_null_y=req.min_non_null_y,
-            y_r2_threshold=req.y_r2,
-            max_candidates=req.max_candidates,
-            batch_size=req.batch_size,
-        )
+    if not used_locator_stats:
+        raise HTTPException(status_code=404, detail=f"selection stats not found for y_col: {req.y_col}")
+    candidates = build_candidates_from_stats(
+        stats_path,
+        min_non_null_y=req.min_non_null_y,
+        y_r2_threshold=req.y_r2,
+        max_candidates=req.max_candidates,
+    )
     candidate_build_ms = int(round((time.perf_counter() - candidate_started) * 1000.0))
 
-    reader = ParquetShardReader(entry.manifest, max_gap=req.max_gap)
     config = SelectionConfig(
         y_r2_threshold=req.y_r2,
         min_non_null_y=req.min_non_null_y,
@@ -1113,7 +1091,7 @@ def run_selection(req: SelectionRequest):
     )
 
     selection_started = time.perf_counter()
-    selected = select_features_incremental(candidates, reader, config)
+    selected = select_features_incremental(candidates, entry.reader, config)
     selection_ms = int(round((time.perf_counter() - selection_started) * 1000.0))
     total_elapsed_ms = int(round((time.perf_counter() - total_started) * 1000.0))
 

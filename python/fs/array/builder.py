@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 
 from ..config import ArrayBinaryBuildOptions, ArrayBundleConfig, ArrayShardConfig
-from ..types import LogicalType, PointColumnSpec, point_storage_dtype
+from ..types import LogicalType, point_storage_dtype
 from .binary_storage import _load_dense_meta, build_array_binary_shards_from_bundles
 from .storage import ArraySampleBundleWriter, _normalize_point_schema
 
