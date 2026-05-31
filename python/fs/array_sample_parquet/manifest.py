@@ -6,10 +6,9 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
-from ..types import PointColumnSpec
 from ..array.storage import _normalize_point_schema
+from ..types import PointColumnSpec
 
 
 FORMAT_NAME = "array-sample-parquet"
@@ -20,11 +19,11 @@ DEFAULT_FEATURE_KEY_COL = "feature_key"
 
 @dataclass
 class ArraySampleParquetBuildOptions:
-    """sample-major Parquet dataset 생성 옵션.
+    """array_sample_parquet build 옵션.
 
-    part 크기는 sample 개수가 아니라 추정 payload byte 기준으로 결정한다.
-    다만 commit은 sample 경계에서만 수행하므로, 재시작 시 사용자는
-    `status().next_expected_sample_id`부터 다시 데이터를 수집해서 넣으면 된다.
+    builder는 sample별 raw parquet를 먼저 commit하고 compact 단계에서 final part를
+    만듭니다. part 경계는 sample 수가 아니라 추정 payload byte와 row 수를 우선해서
+    결정합니다. `max_part_samples`는 필요할 때만 거는 안전 제한입니다.
     """
 
     target_part_bytes: int = 128 * 1024 * 1024
@@ -33,23 +32,6 @@ class ArraySampleParquetBuildOptions:
     compression: str = "zstd"
     sample_key_col: str = DEFAULT_SAMPLE_KEY_COL
     feature_key_col: str = DEFAULT_FEATURE_KEY_COL
-
-
-@dataclass(frozen=True)
-class ArraySampleParquetBuildSessionStatus:
-    """resume 가능한 build session의 현재 checkpoint 상태."""
-
-    last_committed_sample_id: Optional[int]
-    last_committed_sample_key: Optional[str]
-    next_expected_sample_id: int
-    next_expected_sample_key: Optional[str]
-    committed_part_count: int
-    finished: bool
-    manifest_path: Optional[str]
-    buffered_through_sample_id: Optional[int]
-    buffered_through_sample_key: Optional[str]
-    in_progress_sample_id: Optional[int]
-    in_progress_sample_key: Optional[str]
 
 
 @dataclass
@@ -133,7 +115,7 @@ def _resolve_against(manifest_path: str, stored_path: str) -> str:
 
 
 def write_array_sample_parquet_manifest(path: str, manifest: ArraySampleParquetManifest):
-    """manifest를 artifact-relative path로 정리해서 저장한다."""
+    """manifest 내부 경로를 artifact-relative path로 정규화해서 저장합니다."""
 
     payload = manifest.to_json()
     payload["sample_meta_path"] = _relative_to(path, manifest.sample_meta_path)
@@ -143,16 +125,13 @@ def write_array_sample_parquet_manifest(path: str, manifest: ArraySampleParquetM
     for part in payload["parts"]:
         part["path"] = _relative_to(path, part["path"])
         part["trace_index_path"] = _relative_to(path, part["trace_index_path"])
-    point_schema = []
-    for spec in manifest.point_schema:
-        point_schema.append(spec.to_json())
-    payload["point_schema"] = point_schema
+    payload["point_schema"] = [spec.to_json() for spec in manifest.point_schema]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
 def load_array_sample_parquet_manifest(path: str) -> ArraySampleParquetManifest:
-    """array_sample_parquet manifest JSON을 읽고 모든 path를 절대경로로 해석한다."""
+    """array_sample_parquet manifest JSON을 읽고 모든 path를 절대경로로 해석합니다."""
 
     manifest_path = str(Path(path).expanduser().resolve())
     with open(manifest_path, "r", encoding="utf-8") as f:
@@ -162,9 +141,7 @@ def load_array_sample_parquet_manifest(path: str) -> ArraySampleParquetManifest:
     version = int(data.get("version", 0))
     if version != FORMAT_VERSION:
         raise ValueError(f"unsupported array sample parquet version: {version}")
-    point_schema_payload = []
-    for item in data.get("point_schema") or []:
-        point_schema_payload.append(dict(item))
+    point_schema_payload = [dict(item) for item in data.get("point_schema") or []]
     return ArraySampleParquetManifest(
         sample_meta_path=_resolve_against(manifest_path, data["sample_meta_path"]),
         feature_meta_path=_resolve_against(manifest_path, data["feature_meta_path"]),

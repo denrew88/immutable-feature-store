@@ -4,29 +4,40 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import fs.io.common.JsonUtils;
-import fs.model.scalar.ScalarSampleBundleManifest;
+import fs.model.scalar.ScalarSampleMajorManifest;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 
 /**
- * Scalar sample-major bundle manifest JSON을 읽고 쓰는 helper다.
+ * Scalar sample-major manifest JSON을 읽고 씁니다.
+ *
+ * <p>manifest는 raw sample parquet 파일 목록과 metadata 경로만 기록합니다. 실제 value row는
+ * 각 sample parquet에 있고, dense-long shard builder가 이 manifest를 entrypoint로 사용합니다.</p>
  */
-public final class ScalarSampleBundleManifestIO {
-    private ScalarSampleBundleManifestIO() {
+public final class ScalarSampleMajorManifestIO {
+    public static final String FORMAT = "scalar-sample-major-v1";
+
+    private ScalarSampleMajorManifestIO() {
     }
 
-    public static void write(ScalarSampleBundleManifest manifest, String path) throws IOException {
+    public static void write(ScalarSampleMajorManifest manifest, String path) throws IOException {
         ObjectNode root = JsonUtils.objectNode();
-        root.put("format", "scalar-sample-bundles");
+        root.put("format", FORMAT);
         root.put("version", 1);
         root.put("sample_meta_path", relativeTo(path, manifest.sampleMetaPath));
         root.put("feature_meta_path", relativeTo(path, manifest.featureMetaPath));
 
-        ArrayNode bundlePaths = root.putArray("bundle_paths");
-        for (String bundlePath : manifest.bundlePaths) {
-            bundlePaths.add(relativeTo(path, bundlePath));
+        ArrayNode samplePaths = root.putArray("sample_paths");
+        for (String samplePath : manifest.samplePaths) {
+            samplePaths.add(relativeTo(path, samplePath));
+        }
+        if (manifest.sampleIds != null) {
+            ArrayNode sampleIds = root.putArray("sample_ids");
+            for (Long sampleId : manifest.sampleIds) {
+                sampleIds.add(sampleId.longValue());
+            }
         }
         root.put("sample_id_col", manifest.sampleIdCol);
         root.put("feature_id_col", manifest.featureIdCol);
@@ -34,23 +45,32 @@ public final class ScalarSampleBundleManifestIO {
         JsonUtils.writeJson(path, root);
     }
 
-    public static ScalarSampleBundleManifest read(String path) throws IOException {
+    public static ScalarSampleMajorManifest read(String path) throws IOException {
         JsonNode root = JsonUtils.readJson(path);
         String format = textOrEmpty(root, "format");
-        if (!"scalar-sample-bundles".equals(format)) {
-            throw new IOException("unsupported sample-bundle manifest format: " + format);
+        if (!FORMAT.equals(format)) {
+            throw new IOException("unsupported sample-major manifest format: " + format);
         }
-        JsonNode rawBundlePaths = root.get("bundle_paths");
-        ArrayList<String> bundlePaths = new ArrayList<String>();
-        if (rawBundlePaths != null && rawBundlePaths.isArray()) {
-            for (JsonNode item : rawBundlePaths) {
-                bundlePaths.add(resolveAgainst(path, item.asText()));
+        ArrayList<String> samplePaths = new ArrayList<String>();
+        JsonNode rawSamplePaths = root.get("sample_paths");
+        if (rawSamplePaths != null && rawSamplePaths.isArray()) {
+            for (JsonNode item : rawSamplePaths) {
+                samplePaths.add(resolveAgainst(path, item.asText()));
             }
         }
-        return new ScalarSampleBundleManifest(
+        ArrayList<Long> sampleIds = null;
+        JsonNode rawSampleIds = root.get("sample_ids");
+        if (rawSampleIds != null && rawSampleIds.isArray()) {
+            sampleIds = new ArrayList<Long>();
+            for (JsonNode item : rawSampleIds) {
+                sampleIds.add(Long.valueOf(item.asLong()));
+            }
+        }
+        return new ScalarSampleMajorManifest(
                 resolveAgainst(path, textOrEmpty(root, "sample_meta_path")),
                 resolveAgainst(path, textOrEmpty(root, "feature_meta_path")),
-                bundlePaths,
+                samplePaths,
+                sampleIds,
                 defaultText(root, "sample_id_col", "sample_id"),
                 defaultText(root, "feature_id_col", "feature_id"),
                 defaultText(root, "value_col", "value"));

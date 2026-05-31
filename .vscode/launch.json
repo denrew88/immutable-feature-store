@@ -9,7 +9,7 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
+                "PYTHONPATH": "${workspaceFolder}/python;${workspaceFolder}/packages/scalar_feature_shard/src;${workspaceFolder}/packages/array_sample_parquet/src;${workspaceFolder}/packages/array_binary_shard/src"
             },
             "args": [
                 "--out-dir",
@@ -34,7 +34,7 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
+                "PYTHONPATH": "${workspaceFolder}/python;${workspaceFolder}/packages/scalar_feature_shard/src;${workspaceFolder}/packages/array_sample_parquet/src;${workspaceFolder}/packages/array_binary_shard/src"
             },
             "args": [
                 "--sample-meta",
@@ -55,11 +55,11 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
+                "PYTHONPATH": "${workspaceFolder}/python;${workspaceFolder}/packages/scalar_feature_shard/src;${workspaceFolder}/packages/array_sample_parquet/src;${workspaceFolder}/packages/array_binary_shard/src"
             },
             "args": [
                 "--manifest",
-                "${workspaceFolder}/data/synth/shards/shard_manifest.json",
+                "${workspaceFolder}/data/synth_160k/shards/dense_long_shard_manifest.json",
                 "--top-m",
                 "100"
             ]
@@ -72,7 +72,7 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
+                "PYTHONPATH": "${workspaceFolder}/python;${workspaceFolder}/packages/scalar_feature_shard/src;${workspaceFolder}/packages/array_sample_parquet/src;${workspaceFolder}/packages/array_binary_shard/src"
             }
         },
         {
@@ -99,18 +99,18 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
+                "PYTHONPATH": "${workspaceFolder}/python;${workspaceFolder}/packages/scalar_feature_shard/src;${workspaceFolder}/packages/array_sample_parquet/src;${workspaceFolder}/packages/array_binary_shard/src"
             }
         },
         {
             "type": "python",
-            "name": "Serve Legacy Array API (Python)",
+            "name": "Serve Array Binary API (Python)",
             "request": "launch",
             "program": "${workspaceFolder}/python/scripts/serve_array_api.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
+                "PYTHONPATH": "${workspaceFolder}/python;${workspaceFolder}/packages/scalar_feature_shard/src;${workspaceFolder}/packages/array_sample_parquet/src;${workspaceFolder}/packages/array_binary_shard/src"
             }
         },
         {
@@ -121,7 +121,7 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
+                "PYTHONPATH": "${workspaceFolder}/python;${workspaceFolder}/packages/scalar_feature_shard/src;${workspaceFolder}/packages/array_sample_parquet/src;${workspaceFolder}/packages/array_binary_shard/src"
             },
             "args": [
                 "--bundle-out-dir",
@@ -144,7 +144,7 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
+                "PYTHONPATH": "${workspaceFolder}/python;${workspaceFolder}/packages/scalar_feature_shard/src;${workspaceFolder}/packages/array_sample_parquet/src;${workspaceFolder}/packages/array_binary_shard/src"
             },
             "args": [
                 "--bundle-manifest",
@@ -185,7 +185,7 @@
             "request": "launch",
             "mainClass": "scripts.BuildShardsMain",
             "preLaunchTask": "Java: Compile (-g)",
-            "args": "--sample-meta \"${workspaceFolder}/data/synth/sample_meta.parquet\" --feature-meta \"${workspaceFolder}/data/synth/feature_meta.parquet\" --out-dir \"${workspaceFolder}/data/synth/shards_java\" --target-shard-mb 32"
+            "args": "--sample-major-manifest \"${workspaceFolder}/data/synth_java/scalar_stage/sample_major_manifest.json\" --out-dir \"${workspaceFolder}/data/synth_java/dense_long\" --target-shard-mb 32"
         },
         {
             "type": "java",
@@ -207,7 +207,7 @@
             "request": "launch",
             "mainClass": "scripts.RunSelectionMain",
             "preLaunchTask": "Java: Compile (-g)",
-            "args": "--manifest \"${workspaceFolder}/data/synth/shards_java/shard_manifest.json\" --top-m 100"
+            "args": "--manifest \"${workspaceFolder}/data/synth_java/dense_long/dense_long_shard_manifest.json\" --top-m 100"
         },
         {
             "type": "java",
@@ -215,7 +215,7 @@
             "request": "launch",
             "mainClass": "scripts.LocateFeatureMain",
             "preLaunchTask": "Java: Compile (-g)",
-            "args": "--manifest \"${workspaceFolder}/data/synth/shards_java/shard_manifest.json\" --feature-id 0"
+            "args": "--manifest \"${workspaceFolder}/data/synth_java/dense_long/dense_long_shard_manifest.json\" --feature-id 0"
         },
         {
             "type": "python",
@@ -225,11 +225,11 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/python"
+                "PYTHONPATH": "${workspaceFolder}/python;${workspaceFolder}/packages/scalar_feature_shard/src;${workspaceFolder}/packages/array_sample_parquet/src;${workspaceFolder}/packages/array_binary_shard/src"
             },
             "args": [
                 "--manifest",
-                "${workspaceFolder}/data/synth/shards/shard_manifest.json",
+                "${workspaceFolder}/data/synth_160k/shards/dense_long_shard_manifest.json",
                 "--feature-id",
                 "0"
             ]

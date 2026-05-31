@@ -1,6 +1,6 @@
 # Java 구현 안내
 
-이 디렉터리는 Java 8 기준 array/scalar builder, reader, test script, jar package build script를 담고 있습니다.
+이 디렉터리에는 Java 8 기준 array/scalar builder, reader, test script, jar package build script가 들어 있습니다.
 
 공통 원칙:
 
@@ -8,7 +8,7 @@
 - build API는 중단 후 재개 가능한 session 모델을 사용합니다.
 - scalar 최종 shard 포맷은 dense-long 하나만 지원합니다.
 
-## 준비
+## Runtime Dependencies
 
 필요한 jar는 `java/lib`에 둡니다.
 
@@ -16,24 +16,22 @@
 powershell -ExecutionPolicy Bypass -File java\download_java_libs.ps1
 ```
 
-이 저장소의 Java package는 thin jar입니다. package jar 안에 dependency를 묶지 않으므로 실행 시 필요한 jar를 classpath에 같이 넣어야 합니다.
+이 저장소의 Java package들은 thin jar입니다. package jar 안에 dependency를 묶지 않으므로 실행 시 필요한 jar를 classpath에 함께 넣어야 합니다.
 
 공통 dependency:
 
-- `duckdb_jdbc-1.1.3.jar`: metadata parquet, scalar dense-long parquet, array sample parquet를 DuckDB로 읽고 씁니다.
+- `duckdb_jdbc-1.1.3.jar`: metadata parquet, scalar dense-long parquet, array sample parquet read/write를 담당합니다.
 - `jackson-core-2.20.0.jar`, `jackson-databind-2.20.0.jar`, `jackson-annotations-2.20.jar`: manifest/state JSON을 읽고 씁니다.
 
 package별 추가 dependency:
 
 - `array-binary-shard-java`: 공통 dependency만 필요합니다.
-- `scalar-feature-shard-java`: 공통 dependency만 필요합니다. scalar parquet 쓰기는 DuckDB가 담당하므로 Hadoop/Parquet Java stack은 필요하지 않습니다.
-- `array-sample-parquet-java`: 공통 dependency에 더해 Arrow bridge용 `arrow-c-data-14.0.2.jar`, `arrow-memory-core-14.0.2.jar`, `arrow-memory-unsafe-14.0.2.jar`, `arrow-vector-14.0.2-shade-format-flatbuffers.jar`, `netty-common-4.1.96.Final.jar`, `slf4j-api-1.7.36.jar`가 필요합니다.
+- `scalar-feature-shard-java`: 공통 dependency만 필요합니다.
+- `array-sample-parquet-java`: 공통 dependency에 더해 Arrow bridge jar가 필요합니다. raw sample write에서 Java 배열을 Arrow vector batch로 묶어 DuckDB `registerArrowStream(...)`에 넘기기 위한 경로입니다.
 
-`array-sample-parquet-java`의 Arrow bridge는 Java trace 배열을 Arrow vector batch로 묶어 DuckDB `registerArrowStream(...)`에 넘기는 경로입니다. row마다 JDBC append를 호출하지 않고 columnar batch를 DuckDB에 넘기기 위한 용도이며, 실제 parquet 파일 쓰기와 zstd 압축은 DuckDB `COPY ... TO parquet`가 수행합니다.
+현재 Java package 3개 기준으로 Hadoop/Parquet Java writer, Woodstox, stax2, commons jar는 필요하지 않습니다.
 
-Hadoop, Parquet Java writer, Woodstox, stax2, commons jar는 현재 Java package 3개 기준으로 필요하지 않습니다.
-
-## 디렉터리 구조
+## Directory Structure
 
 ```text
 java/
@@ -42,10 +40,12 @@ java/
       config/
       io/
         array/
+        array_sample_parquet/
         common/
         scalar/
       model/
         array/
+        array_sample_parquet/
         common/
         scalar/
         selection/
@@ -59,27 +59,34 @@ java/
 역할:
 
 - `fs.io`: 사용자가 직접 여는 facade와 dataset entrypoint입니다.
-- `fs.io.array`: array binary shard와 array sample parquet 구현입니다.
-- `fs.io.scalar`: scalar dense-long builder/reader 구현입니다.
+- `fs.io.array`: array binary shard 구현입니다.
+- `fs.io.array_sample_parquet`: array sample parquet 구현입니다.
+- `fs.io.scalar`: scalar dense-long 하위 구현입니다.
 - `fs.io.common`: DuckDB, JSON, dtype, array helper입니다.
 - `fs.model.*`: public model과 manifest 구조입니다.
 - `scripts`: local test, benchmark, example entrypoint입니다.
 
-## 컴파일
+## Compile
 
 ```powershell
 powershell -Command "Get-ChildItem java\src -Recurse -Filter *.java | Sort-Object FullName | ForEach-Object { $_.FullName } | Set-Content java\sources.txt"
 & "C:\Program Files\Java\jdk-1.8\bin\javac.exe" -encoding UTF-8 -cp "java\lib\*" -d java\out @java\sources.txt
 ```
 
-소스와 javadoc에 한글 주석이 있으므로 `-encoding UTF-8`을 항상 넣습니다.
+소스와 javadoc에 한국어 주석이 있으므로 `-encoding UTF-8`을 항상 넣어야 합니다.
 
-## Jar 빌드
+## Jar Build
 
-Array:
+Array binary:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File packages\array_binary_shard_java\build.ps1
+```
+
+Array sample parquet:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packages\array_sample_parquet_java\build.ps1
 ```
 
 Scalar:
@@ -87,8 +94,6 @@ Scalar:
 ```powershell
 powershell -ExecutionPolicy Bypass -File packages\scalar_feature_shard_java\build.ps1
 ```
-
-jar는 thin jar입니다. 실행할 때 `java/lib/*` dependency를 classpath에 같이 넣어야 합니다.
 
 ## Array Public API
 
@@ -106,32 +111,17 @@ jar는 thin jar입니다. 실행할 때 `java/lib/*` dependency를 classpath에 
 - `open(manifestPath)`: shard reader를 엽니다.
 - `loadManifest(...)`, `loadLocator(...)`, `loadSampleIds(...)`, `loadFeatureIds(...)`: lookup helper를 로드합니다.
 - `writeSampleMeta(...)`, `writeFeatureMeta(...)`: dense metadata parquet를 작성합니다.
-- `openSession(...)`: resumable array build session을 엽니다.
+- `openSession(...)`: resumable array binary build session을 엽니다.
 
-array builder는 sample context를 명시적으로 엽니다. array trace는 sample 하나 안에 여러 feature trace가 들어갈 수 있으므로 sample 경계를 public API로 드러내야 안전하게 checkpoint할 수 있습니다.
-
-```java
-try (ArrayDatasetBuilder session = ArrayBinaryShards.openSession(
-        outDir,
-        sampleMetaPath,
-        pointSchema,
-        featureMetaPath,
-        options)) {
-    try (ArrayDatasetBuilder.ArraySampleContext sample = session.sample(0L)) {
-        sample.addTrace(null, "feature_a", columns);
-    }
-    session.finishStage();
-    session.buildShards(false);
-}
-```
+array binary builder는 sample context를 명시적으로 엽니다. sample 하나 안에 여러 feature trace가 들어가기 때문에 sample 경계를 public API로 드러내야 checkpoint가 안전합니다.
 
 ### Array Sample Parquet
 
 `ArraySampleParquets`는 viewer/debugging용 sample-major Parquet facade입니다.
 
-- raw builder는 sample별 raw parquet를 만들 수 있습니다.
-- compact 단계에서 `sample_parts/`와 `trace_index_parts/`로 묶습니다.
-- 최종 row 정렬은 `(sample_id, feature_id, point_idx)`입니다.
+- builder는 sample별 raw parquet를 먼저 만듭니다.
+- `finish()` 또는 `compact()`가 `sample_parts/`와 `trace_index_parts/`를 생성합니다.
+- 최종 point row 정렬은 `(sample_id, feature_id, point_idx)`입니다.
 
 ## Scalar Public API
 
@@ -139,44 +129,29 @@ try (ArrayDatasetBuilder session = ArrayBinaryShards.openSession(
 
 - `fs.io.ScalarFeatureShards`
 - `fs.io.ScalarDatasetBuilder`
-- `fs.io.ScalarRawDatasetBuilder`
 - `fs.io.ScalarDenseLongDataset`
 
 ### Facade
 
-`ScalarFeatureShards`가 scalar의 바깥 entrypoint입니다.
+`ScalarFeatureShards`가 scalar의 public entrypoint입니다.
 
 - `writeSampleMeta(...)`, `writeFeatureMeta(...)`: dense metadata parquet를 작성합니다.
-- `openSession(...)`: 순차 resumable build session을 엽니다.
-- `openRawSession(...)`: random-order raw sample session을 엽니다.
+- `openSession(...)`: sample별 raw parquet stage를 만드는 standard builder session을 열거나 재개합니다.
 - `newBuilder(...)`: `openSession(...)`과 같은 builder를 생성하는 호환 entrypoint입니다.
-- `buildDenseLongShardsFromSampleBundles(...)`: sample-bundle/raw-sample manifest에서 dense-long shard를 만듭니다.
+- `buildDenseLongShardsFromSampleMajorManifest(...)`: sample-major manifest에서 dense-long shard를 만듭니다.
 - `open(...)`, `openDenseLong(...)`: dense-long reader를 엽니다.
 - `loadManifest(...)`: dense-long manifest를 읽습니다.
 
-### Sequential Session
+### Builder
 
-순차 session은 sample 단위로 씁니다.
+별도 sequential builder나 raw builder는 없습니다. `ScalarDatasetBuilder` 하나가 표준 builder입니다.
 
-- `openSession(...)`
-- `status()`
-- `writeSample(sampleId, values)`
-- `finishStage()`
-- `buildShards(requireAll)`
+- `status().pendingSampleIds`: 아직 commit되지 않은 sample id 목록입니다.
+- `writeSample(sampleId, values, skipIfCompleted)`: sample 하나를 raw parquet로 commit합니다.
+- `finishStage()`: raw sample 파일 목록을 `sample_major_manifest.json`으로 확정합니다.
+- `buildShards(requireAll)`: 최종 dense-long shard를 생성합니다.
 
-`writeSample(...)`은 반드시 `status().nextExpectedSampleId`부터 순서대로 호출해야 합니다. `buildShards(...)`는 항상 dense-long shard를 생성합니다.
-
-### Random Raw Session
-
-raw session은 sample 하나를 `raw_samples/sample_*.parquet` 파일 하나로 commit합니다. sample 순서 제약이 없습니다.
-
-- `openRawSession(...)`
-- `status()`
-- `writeSample(sampleId, values, skipIfCompleted)`
-- `finishStage()`
-- `buildDenseLongShards(requireAll, outDir)`
-
-`status().pendingSampleIds`는 아직 commit되지 않은 sample id 목록입니다. 외부 supervisor가 이 목록을 worker에게 나눠주면 중단 후 재개와 병렬 생성이 단순해집니다.
+순차 실행이 필요하면 `pendingSampleIds`를 앞에서부터 처리하면 됩니다. worker 병렬 실행이 필요하면 supervisor가 같은 목록을 나눠주면 됩니다.
 
 ### Dense-Long Shard
 
@@ -193,7 +168,7 @@ value       Float64
 
 기본 row group은 feature 128개 단위이며 `BuildShardConfig.denseLongRowGroupFeatures`로 조정할 수 있습니다.
 
-### Scalar 예제
+## Scalar Example
 
 ```java
 BuildShardConfig cfg = new BuildShardConfig();
@@ -201,18 +176,16 @@ cfg.targetShardBytes = 32L * 1024L * 1024L;
 cfg.statsYCols = Arrays.asList("y");
 
 String manifestPath;
-try (ScalarDatasetBuilder session = ScalarFeatureShards.openSession(
-        "C:\\data\\scalar_dense_long",
+try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
+        "C:\\data\\scalar_stage",
         "C:\\data\\sample_meta.parquet",
         "C:\\data\\feature_meta.parquet",
         null,
-        cfg,
-        "C:\\data\\scalar_stage")) {
-    long next = session.status().nextExpectedSampleId;
-    for (long sampleId = next; sampleId < 2; sampleId++) {
-        session.writeSample(sampleId, row("feature_a", 1.23, "feature_b", 4.56));
+        cfg)) {
+    for (Long sampleId : builder.status().pendingSampleIds) {
+        builder.writeSample(sampleId.longValue(), row("feature_a", 1.23, "feature_b", null), true);
     }
-    manifestPath = session.buildShards(false);
+    manifestPath = builder.buildShards(true);
 }
 
 try (ScalarDenseLongDataset ds = ScalarFeatureShards.open(manifestPath)) {
@@ -221,7 +194,7 @@ try (ScalarDenseLongDataset ds = ScalarFeatureShards.open(manifestPath)) {
 }
 ```
 
-## 테스트
+## Tests
 
 전체 테스트:
 
@@ -234,11 +207,23 @@ java -cp "java\lib\*;java\out" scripts.RunTestsMain --seed 0
 ```powershell
 java -cp "java\lib\*;java\out" scripts.RunArrayBuilderTestsMain
 java -cp "java\lib\*;java\out" scripts.RunArrayV3TestsMain
+java -cp "java\lib\*;java\out" scripts.RunArraySampleParquetTestsMain
 java -cp "java\lib\*;java\out" scripts.RunScalarBuilderTestsMain
 java -cp "java\lib\*;java\out" scripts.RunScalarNotebookBuilderTestsMain
 ```
 
-## 참고
+## Script Inventory
+
+현재 남긴 `java/src/scripts` 엔트리포인트는 다음 용도입니다.
+
+- `BuildScalarDenseLongFromValueApiMain`, `BuildArraySampleParquetFromValueApiMain`: Python value API를 호출해서 Java builder로 전체 dataset을 만드는 예제입니다.
+- `BuildShardsMain`, `BuildArrayShardsMain`: 이미 만들어진 sample-major manifest 또는 array bundle manifest에서 최종 shard를 만드는 CLI입니다.
+- `GenerateScalarShardTestsMain`, `GenerateArrayShardTestsMain`, `GenerateArraySynthMain`: synthetic 데이터와 shard 생성 예제입니다.
+- `Run*TestsMain`: 현재 유지하는 포맷별 검증 스크립트입니다.
+- `LocateFeatureMain`, `LocateArrayFeatureMain`: feature가 어느 part/shard에 들어있는지 확인하는 디버깅 CLI입니다.
+- `BenchmarkArraySampleParquetJavaMain`, `BenchmarkArrayReaderModesMain`: 유지 중인 array 경로의 성능 확인용 스크립트입니다.
+
+## Reference
 
 - array binary format: [docs/array_binary_shard_format_v3.md](../docs/array_binary_shard_format_v3.md)
 - array sample parquet format: [docs/array_sample_parquet_format_v1.md](../docs/array_sample_parquet_format_v1.md)

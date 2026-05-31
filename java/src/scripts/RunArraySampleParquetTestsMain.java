@@ -74,9 +74,8 @@ public class RunArraySampleParquetTestsMain {
             ArraySampleParquetOrderChecks.requirePointRowsSorted(rawSamplePath(outDir, 1L));
             ArraySampleParquetOrderChecks.requireTraceIndexRowsSorted(rawTraceIndexPath(outDir, 1L));
             ArraySampleParquetBuildSessionStatus status = builder.status();
-            require(status.nextExpectedSampleId == 2L, "expected resume sample 2");
             require(status.completedSampleCount == 2, "expected two completed raw samples");
-            require(status.pendingSampleIds.size() == 2, "expected two pending raw samples");
+            require(status.pendingSampleIds.equals(Arrays.asList(2L, 3L)), "expected pending raw samples 2 and 3");
         }
 
         String manifestPath;
@@ -87,7 +86,6 @@ public class RunArraySampleParquetTestsMain {
                 featureMetaPath,
                 options)) {
             ArraySampleParquetBuildSessionStatus status = builder.status();
-            require(status.nextExpectedSampleId == 2L, "resume status mismatch");
             require(status.pendingSampleIds.contains(Long.valueOf(2L)), "sample 2 should be pending");
             try (ArraySampleParquetSampleContext sample = builder.sample("sample_000002")) {
                 sample.addTrace(null, "feature_b", columns(

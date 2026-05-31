@@ -8,7 +8,8 @@ from pathlib import Path
 
 import polars as pl
 
-from ._impl.dense_long import build_dense_long_shards_from_sample_bundles
+from ._impl.dense_long import build_dense_long_shards_from_sample_major_manifest
+from ._impl.storage_common import SAMPLE_MAJOR_MANIFEST_FORMAT
 from .config import ScalarShardBuildOptions
 from .models import BuildOptions
 
@@ -87,12 +88,12 @@ def _stage_manifest_from_sample_meta(
     os.makedirs(out_dir, exist_ok=True)
     manifest_path = os.path.join(out_dir, "sample_major_manifest.json")
     payload = {
-        "format": "scalar-sample-bundles",
+        "format": SAMPLE_MAJOR_MANIFEST_FORMAT,
         "version": 1,
         "sample_meta_path": sample_meta_path,
         "feature_meta_path": feature_meta,
-        "bundle_paths": _resolve_sample_paths_from_df(sample_meta_df, sample_meta_path, str(options.path_col)),
-        "bundle_sample_ids": (
+        "sample_paths": _resolve_sample_paths_from_df(sample_meta_df, sample_meta_path, str(options.path_col)),
+        "sample_ids": (
             [int(value) for value in sample_meta_df[str(options.sample_id_col)].to_list()]
             if str(options.sample_id_col) in sample_meta_df.columns
             else list(range(sample_meta_df.height))
@@ -127,7 +128,7 @@ def build_shard(
 ):
     """Build a dense-long scalar shard from sample-major rows.
 
-    `source` may be a `scalar-sample-bundles` manifest or a sample metadata
+    `source` may be a `scalar-sample-major-v1` manifest or a sample metadata
     parquet containing `path_col`. The generated artifact is always
     `dense_long_shard_manifest.json` plus `dense_long_parts/*.parquet`.
     Deprecated fixed-shard options (`n_shards`, `values_dtype`, `valid_dtype`)
@@ -158,7 +159,7 @@ def build_shard(
     if Path(source_path).suffix.lower() == ".json":
         with open(source_path, "r", encoding="utf-8") as f:
             source_json = json.load(f)
-        if str(source_json.get("format", "")) != "scalar-sample-bundles":
+        if str(source_json.get("format", "")) != SAMPLE_MAJOR_MANIFEST_FORMAT:
             raise ValueError(f"unsupported scalar build manifest format: {source_json.get('format')}")
         stage_manifest = source_path
     else:
@@ -169,7 +170,7 @@ def build_shard(
             options=resolved,
         )
 
-    return build_dense_long_shards_from_sample_bundles(
+    return build_dense_long_shards_from_sample_major_manifest(
         stage_manifest,
         str(out_dir),
         feature_meta_path=None if feature_meta_path is None else str(feature_meta_path),

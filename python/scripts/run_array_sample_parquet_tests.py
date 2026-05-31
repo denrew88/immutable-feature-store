@@ -11,7 +11,6 @@ from fs.array.metadata import write_feature_meta, write_sample_meta
 from fs.array_sample_parquet import (
     ArraySampleParquetBuildOptions,
     ArraySampleParquetDatasetBuilder,
-    ArraySampleParquetRawDatasetBuilder,
     open_array_sample_parquet,
 )
 from fs.types import LogicalType, PointColumnSpec, StorageType
@@ -100,8 +99,8 @@ def main():
         with builder.sample(sample_id=1):
             pass
         status = builder.status()
-        assert status.next_expected_sample_id == 2, status
-        assert status.committed_part_count == 1, status
+        assert status.completed_sample_ids == [0, 1], status
+        assert status.pending_sample_ids == [2, 3], status
 
     with ArraySampleParquetDatasetBuilder.open_session(
         out_dir,
@@ -111,7 +110,8 @@ def main():
         options=options,
     ) as builder:
         status = builder.status()
-        assert status.next_expected_sample_id == 2, status
+        assert status.completed_sample_ids == [0, 1], status
+        assert status.pending_sample_ids == [2, 3], status
         with builder.sample(sample_key="sample_000002") as sample:
             sample.add_trace(
                 feature_key="feature_b",
@@ -201,7 +201,7 @@ def main():
     assert api_traces["samples"][0]["sample_key"] == "sample_000000"
 
     raw_out_dir = root / "raw_dataset"
-    with ArraySampleParquetRawDatasetBuilder.open_session(
+    with ArraySampleParquetDatasetBuilder.open_session(
         raw_out_dir,
         sample_meta_path,
         schema,
@@ -248,7 +248,7 @@ def main():
         assert status.completed_sample_ids == [0, 1, 2], status
         assert status.pending_sample_ids == [3], status
 
-    with ArraySampleParquetRawDatasetBuilder.open_session(
+    with ArraySampleParquetDatasetBuilder.open_session(
         raw_out_dir,
         sample_meta_path,
         schema,

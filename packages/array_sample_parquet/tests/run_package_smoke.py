@@ -6,7 +6,6 @@ import polars as pl
 from array_sample_parquet import (
     ArraySampleParquetBuildOptions,
     ArraySampleParquetDatasetBuilder,
-    ArraySampleParquetRawDatasetBuilder,
     LogicalType,
     PointColumnSpec,
     StorageType,
@@ -45,7 +44,7 @@ def main():
         PointColumnSpec("value", StorageType.FLOAT64, LogicalType.CONTINUOUS),
         PointColumnSpec("step", StorageType.STRING, LogicalType.CATEGORICAL),
     ]
-    raw_builder = ArraySampleParquetRawDatasetBuilder.open_session(
+    raw_builder = ArraySampleParquetDatasetBuilder.open_session(
         root / "raw_dataset",
         root / "sample_meta.parquet",
         raw_schema,

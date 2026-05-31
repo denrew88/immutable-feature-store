@@ -3,7 +3,7 @@
 from .builder import ScalarBuildSessionStatus, ScalarDatasetBuilder
 from .dense_long import (
     ScalarDenseLongDataset,
-    build_dense_long_shards_from_sample_bundles,
+    build_dense_long_shards_from_sample_major_manifest,
     open_dense_long_shard,
 )
 from .exceptions import (
@@ -22,7 +22,6 @@ from .models import (
     SelectionOptions,
     SelectionResult,
 )
-from .raw_builder import ScalarRawBuildStatus, ScalarRawDatasetBuilder
 from .selection import run_selection, select_features
 from .writer import build_shard
 
@@ -37,13 +36,11 @@ __all__ = [
     "ScalarFeatureShardError",
     "ScalarBuildSessionStatus",
     "ScalarDenseLongDataset",
-    "ScalarRawBuildStatus",
-    "ScalarRawDatasetBuilder",
     "ScalarValue",
     "SelectionCandidate",
     "SelectionOptions",
     "SelectionResult",
-    "build_dense_long_shards_from_sample_bundles",
+    "build_dense_long_shards_from_sample_major_manifest",
     "build_shard",
     "open_dense_long_shard",
     "run_selection",

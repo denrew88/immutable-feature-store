@@ -5,9 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import fs.config.BuildShardConfig;
-import fs.io.ScalarRawDatasetBuilder;
+import fs.io.ScalarDatasetBuilder;
 import fs.io.common.ArrayMetadataWriter;
-import fs.model.scalar.ScalarRawBuildStatus;
+import fs.model.scalar.ScalarBuildSessionStatus;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -52,13 +52,13 @@ public class BuildScalarDenseLongFromValueApiMain {
         }
 
         String manifestPath;
-        try (ScalarRawDatasetBuilder builder = ScalarRawDatasetBuilder.openSession(
+        try (ScalarDatasetBuilder builder = ScalarDatasetBuilder.openSession(
                 outDir,
                 sampleMetaPath,
                 featureMetaPath,
                 null,
                 config)) {
-            ScalarRawBuildStatus status = builder.status();
+            ScalarBuildSessionStatus status = builder.status();
             for (Long sampleId : status.pendingSampleIds) {
                 LinkedHashMap<Integer, Double> values = new LinkedHashMap<Integer, Double>();
                 for (List<Integer> chunk : chunks(allFeatureIds, featureChunkSize)) {

@@ -1,40 +1,40 @@
 package fs.model.scalar;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 /**
- * scalar resumable build session의 현재 체크포인트 상태를 나타낸다.
+ * scalar build session의 현재 진행 상태입니다.
  *
- * <p>사용자는 보통 {@code lastCommittedSampleId}와
- * {@code nextExpectedSampleId}만 보면 충분하다.
+ * <p>표준 scalar builder는 sample 하나를 raw parquet 파일 하나로 commit합니다.
+ * 그래서 재개 기준은 순차 watermark가 아니라 완료된 sample id 목록과 아직 남은
+ * sample id 목록입니다. supervisor는 {@link #pendingSampleIds}를 worker에게
+ * 나눠줄 수 있고, 순차 실행을 원하면 이 목록을 앞에서부터 처리하면 됩니다.</p>
  */
 public final class ScalarBuildSessionStatus {
-    public final Long lastCommittedSampleId;
-    public final String lastCommittedSampleKey;
-    public final long nextExpectedSampleId;
-    public final String nextExpectedSampleKey;
-    public final int committedBundleCount;
+    public final int nSamples;
+    public final int completedSampleCount;
+    public final int pendingSampleCount;
+    public final List<Long> completedSampleIds;
+    public final List<Long> pendingSampleIds;
+    public final Long nextPendingSampleId;
     public final boolean finishedStage;
-    public final String bundleManifestPath;
-    public final Long bufferedThroughSampleId;
-    public final String bufferedThroughSampleKey;
+    public final String sampleMajorManifestPath;
 
     public ScalarBuildSessionStatus(
-            Long lastCommittedSampleId,
-            String lastCommittedSampleKey,
-            long nextExpectedSampleId,
-            String nextExpectedSampleKey,
-            int committedBundleCount,
+            int nSamples,
+            List<Long> completedSampleIds,
+            List<Long> pendingSampleIds,
             boolean finishedStage,
-            String bundleManifestPath,
-            Long bufferedThroughSampleId,
-            String bufferedThroughSampleKey) {
-        this.lastCommittedSampleId = lastCommittedSampleId;
-        this.lastCommittedSampleKey = lastCommittedSampleKey;
-        this.nextExpectedSampleId = nextExpectedSampleId;
-        this.nextExpectedSampleKey = nextExpectedSampleKey;
-        this.committedBundleCount = committedBundleCount;
+            String sampleMajorManifestPath) {
+        this.nSamples = nSamples;
+        this.completedSampleIds = Collections.unmodifiableList(new ArrayList<Long>(completedSampleIds));
+        this.pendingSampleIds = Collections.unmodifiableList(new ArrayList<Long>(pendingSampleIds));
+        this.completedSampleCount = completedSampleIds.size();
+        this.pendingSampleCount = pendingSampleIds.size();
+        this.nextPendingSampleId = pendingSampleIds.isEmpty() ? null : pendingSampleIds.get(0);
         this.finishedStage = finishedStage;
-        this.bundleManifestPath = (bundleManifestPath == null) ? "" : bundleManifestPath;
-        this.bufferedThroughSampleId = bufferedThroughSampleId;
-        this.bufferedThroughSampleKey = bufferedThroughSampleKey;
+        this.sampleMajorManifestPath = sampleMajorManifestPath == null ? "" : sampleMajorManifestPath;
     }
 }

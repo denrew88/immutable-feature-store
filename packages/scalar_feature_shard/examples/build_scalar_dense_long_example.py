@@ -10,9 +10,9 @@ PACKAGE_SRC = REPO_ROOT / "packages" / "scalar_feature_shard" / "src"
 if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
 
-from scalar_feature_shard import (
+from scalar_feature_shard import (  # noqa: E402
     BuildOptions,
-    ScalarRawDatasetBuilder,
+    ScalarDatasetBuilder,
     open_dense_long_shard,
     write_feature_meta,
     write_sample_meta,
@@ -43,11 +43,11 @@ def main() -> None:
     )
 
     build_options = BuildOptions(target_shard_mb=16, stats_y_cols=("y",))
-    stage_dir = root / "scalar_raw_stage"
+    stage_dir = root / "scalar_stage"
     dense_dir = root / "scalar_dense_long"
 
-    # 첫 실행에서는 일부 sample만 완료한다고 가정합니다.
-    with ScalarRawDatasetBuilder.open_session(
+    # 첫 실행에서는 일부 sample만 완료하고 종료한 상황을 가정합니다.
+    with ScalarDatasetBuilder.open_session(
         stage_dir,
         sample_meta_path,
         feature_meta_path=feature_meta_path,
@@ -58,17 +58,14 @@ def main() -> None:
         print("first_pending=", builder.pending_sample_ids())
 
     # 같은 out_dir로 다시 열면 raw_state.json과 raw_samples.jsonl을 읽고 이어서 진행합니다.
-    with ScalarRawDatasetBuilder.open_session(
+    with ScalarDatasetBuilder.open_session(
         stage_dir,
         sample_meta_path,
         feature_meta_path=feature_meta_path,
         build_options=build_options,
     ) as builder:
         for sample_id in builder.pending_sample_ids():
-            if sample_id == 1:
-                values = {"feature_a": 11.0, "feature_b": 21.0}
-            else:
-                values = {"feature_c": 40.0}
+            values = {"feature_a": 11.0, "feature_b": 21.0} if sample_id == 1 else {"feature_c": 40.0}
             builder.write_sample(sample_id, values, skip_if_completed=True)
 
         dense_manifest_path = builder.build_dense_long_shards(

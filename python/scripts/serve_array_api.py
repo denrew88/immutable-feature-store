@@ -108,7 +108,7 @@ class ArraySampleParquetTraceRequest(BaseModel):
 
 
 class ScalarFeatureRequest(BaseModel):
-    manifest_path: str = Field(..., description="Path to scalar shard_manifest.json")
+    manifest_path: str = Field(..., description="Path to scalar dense_long_shard_manifest.json")
     feature_id: Optional[int] = None
     feature_key: Optional[str] = None
     sample_ids: Optional[List[int]] = None
@@ -132,7 +132,7 @@ class ScalarFeatureResponse(BaseModel):
 
 
 class SelectionRequest(BaseModel):
-    manifest_path: str = Field(..., description="Path to scalar shard_manifest.json")
+    manifest_path: str = Field(..., description="Path to scalar dense_long_shard_manifest.json")
     y_col: str = "y"
     y_r2: float = 0.01
     min_non_null_y: int = 20

@@ -1,7 +1,7 @@
-"""Public scalar direct-ingestion builder facade."""
+"""Public scalar builder facade."""
 
-from ._impl.builder import ScalarBuildSessionStatus
-from ._impl.builder import ScalarDatasetBuilder as _ImplScalarDatasetBuilder
+from ._impl.raw_builder import ScalarBuildSessionStatus
+from ._impl.raw_builder import ScalarDatasetBuilder as _ImplScalarDatasetBuilder
 from .config import ScalarShardBuildOptions
 from .models import BuildOptions
 
@@ -28,7 +28,12 @@ def _resolve_build_options(build_options: BuildOptions | ScalarShardBuildOptions
 
 
 class ScalarDatasetBuilder(_ImplScalarDatasetBuilder):
-    """Public scalar dataset builder."""
+    """Public scalar dataset builder.
+
+    Samples are committed as independent raw parquet files, so callers may
+    write sample ids in any order. A sequential loop over `pending_sample_ids()`
+    is just a special case of the same API.
+    """
 
     def __init__(
         self,
@@ -38,7 +43,6 @@ class ScalarDatasetBuilder(_ImplScalarDatasetBuilder):
         feature_meta_path=None,
         feature_keys=None,
         build_options: BuildOptions | ScalarShardBuildOptions | None = None,
-        sample_major_out_dir=None,
     ):
         super().__init__(
             out_dir=out_dir,
@@ -46,7 +50,6 @@ class ScalarDatasetBuilder(_ImplScalarDatasetBuilder):
             feature_meta_path=feature_meta_path,
             feature_keys=feature_keys,
             build_options=_resolve_build_options(build_options),
-            sample_major_out_dir=sample_major_out_dir,
         )
 
 

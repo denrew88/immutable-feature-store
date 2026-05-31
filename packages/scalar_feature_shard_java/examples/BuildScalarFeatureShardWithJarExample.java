@@ -1,9 +1,9 @@
 import fs.config.BuildShardConfig;
+import fs.io.ScalarDatasetBuilder;
 import fs.io.ScalarDenseLongDataset;
 import fs.io.ScalarFeatureShards;
-import fs.io.ScalarRawDatasetBuilder;
+import fs.model.scalar.ScalarBuildSessionStatus;
 import fs.model.scalar.ScalarFeatureValues;
-import fs.model.scalar.ScalarRawBuildStatus;
 import fs.model.scalar.ScalarValue;
 
 import java.io.File;
@@ -13,7 +13,7 @@ import java.util.Map;
 
 /**
  * scalar-feature-shard-java jar만 classpath에 넣어서 sample meta, feature meta,
- * raw sample stage, dense-long scalar shard를 만드는 end-to-end 예제입니다.
+ * resumable raw sample stage, dense-long scalar shard를 만드는 end-to-end 예제입니다.
  *
  * <p>기본 출력 위치는 {@code data/tmp_scalar_feature_shard_jar_example}입니다.
  * 첫 번째 인자로 출력 root directory를 넘기면 해당 경로를 사용합니다.</p>
@@ -52,11 +52,11 @@ public class BuildScalarFeatureShardWithJarExample {
         config.statsYCols = Arrays.asList("y");
         config.denseLongRowGroupFeatures = 128;
 
-        File stageDir = new File(root, "scalar_raw_stage");
+        File stageDir = new File(root, "scalar_stage");
         File denseDir = new File(root, "scalar_dense_long");
 
-        // 3. 첫 실행에서는 일부 sample만 완료하고 종료된 상황을 가정합니다.
-        try (ScalarRawDatasetBuilder builder = ScalarFeatureShards.openRawSession(
+        // 3. 첫 실행에서는 일부 sample만 완료하고 종료한 상황을 가정합니다.
+        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
                 stageDir.getAbsolutePath(),
                 sampleMetaPath,
                 featureMetaPath,
@@ -70,13 +70,13 @@ public class BuildScalarFeatureShardWithJarExample {
         String denseManifestPath;
 
         // 4. 같은 session을 다시 열면 raw_samples.jsonl을 읽고 남은 sample만 이어서 씁니다.
-        try (ScalarRawDatasetBuilder builder = ScalarFeatureShards.openRawSession(
+        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
                 stageDir.getAbsolutePath(),
                 sampleMetaPath,
                 featureMetaPath,
                 null,
                 config)) {
-            ScalarRawBuildStatus status = builder.status();
+            ScalarBuildSessionStatus status = builder.status();
             for (Long sampleId : status.pendingSampleIds) {
                 if (sampleId.longValue() == 1L) {
                     builder.writeSample(sampleId.longValue(), row("feature_a", 11.0, "feature_b", 21.0), true);

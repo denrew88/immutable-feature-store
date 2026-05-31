@@ -373,7 +373,9 @@ def main():
     assert isinstance(stats["manifest_cache"]["scalar_manifests"], list)
     assert "block_records_entries" in stats["array_binary_cache"]
     assert "open_mmaps" in stats["array_binary_cache"]
-    assert stats["array_parquet_cache"] == {}
+    assert "entries" in stats["array_parquet_cache"]
+    assert "max_entries" in stats["array_parquet_cache"]
+    assert "ttl_seconds" in stats["array_parquet_cache"]
     assert "open_scans" in stats["scalar_parquet_cache"]
     assert "open_scan_manifests" in stats["scalar_parquet_cache"]
 

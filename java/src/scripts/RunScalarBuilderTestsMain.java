@@ -4,10 +4,9 @@ import fs.config.BuildShardConfig;
 import fs.io.ScalarDatasetBuilder;
 import fs.io.ScalarDenseLongDataset;
 import fs.io.ScalarFeatureShards;
-import fs.io.ScalarRawDatasetBuilder;
+import fs.model.scalar.ScalarBuildSessionStatus;
 import fs.model.scalar.ScalarDenseLongManifest;
 import fs.model.scalar.ScalarFeatureValues;
-import fs.model.scalar.ScalarRawBuildStatus;
 import fs.model.scalar.ScalarValue;
 
 import java.io.File;
@@ -17,7 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Scalar builder, reader, selection facade를 함께 검증하는 테스트 엔트리포인트다.
+ * Scalar standard builder, reader, selection facade를 함께 검증하는 테스트 entrypoint.
  */
 public class RunScalarBuilderTestsMain {
     public static void main(String[] args) throws Exception {
@@ -28,155 +27,66 @@ public class RunScalarBuilderTestsMain {
         }
 
         String sampleMetaPath = new File(root, "sample_meta.parquet").getAbsolutePath();
+        String featureMetaPath = new File(root, "feature_meta.parquet").getAbsolutePath();
         ScalarFeatureShards.writeSampleMeta(sampleRows(), sampleMetaPath);
+        ScalarFeatureShards.writeFeatureMeta(featureRows(), featureMetaPath);
 
         BuildShardConfig cfg = new BuildShardConfig();
         cfg.targetShardBytes = 1L << 20;
         cfg.statsYCols = java.util.Arrays.asList("y", "y_alt");
+        cfg.denseLongRowGroupFeatures = 128;
+        cfg.denseLongPartFeatures = 128;
 
-        String discoveredManifestPath;
+        File outDir = new File(root, "scalar_standard");
+        String manifestPath;
         try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
-                new File(root, "discovered_shards").getAbsolutePath(),
-                sampleMetaPath,
-                "",
-                null,
-                cfg,
-                new File(root, "discovered_stage").getAbsolutePath())) {
-            require(builder.status().nextExpectedSampleId == 0L, "new scalar session should start from sample 0");
-            builder.writeSample(0L, values("feature_a", 1.0, "feature_b", 0.1));
-            builder.writeSample(1L, values("feature_b", 1.0, "feature_c", 0.2));
-        }
-
-        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
-                new File(root, "discovered_shards").getAbsolutePath(),
-                sampleMetaPath,
-                "",
-                null,
-                cfg,
-                new File(root, "discovered_stage").getAbsolutePath())) {
-            require(builder.status().nextExpectedSampleId == 2L, "resumed scalar session should continue from sample 2");
-            builder.writeSample(2L, values("feature_a", 0.0, "feature_c", 1.0));
-            builder.writeSample(3L, values("feature_a", 0.8, "feature_b", 0.2, "feature_c", 0.9));
-            String stageManifestPath = builder.finishStage();
-            require(new File(stageManifestPath).exists(), "missing sample-major manifest");
-            builder.updateFeatureMeta(featureRows(), "feature_key", true);
-            discoveredManifestPath = builder.buildShards(true);
-        }
-
-        ScalarDenseLongManifest discoveredManifest = ScalarFeatureShards.loadManifest(discoveredManifestPath);
-        require(discoveredManifest.nSamples == 4, "n_samples mismatch");
-        require(discoveredManifest.nFeatures == 3, "n_features mismatch");
-        require(!discoveredManifest.selectionStats.isEmpty(), "selection_stats should be populated");
-        require(discoveredManifest.selectionStatsPath("y") != null && !discoveredManifest.selectionStatsPath("y").isEmpty(), "missing y selection stats");
-        require(new File(discoveredManifest.featureMetaPath).exists(), "missing feature_meta.parquet");
-        require(new File(discoveredManifest.sampleMetaPath).exists(), "missing sample_meta.parquet");
-
-        try (ScalarDenseLongDataset dataset = ScalarFeatureShards.open(discoveredManifestPath)) {
-            ScalarFeatureValues featureB = dataset.loadFeatureByKey("feature_b");
-            require(featureB.featureId == 1, "feature_b id mismatch");
-            assertValue(featureB.values.get(0), 0L, "sample_000000", true, 0.1);
-            assertValue(featureB.values.get(1), 1L, "sample_000001", true, 1.0);
-            assertValue(featureB.values.get(2), 2L, "sample_000002", false, null);
-            assertValue(featureB.values.get(3), 3L, "sample_000003", true, 0.2);
-
-            ScalarFeatureValues featureC = dataset.loadFeatureByKey("feature_c");
-            assertValue(featureC.values.get(2), 2L, "sample_000002", true, 1.0);
-            require(!dataset.topFeaturesFromStats("y", 2).isEmpty(), "selection stats should produce candidates");
-        }
-
-        String featureMetaPath = new File(root, "known_feature_meta.parquet").getAbsolutePath();
-        ScalarFeatureShards.writeFeatureMeta(knownFeatureRows(), featureMetaPath);
-        String knownManifestPath;
-        try (ScalarDatasetBuilder builder = ScalarFeatureShards.newBuilder(
-                new File(root, "known_shards").getAbsolutePath(),
+                outDir.getAbsolutePath(),
                 sampleMetaPath,
                 featureMetaPath,
                 null,
-                cfg,
-                new File(root, "known_stage").getAbsolutePath())) {
-            builder.writeSample(0L, values("feature_x", 1.0));
-            builder.writeSample(1L, values(Integer.valueOf(1), 2.0));
-            knownManifestPath = builder.buildShards(false);
-        }
-        require(new File(knownManifestPath).exists(), "known-feature manifest missing");
-        require(!new File(root, "known_stage").exists(), "known-stage dir should be removed when keepSampleMajor=false");
-
-        BuildShardConfig orderedCfg = new BuildShardConfig();
-        orderedCfg.nShards = 2;
-        orderedCfg.targetShardBytes = 1L << 20;
-        orderedCfg.statsYCols = java.util.Arrays.asList("y");
-        String orderedFeatureMetaPath = new File(root, "ordered_feature_meta.parquet").getAbsolutePath();
-        ScalarFeatureShards.writeFeatureMeta(orderedFeatureRows(), orderedFeatureMetaPath);
-        String orderedManifestPath;
-        try (ScalarDatasetBuilder builder = ScalarFeatureShards.newBuilder(
-                new File(root, "ordered_shards").getAbsolutePath(),
-                sampleMetaPath,
-                orderedFeatureMetaPath,
-                null,
-                orderedCfg,
-                new File(root, "ordered_stage").getAbsolutePath())) {
-            builder.writeSample(0L, values(
-                    "feature_00", 0.0,
-                    "feature_01", 1.0,
-                    "feature_02", 2.0,
-                    "feature_03", 3.0,
-                    "feature_04", 4.0,
-                    "feature_05", 5.0
-            ));
-            orderedManifestPath = builder.buildShards(false);
-        }
-
-        try (ScalarDenseLongDataset dataset = ScalarFeatureShards.open(orderedManifestPath)) {
-            ScalarFeatureValues feature04 = dataset.loadFeatureByKey("feature_04");
-            assertValue(feature04.values.get(0), 0L, "sample_000000", true, 4.0);
-            ScalarDenseLongDataset.SampleValues sample0 = dataset.loadSampleByKey("sample_000000");
-            require(sample0.valid[4] == 1, "sample feature_04 should be present");
-            require(Math.abs(sample0.values[4] - 4.0) <= 1e-12, "sample feature_04 mismatch");
-        }
-
-        BuildShardConfig rawCfg = new BuildShardConfig();
-        rawCfg.targetShardBytes = 1L << 20;
-        rawCfg.statsYCols = java.util.Arrays.asList("y");
-        rawCfg.denseLongRowGroupFeatures = 128;
-        rawCfg.denseLongPartFeatures = 128;
-        String rawDenseManifestPath;
-        try (ScalarRawDatasetBuilder builder = ScalarFeatureShards.openRawSession(
-                new File(root, "raw_scalar").getAbsolutePath(),
-                sampleMetaPath,
-                orderedFeatureMetaPath,
-                null,
-                rawCfg)) {
+                cfg)) {
+            ScalarBuildSessionStatus status = builder.status();
+            require(status.pendingSampleIds.equals(java.util.Arrays.asList(0L, 1L, 2L, 3L)), "initial pending ids mismatch");
             builder.writeSample(2L, values("feature_01", 2.0), true);
             builder.writeSample(0L, values("feature_01", 1.0, "feature_04", 4.0), true);
-            ScalarRawBuildStatus rawStatus = builder.status();
-            require(rawStatus.completedSampleCount == 2, "raw builder completed count mismatch");
-            require(rawStatus.pendingSampleIds.equals(java.util.Arrays.asList(1L, 3L)), "raw builder pending ids mismatch");
+            ScalarBuildSessionStatus mid = builder.status();
+            require(mid.completedSampleCount == 2, "completed sample count mismatch");
+            require(mid.pendingSampleIds.equals(java.util.Arrays.asList(1L, 3L)), "pending ids mismatch after first run");
         }
-        try (ScalarRawDatasetBuilder builder = ScalarFeatureShards.openRawSession(
-                new File(root, "raw_scalar").getAbsolutePath(),
+
+        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
+                outDir.getAbsolutePath(),
                 sampleMetaPath,
-                orderedFeatureMetaPath,
+                featureMetaPath,
                 null,
-                rawCfg)) {
+                cfg)) {
             builder.writeSample(3L, values("feature_03", 3.0), true);
             builder.writeSample(1L, values("feature_01", 1.5, "feature_05", 5.0), true);
-            String rawStageManifest = builder.finishStage();
-            require(new File(rawStageManifest).exists(), "raw sample-major manifest missing");
-            rawDenseManifestPath = builder.buildDenseLongShards(true, new File(root, "raw_dense_long").getAbsolutePath());
+            String stageManifest = builder.finishStage();
+            require(new File(stageManifest).exists(), "sample-major manifest missing");
+            manifestPath = builder.buildShards(true, new File(root, "dense_long").getAbsolutePath());
         }
-        try (ScalarDenseLongDataset dense = ScalarFeatureShards.openDenseLong(rawDenseManifestPath)) {
-            ScalarFeatureValues feature01 = dense.loadFeatureByKey("feature_01");
-            require(feature01.values.size() == 4, "dense-long feature sample count mismatch");
+
+        ScalarDenseLongManifest manifest = ScalarFeatureShards.loadManifest(manifestPath);
+        require(manifest.nSamples == 4, "n_samples mismatch");
+        require(manifest.nFeatures == 6, "n_features mismatch");
+        require(new File(manifest.featureMetaPath).exists(), "missing feature_meta.parquet");
+        require(new File(manifest.sampleMetaPath).exists(), "missing sample_meta.parquet");
+        require(!manifest.selectionStats.isEmpty(), "selection_stats should be populated");
+
+        try (ScalarDenseLongDataset dataset = ScalarFeatureShards.openDenseLong(manifestPath)) {
+            ScalarFeatureValues feature01 = dataset.loadFeatureByKey("feature_01");
+            require(feature01.values.size() == 4, "feature sample count mismatch");
             assertValue(feature01.values.get(0), 0L, "sample_000000", true, 1.0);
             assertValue(feature01.values.get(1), 1L, "sample_000001", true, 1.5);
             assertValue(feature01.values.get(2), 2L, "sample_000002", true, 2.0);
             assertValue(feature01.values.get(3), 3L, "sample_000003", false, null);
 
-            ScalarDenseLongDataset.SampleValues sample0 = dense.loadSampleById(0L);
-            require(sample0.valid[1] == 1, "dense-long sample value should be present");
-            require(Math.abs(sample0.values[1] - 1.0) <= 1e-12, "dense-long sample value mismatch");
-            require(sample0.valid[2] == 0, "dense-long missing value should have mask=0");
-            require(!dense.topFeaturesFromStats("y", 2).isEmpty(), "dense-long stats should produce candidates");
+            ScalarDenseLongDataset.SampleValues sample0 = dataset.loadSampleById(0L);
+            require(sample0.valid[1] == 1, "sample value should be present");
+            require(Math.abs(sample0.values[1] - 1.0) <= 1e-12, "sample value mismatch");
+            require(sample0.valid[2] == 0, "missing value should have mask=0");
+            require(!dataset.topFeaturesFromStats("y", 2).isEmpty(), "selection stats should produce candidates");
         }
 
         System.out.println("java scalar builder tests passed");
@@ -192,21 +102,6 @@ public class RunScalarBuilderTestsMain {
     }
 
     private static List<Map<String, Object>> featureRows() {
-        ArrayList<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
-        rows.add(row("feature_key", "feature_a", "group", "alpha"));
-        rows.add(row("feature_key", "feature_b", "group", "beta"));
-        rows.add(row("feature_key", "feature_c", "group", "gamma"));
-        return rows;
-    }
-
-    private static List<Map<String, Object>> knownFeatureRows() {
-        ArrayList<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
-        rows.add(row("feature_key", "feature_x", "group", "known"));
-        rows.add(row("feature_key", "feature_y", "group", "known"));
-        return rows;
-    }
-
-    private static List<Map<String, Object>> orderedFeatureRows() {
         ArrayList<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
         for (int i = 0; i < 6; i++) {
             rows.add(row("feature_key", String.format("feature_%02d", Integer.valueOf(i)), "group", "ordered"));

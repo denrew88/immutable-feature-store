@@ -10,6 +10,45 @@ import numpy as np
 import polars as pl
 
 
+def write_json_atomic(path: str, payload: dict):
+    """Write JSON via a sibling temporary file and atomic replace."""
+
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, path)
+
+
+def load_dense_metadata(
+    meta_path: str,
+    *,
+    id_col: str,
+    entity_name: str,
+    key_col: str,
+) -> pl.DataFrame:
+    """Load dense metadata and validate row-order ids and optional keys."""
+
+    df = pl.read_parquet(meta_path)
+    dense_ids = np.arange(df.height, dtype=np.int64 if id_col == "sample_id" else np.int32)
+    if id_col in df.columns:
+        stored = df[id_col].to_numpy().astype(dense_ids.dtype, copy=False)
+        if not np.array_equal(stored, dense_ids):
+            raise ValueError(f"{entity_name} metadata {id_col} must equal dense row order 0..n-1")
+
+    if key_col and key_col in df.columns:
+        values = df[key_col].to_list()
+        seen = set()
+        for row_idx, value in enumerate(values):
+            if value is None:
+                raise ValueError(f"{entity_name} metadata {key_col} cannot be null at row {row_idx}")
+            key = str(value)
+            if key in seen:
+                raise ValueError(f"duplicate {entity_name} {key_col}: {key}")
+            seen.add(key)
+
+    return df
+
+
 def load_sample_targets(
     sample_meta_path: str,
     y_col: str = "y",
@@ -86,12 +125,15 @@ def cleanup_empty_dir(path: Optional[str]):
         pass
 
 
-def load_sample_bundle_manifest(manifest_path: str):
-    """Load a scalar sample-bundle/raw-sample manifest and resolve paths."""
+SAMPLE_MAJOR_MANIFEST_FORMAT = "scalar-sample-major-v1"
+
+
+def load_sample_major_manifest(manifest_path: str):
+    """Load a scalar sample-major manifest and resolve paths."""
 
     with open(manifest_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    if str(data.get("format", "")) != "scalar-sample-bundles":
+    if str(data.get("format", "")) != SAMPLE_MAJOR_MANIFEST_FORMAT:
         raise ValueError(f"unsupported sample-major manifest format: {data.get('format')}")
     manifest_dir = os.path.dirname(os.path.abspath(manifest_path))
 
@@ -103,8 +145,8 @@ def load_sample_bundle_manifest(manifest_path: str):
     return {
         "sample_meta_path": resolve(str(data["sample_meta_path"])),
         "feature_meta_path": resolve(str(data["feature_meta_path"])),
-        "bundle_paths": [resolve(str(value)) for value in list(data.get("bundle_paths", []))],
-        "bundle_sample_ids": data.get("bundle_sample_ids"),
+        "sample_paths": [resolve(str(value)) for value in list(data.get("sample_paths", []))],
+        "sample_ids": data.get("sample_ids"),
         "sample_id_col": str(data.get("sample_id_col", "sample_id")),
         "feature_id_col": str(data.get("feature_id_col", "feature_id")),
         "value_col": str(data.get("value_col", "value")),

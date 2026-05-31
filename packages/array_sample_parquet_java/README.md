@@ -56,13 +56,13 @@ categorical point column은 별도 dictionary sidecar 없이 string primitive로
 
 ## Build Behavior
 
-Java builder는 Python raw builder와 같은 2단계 구조입니다. sample이 닫히면 먼저 `raw_samples/sample_*.parquet`와 `raw_trace_index/sample_*.parquet`를 확정하고, `raw_samples.jsonl`에 commit record를 append합니다. `finish()` 또는 `compact()`는 raw 파일들을 `targetPartBytes`, `maxPartRows`, `maxPartSamples` 기준으로 묶어서 최종 `sample_parts`와 `trace_index_parts`를 만듭니다.
+Java builder는 Python 표준 builder와 같은 2단계 구조입니다. sample이 닫히면 먼저 `raw_samples/sample_*.parquet`와 `raw_trace_index/sample_*.parquet`를 확정하고, `raw_samples.jsonl`에 commit record를 append합니다. `finish()` 또는 `compact()`는 raw 파일들을 `targetPartBytes`, `maxPartRows`, `maxPartSamples` 기준으로 묶어서 최종 `sample_parts`와 `trace_index_parts`를 만듭니다.
 
 raw sample write는 Java 8 호환 Apache Arrow vector batch를 DuckDB에 `registerArrowStream(...)`으로 넘기고, sample close 시 `COPY ... TO parquet`로 raw 파일을 씁니다. 이 경로는 point row마다 `DuckDBAppender`를 호출하지 않습니다.
 
 사용자가 `addTrace(...)`를 feature 순서대로 호출한다는 보장은 없으므로, sample close 직전에 Java가 trace 목록을 `(sample_id, feature_id)` 순서로 정렬합니다. 그 뒤 raw write와 compact는 DuckDB SQL `ORDER BY` 없이 이미 정렬된 stream/file 목록을 그대로 `COPY TO parquet`로 씁니다. `ArraySampleParquetOrderChecks`는 raw/final parquet의 물리 row 순서가 실제로 `(sample_id, feature_id, point_idx)` 또는 `(sample_id, feature_id)`인지 검사합니다.
 
-중간에 종료되면 `raw_samples.jsonl`에 기록된 sample만 완료로 인정합니다. resume 시 `.tmp` 파일을 삭제하고 `status().pendingSampleIds`를 worker에게 나눠주면 됩니다. 기존 순차 예제와 호환되도록 `status().nextExpectedSampleId`는 가장 작은 pending sample id를 반환합니다.
+중간에 종료되면 `raw_samples.jsonl`에 기록된 sample만 완료로 인정합니다. resume 시 `.tmp` 파일을 삭제하고 `status().pendingSampleIds`를 worker에게 나눠주면 됩니다. 순차 실행을 원하면 이 목록을 앞에서부터 처리하면 됩니다.
 
 `ArraySampleParquetBuildOptions.arrowBatchRows`는 DuckDB로 넘기는 Arrow record batch의 최대 point row 수입니다. 기본값은 `262144`이며, 값을 키우면 batch 수가 줄지만 sample close 시점의 off-heap buffer 사용량이 커집니다.
 
@@ -123,9 +123,11 @@ try (ArraySampleParquetDatasetBuilder builder = ArraySampleParquets.openSession(
         pointSchema,
         "data/feature_meta.parquet",
         options)) {
-    long start = builder.status().nextExpectedSampleId;
-    for (long sampleId = start; sampleId < nSamples; sampleId++) {
-        try (ArraySampleParquetSampleContext sample = builder.sample(sampleId)) {
+    for (Long sampleId : builder.status().pendingSampleIds) {
+        try (ArraySampleParquetSampleContext sample = builder.sample(sampleId.longValue(), true)) {
+            if (sample.skipped) {
+                continue;
+            }
             sample.addTrace(null, "feature_a", columns);
         }
     }

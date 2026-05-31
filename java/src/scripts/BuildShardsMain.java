@@ -1,9 +1,9 @@
 package scripts;
 
 import fs.config.BuildShardConfig;
-import fs.io.scalar.ScalarSampleBundleManifestIO;
+import fs.io.scalar.ScalarSampleMajorManifestIO;
 import fs.io.scalar.ScalarDenseLongShardBuilder;
-import fs.model.scalar.ScalarSampleBundleManifest;
+import fs.model.scalar.ScalarSampleMajorManifest;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -13,15 +13,10 @@ import java.util.List;
  */
 public class BuildShardsMain {
     public static void main(String[] args) throws Exception {
-        String sampleMeta = getArg(args, "--sample-meta", null);
-        String sampleBundleManifest = getArg(args, "--sample-bundle-manifest", null);
+        String sampleMajorManifest = getArg(args, "--sample-major-manifest", null);
         String outDir = getArg(args, "--out-dir", null);
-        if (sampleBundleManifest == null || outDir == null) {
-            System.err.println("Usage: --sample-bundle-manifest <path> --out-dir <dir> [--feature-meta <path>] [--target-shard-mb MB] [--stats-y-col COL ...]");
-            System.exit(1);
-        }
-        if (sampleMeta != null) {
-            System.err.println("--sample-meta is no longer supported here; pass --sample-bundle-manifest");
+        if (sampleMajorManifest == null || outDir == null) {
+            System.err.println("Usage: --sample-major-manifest <path> --out-dir <dir> [--feature-meta <path>] [--target-shard-mb MB] [--stats-y-col COL ...]");
             System.exit(1);
         }
         BuildShardConfig cfg = new BuildShardConfig();
@@ -66,29 +61,20 @@ public class BuildShardsMain {
             cfg.statsYCols = statsYCols;
         }
 
-        if (sampleMeta != null) {
-            File sampleMetaFile = new File(sampleMeta);
-            if (!sampleMetaFile.exists()) {
-                System.err.println("sample_meta not found: " + sampleMetaFile.getAbsolutePath());
-                System.err.println("Hint: run Generate Synth first, or pass --sample-meta to an existing parquet file.");
-                System.exit(1);
-            }
-        } else {
-            File bundleManifestFile = new File(sampleBundleManifest);
-            if (!bundleManifestFile.exists()) {
-                System.err.println("sample-bundle manifest not found: " + bundleManifestFile.getAbsolutePath());
-                System.exit(1);
-            }
-            ScalarSampleBundleManifest stage = ScalarSampleBundleManifestIO.read(sampleBundleManifest);
-            if (cfg.featureMetaPath == null || cfg.featureMetaPath.isEmpty()) {
-                cfg.featureMetaPath = stage.featureMetaPath;
-            }
+        File sampleMajorManifestFile = new File(sampleMajorManifest);
+        if (!sampleMajorManifestFile.exists()) {
+            System.err.println("sample-major manifest not found: " + sampleMajorManifestFile.getAbsolutePath());
+            System.exit(1);
+        }
+        ScalarSampleMajorManifest stage = ScalarSampleMajorManifestIO.read(sampleMajorManifest);
+        if (cfg.featureMetaPath == null || cfg.featureMetaPath.isEmpty()) {
+            cfg.featureMetaPath = stage.featureMetaPath;
         }
 
         int exitCode = 0;
         long startedAt = System.currentTimeMillis();
         try {
-            String manifestPath = ScalarDenseLongShardBuilder.buildFromSampleBundles(sampleBundleManifest, outDir, cfg);
+            String manifestPath = ScalarDenseLongShardBuilder.buildFromSampleMajorManifest(sampleMajorManifest, outDir, cfg);
             System.out.println(manifestPath);
         } catch (Exception e) {
             exitCode = 2;

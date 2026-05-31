@@ -48,7 +48,7 @@ class _CompactPartPlan:
 
 
 @dataclass(frozen=True)
-class ArraySampleParquetRawBuildStatus:
+class ArraySampleParquetBuildSessionStatus:
     """raw-sample build session의 완료/미완료 sample 현황."""
 
     n_samples: int
@@ -60,10 +60,10 @@ class ArraySampleParquetRawBuildStatus:
     manifest_path: Optional[str]
 
 
-class ArraySampleParquetRawSampleContext:
+class ArraySampleParquetSampleContext:
     """sample 하나를 raw parquet 파일 하나로 쓰는 context."""
 
-    def __init__(self, builder: "ArraySampleParquetRawDatasetBuilder", sample_id: int, *, skip_if_completed: bool):
+    def __init__(self, builder: "ArraySampleParquetDatasetBuilder", sample_id: int, *, skip_if_completed: bool):
         self._builder = builder
         self._sample_id = int(sample_id)
         self._skip_if_completed = bool(skip_if_completed)
@@ -91,7 +91,7 @@ class ArraySampleParquetRawSampleContext:
         )
 
 
-class ArraySampleParquetRawDatasetBuilder:
+class ArraySampleParquetDatasetBuilder:
     """sample별 raw parquet을 먼저 만들고, 나중에 최종 part로 compact하는 builder.
 
     이 builder는 기존 순차 builder와 다르게 sample_id 순서를 강제하지 않는다. worker는
@@ -160,7 +160,7 @@ class ArraySampleParquetRawDatasetBuilder:
             self._initialize(feature_meta_path=feature_meta_path, feature_keys=feature_keys)
 
     @classmethod
-    def open_session(cls, *args, **kwargs) -> "ArraySampleParquetRawDatasetBuilder":
+    def open_session(cls, *args, **kwargs) -> "ArraySampleParquetDatasetBuilder":
         return cls(*args, **kwargs)
 
     @staticmethod
@@ -379,8 +379,8 @@ class ArraySampleParquetRawDatasetBuilder:
         sample_key: Optional[str] = None,
         *,
         skip_if_completed: bool = False,
-    ) -> ArraySampleParquetRawSampleContext:
-        return ArraySampleParquetRawSampleContext(
+    ) -> ArraySampleParquetSampleContext:
+        return ArraySampleParquetSampleContext(
             self,
             self._resolve_sample_id(sample_id, sample_key),
             skip_if_completed=skip_if_completed,
@@ -579,10 +579,10 @@ class ArraySampleParquetRawDatasetBuilder:
             recovered += 1
         return recovered
 
-    def status(self) -> ArraySampleParquetRawBuildStatus:
+    def status(self) -> ArraySampleParquetBuildSessionStatus:
         completed = self.completed_sample_ids()
         pending = [idx for idx in range(int(self.n_samples)) if idx not in set(completed)]
-        return ArraySampleParquetRawBuildStatus(
+        return ArraySampleParquetBuildSessionStatus(
             n_samples=int(self.n_samples),
             completed_sample_count=len(completed),
             pending_sample_count=len(pending),
@@ -633,6 +633,11 @@ class ArraySampleParquetRawDatasetBuilder:
             shutil.rmtree(self.raw_samples_path, ignore_errors=True)
             shutil.rmtree(self.raw_trace_index_path, ignore_errors=True)
         return self.manifest_path
+
+    def finish(self) -> str:
+        """Finalize all completed raw samples into public dataset parts."""
+
+        return self.compact(require_all=True, cleanup_raw=False, overwrite=False)
 
     def _write_compact_parts(
         self,

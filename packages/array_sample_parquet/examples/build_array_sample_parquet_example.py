@@ -13,9 +13,9 @@ PACKAGE_SRC = REPO_ROOT / "packages" / "array_sample_parquet" / "src"
 if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
 
-from array_sample_parquet import (
+from array_sample_parquet import (  # noqa: E402
     ArraySampleParquetBuildOptions,
-    ArraySampleParquetRawDatasetBuilder,
+    ArraySampleParquetDatasetBuilder,
     LogicalType,
     PointColumnSpec,
     StorageType,
@@ -66,8 +66,8 @@ def main() -> None:
     )
     dataset_dir = root / "array_sample_parquet"
 
-    # 첫 실행에서는 sample 2개만 완료하고 종료된 상황을 가정합니다.
-    with ArraySampleParquetRawDatasetBuilder.open_session(
+    # 첫 실행에서는 일부 sample만 완료하고 종료한 상황을 가정합니다.
+    with ArraySampleParquetDatasetBuilder.open_session(
         dataset_dir,
         sample_meta_path,
         point_schema,
@@ -81,8 +81,8 @@ def main() -> None:
             sample.add_trace(feature_key="feature_b", columns=_columns(30.0, 0, "empty"))
         print("first_pending=", builder.pending_sample_ids())
 
-    # 같은 session을 다시 열고 pending sample만 채운 뒤 compact합니다.
-    with ArraySampleParquetRawDatasetBuilder.open_session(
+    # 같은 session을 다시 열면 commit log를 읽고 pending sample만 이어서 채웁니다.
+    with ArraySampleParquetDatasetBuilder.open_session(
         dataset_dir,
         sample_meta_path,
         point_schema,
@@ -96,7 +96,7 @@ def main() -> None:
                 if sample.skipped:
                     continue
                 sample.add_trace(feature_key="feature_a", columns=_columns(100.0 + sample_id, 2, "A"))
-        manifest_path = builder.compact(require_all=True)
+        manifest_path = builder.finish()
 
     reader = open_array_sample_parquet(manifest_path)
     payload = reader.get_traces_json(

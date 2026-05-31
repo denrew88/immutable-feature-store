@@ -5,7 +5,7 @@ import fs.io.common.ArrayMetadataWriter;
 import fs.io.common.DuckDBUtils;
 import fs.model.scalar.ScalarDenseLongManifest;
 import fs.model.scalar.ScalarDenseLongPart;
-import fs.model.scalar.ScalarSampleBundleManifest;
+import fs.model.scalar.ScalarSampleMajorManifest;
 
 import java.io.File;
 import java.io.IOException;
@@ -19,7 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 
 /**
- * scalar sample-bundle/raw-sample stage를 dense-long parquet shard로 materialize한다.
+ * scalar sample-major raw stage를 dense-long parquet shard로 materialize한다.
  *
  * <p>입력 parquet는 present 값만 가진 {@code (sample_id, feature_id, value)} row이다.
  * dense-long 최종 part는 모든 feature/sample 조합을 만들고, 입력 row가 없으면
@@ -33,9 +33,9 @@ public final class ScalarDenseLongShardBuilder {
     private ScalarDenseLongShardBuilder() {
     }
 
-    public static String buildFromSampleBundles(String sampleBundleManifestPath, String outDir, BuildShardConfig config) throws Exception {
+    public static String buildFromSampleMajorManifest(String sampleMajorManifestPath, String outDir, BuildShardConfig config) throws Exception {
         BuildShardConfig cfg = config == null ? new BuildShardConfig() : config;
-        ScalarSampleBundleManifest stage = ScalarSampleBundleManifestIO.read(sampleBundleManifestPath);
+        ScalarSampleMajorManifest stage = ScalarSampleMajorManifestIO.read(sampleMajorManifestPath);
         File out = new File(outDir).getAbsoluteFile();
         File partsDir = new File(out, "dense_long_parts");
         File statsDir = new File(out, "selection_stats");
@@ -65,7 +65,7 @@ public final class ScalarDenseLongShardBuilder {
                     + "SELECT CAST(" + DuckDBUtils.quoteIdentifier(stage.sampleIdCol) + " AS BIGINT) AS sample_id, "
                     + "CAST(" + DuckDBUtils.quoteIdentifier(stage.featureIdCol) + " AS INTEGER) AS feature_id, "
                     + "CAST(" + DuckDBUtils.quoteIdentifier(stage.valueCol) + " AS DOUBLE) AS value "
-                    + "FROM read_parquet(" + parquetList(stage.bundlePaths) + ") "
+                    + "FROM read_parquet(" + parquetList(stage.samplePaths) + ") "
                     + "WHERE " + DuckDBUtils.quoteIdentifier(stage.valueCol) + " IS NOT NULL");
 
             int partId = 0;

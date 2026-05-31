@@ -39,6 +39,13 @@ import java.util.Map;
  * {@code trace_index_parts}를 만든다. 이 구조는 sample 단위 resume과 외부 worker 병렬화에
  * 맞춰져 있다.</p>
  */
+/**
+ * array_sample_parquet v1 dataset을 sample별 raw parquet stage와 compact 단계로 만드는 builder입니다.
+ *
+ * <p>sample 하나가 정상 종료되면 `raw_samples/`와 `raw_trace_index/`에 raw parquet가
+ * commit됩니다. 마지막에 {@link #finish()} 또는 {@link #compact()}가 raw 파일들을
+ * size 기반 part로 묶어 최종 `sample_parts/`와 `trace_index_parts/`를 생성합니다.</p>
+ */
 public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     private static final int RAW_STATE_VERSION = 1;
     private static final int RAW_SAMPLE_PADDING = 12;
@@ -152,7 +159,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         }
         writesFeatureMeta = true;
         if (featureKeys == null) {
-            throw new IllegalArgumentException("array_sample_parquet raw builder requires featureMetaPath or featureKeys");
+            throw new IllegalArgumentException("array_sample_parquet builder requires featureMetaPath or featureKeys");
         }
         LinkedHashSet<String> seen = new LinkedHashSet<String>();
         for (String key : featureKeys) {
@@ -399,25 +406,14 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     public ArraySampleParquetBuildSessionStatus status() {
         List<Long> completed = completedSampleIds();
         List<Long> pending = pendingSampleIds();
-        Long lastCompleted = completed.isEmpty() ? null : completed.get(completed.size() - 1);
-        long next = pending.isEmpty() ? nSamples : pending.get(0).longValue();
         return new ArraySampleParquetBuildSessionStatus(
-                lastCompleted,
-                sampleKeyForId(lastCompleted),
-                next,
-                sampleKeyForId(Long.valueOf(next)),
-                completed.size(),
+                nSamples,
+                completed,
+                pending,
                 finished,
                 finished ? manifestPath : null,
-                lastCompleted,
-                sampleKeyForId(lastCompleted),
                 openSampleId,
-                sampleKeyForId(openSampleId),
-                nSamples,
-                completed.size(),
-                pending.size(),
-                completed,
-                pending);
+                sampleKeyForId(openSampleId));
     }
 
     public String compact() throws Exception {

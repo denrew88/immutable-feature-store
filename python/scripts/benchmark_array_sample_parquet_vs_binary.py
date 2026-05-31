@@ -190,8 +190,11 @@ def progress(prefix: str, sample_id: int, total: int, started: float, every: int
 def write_all_traces(builder, factory: SyntheticTraceFactory, *, progress_prefix: str, progress_every: int):
     started = time.perf_counter()
     status = builder.status()
-    start_sample_id = int(status.next_expected_sample_id)
-    for sample_id in range(start_sample_id, factory.n_samples):
+    if hasattr(status, "pending_sample_ids"):
+        sample_ids = [int(sample_id) for sample_id in status.pending_sample_ids]
+    else:
+        sample_ids = list(range(int(status.next_expected_sample_id), factory.n_samples))
+    for sample_id in sample_ids:
         with builder.sample(sample_id=sample_id) as sample:
             for feature_id in range(factory.n_features):
                 sample.add_trace(feature_id=feature_id, columns=factory.columns(sample_id, feature_id))

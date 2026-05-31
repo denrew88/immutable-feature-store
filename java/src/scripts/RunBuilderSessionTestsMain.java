@@ -64,9 +64,8 @@ public final class RunBuilderSessionTestsMain {
         ), featureMetaPath);
 
         String outDir = new File(root, "scalar_shards").getAbsolutePath();
-        File stageDir = new File(outDir, "sample_major_stage");
-        File stateFile = new File(stageDir, "state.json");
-        File logFile = new File(stageDir, "bundles.jsonl");
+        File stateFile = new File(outDir, "raw_state.json");
+        File logFile = new File(outDir, "raw_samples.jsonl");
 
         BuildShardConfig cfg = new BuildShardConfig();
         cfg.targetShardBytes = 1L << 20;
@@ -76,38 +75,35 @@ public final class RunBuilderSessionTestsMain {
                 sampleMetaPath,
                 featureMetaPath,
                 null,
-                cfg,
-                "")) {
+                cfg)) {
             ScalarBuildSessionStatus status0 = builder.status();
-            require(status0.lastCommittedSampleId == null, "new scalar session should not have committed samples");
-            require(status0.nextExpectedSampleId == 0L, "new scalar session should start at sample 0");
+            require(status0.completedSampleCount == 0, "new scalar session should not have committed samples");
+            require(status0.pendingSampleIds.equals(Arrays.asList(0L, 1L, 2L)), "new scalar pending ids mismatch");
             builder.writeSample(0L, values("feature_a", 1.0));
             builder.writeSample(1L, values("feature_b", 2.0));
             ScalarBuildSessionStatus status1 = builder.status();
-            require(status1.lastCommittedSampleId == null, "scalar session should buffer before close");
-            require(Long.valueOf(1L).equals(status1.bufferedThroughSampleId), "scalar buffered sample mismatch");
+            require(status1.completedSampleCount == 2, "scalar session should commit per sample");
+            require(status1.pendingSampleIds.equals(Arrays.asList(2L)), "scalar pending ids after write mismatch");
         }
 
         require(stateFile.exists(), "scalar session state.json missing");
         require(logFile.exists(), "scalar session bundles.jsonl missing");
         JsonNode scalarState1 = JsonUtils.readJson(stateFile.getAbsolutePath());
         List<JsonNode> scalarLog1 = JsonUtils.readJsonLines(logFile.getAbsolutePath());
-        require(scalarState1.path("last_committed_sample_id").asLong(-1L) == 1L, "scalar committed watermark mismatch");
-        require(scalarState1.path("next_expected_sample_id").asLong(-1L) == 2L, "scalar next expected mismatch");
-        require(scalarLog1.size() == 1, "scalar committed bundle count mismatch");
-        require(scalarLog1.get(0).path("first_sample_id").asLong(-1L) == 0L, "scalar first sample log mismatch");
-        require(scalarLog1.get(0).path("last_sample_id").asLong(-1L) == 1L, "scalar last sample log mismatch");
+        require("scalar_raw_stage_v1".equals(scalarState1.path("format").asText()), "scalar raw state format mismatch");
+        require(scalarLog1.size() == 2, "scalar committed sample count mismatch");
+        require(scalarLog1.get(0).path("sample_id").asLong(-1L) == 0L, "scalar first sample log mismatch");
+        require(scalarLog1.get(1).path("sample_id").asLong(-1L) == 1L, "scalar second sample log mismatch");
 
         try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
                 outDir,
                 sampleMetaPath,
                 featureMetaPath,
                 null,
-                cfg,
-                "")) {
+                cfg)) {
             ScalarBuildSessionStatus resumed = builder.status();
-            require(Long.valueOf(1L).equals(resumed.lastCommittedSampleId), "scalar resumed committed watermark mismatch");
-            require(resumed.nextExpectedSampleId == 2L, "scalar resumed next sample mismatch");
+            require(resumed.completedSampleCount == 2, "scalar resumed completed count mismatch");
+            require(resumed.pendingSampleIds.equals(Arrays.asList(2L)), "scalar resumed pending sample mismatch");
             builder.writeSample(2L, values("feature_a", 3.0, "feature_b", 4.0));
             String stageManifestPath = builder.finishStage();
             require(new File(stageManifestPath).exists(), "scalar stage manifest missing");

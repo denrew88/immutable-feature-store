@@ -6,7 +6,9 @@ from scalar_feature_shard import build_shard
 def main():
     """CLI entry point for building dense-long scalar shards from sample-major data."""
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sample-meta", required=True)
+    source = ap.add_mutually_exclusive_group(required=True)
+    source.add_argument("--sample-meta")
+    source.add_argument("--sample-major-manifest")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--feature-meta")
     ap.add_argument("--target-shard-mb", type=int, default=256)
@@ -26,7 +28,7 @@ def main():
         stats_y_cols = [str(args.y_col)]
 
     manifest_path = build_shard(
-        args.sample_meta,
+        args.sample_major_manifest or args.sample_meta,
         args.out_dir,
         feature_meta_path=args.feature_meta,
         target_shard_mb=int(args.target_shard_mb),

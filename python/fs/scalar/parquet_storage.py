@@ -8,7 +8,7 @@ import polars as pl
 from scalar_feature_shard._impl.storage_common import load_feature_meta, load_sample_targets
 from scalar_feature_shard.dense_long import (
     ScalarDenseLongDataset,
-    build_dense_long_shards_from_sample_bundles,
+    build_dense_long_shards_from_sample_major_manifest,
     load_dense_long_manifest,
     open_dense_long_shard,
 )
@@ -52,7 +52,7 @@ def validate_dense_sample_ids(sample_meta_path: str, sample_id_col: str = "sampl
 
 __all__ = [
     "ScalarDenseLongDataset",
-    "build_dense_long_shards_from_sample_bundles",
+    "build_dense_long_shards_from_sample_major_manifest",
     "build_feature_locator_index",
     "build_shard",
     "load_dense_long_manifest",

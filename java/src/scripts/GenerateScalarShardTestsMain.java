@@ -15,17 +15,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * `GenerateArrayShardTestsMain`와 같은 흐름으로 scalar resumable session을 보여 주는 예제 스크립트다.
+ * scalar resumable session을 보여주는 예제 스크립트입니다.
  *
- * <p>이 예제는 다음 순서로 동작한다.
- * 1) 작은 synthetic scalar 원본 X/Y를 만든다.
- * 2) sample/feature metadata parquet를 쓴다.
- * 3) 첫 번째 session에서 sample 0~19까지만 `writeSample(...)`로 기록한다.
- * 4) 같은 stage 디렉터리를 다시 열어 `status().nextExpectedSampleId`부터 이어서 기록한다.
- * 5) `finishStage()`로 stage manifest를 확정하고 `buildShards(...)`로 최종 shard를 만든다.
- *
- * <p>selection 자체는 실행하지 않지만, 현재 scalar shard build 경로는 sample metadata에 target 컬럼이
- * 있어야 하므로 `y` 컬럼은 함께 기록한다.
+ * <p>흐름은 다음과 같습니다.</p>
+ * <ol>
+ *   <li>synthetic scalar X/Y를 streaming source로 준비합니다.</li>
+ *   <li>sample/feature metadata parquet를 만듭니다.</li>
+ *   <li>첫 번째 session에서 sample 0~19까지만 {@code writeSample(...)}로 기록합니다.</li>
+ *   <li>같은 stage directory를 다시 열고 {@code status().pendingSampleIds}로 남은 sample을 확인해 이어서 씁니다.</li>
+ *   <li>{@code finishStage()}로 stage manifest를 확정하고 {@code buildShards(...)}로 최종 shard를 만듭니다.</li>
+ * </ol>
  */
 public final class GenerateScalarShardTestsMain {
     private static final int N_SAMPLES = 5000;
@@ -44,7 +43,6 @@ public final class GenerateScalarShardTestsMain {
         File root = Files.createTempDirectory(dataRoot.toPath(), "tmp_java_scalar_shard_example_").toFile();
         System.out.println("output root: " + root.getAbsolutePath());
 
-        String outDir = new File(root, "scalar_shards").getAbsolutePath();
         String stageDir = new File(root, "scalar_stage").getAbsolutePath();
         String sampleMetaPath = new File(root, "sample_meta.parquet").getAbsolutePath();
         String featureMetaPath = new File(root, "feature_meta.parquet").getAbsolutePath();
@@ -65,25 +63,23 @@ public final class GenerateScalarShardTestsMain {
         buildConfig.statsYCols = Arrays.asList("y");
 
         try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
-                outDir,
+                stageDir,
                 sampleMetaPath,
                 featureMetaPath,
                 null,
-                buildConfig,
-                stageDir)) {
-            long nextSampleId = builder.status().nextExpectedSampleId;
+                buildConfig)) {
+            long nextSampleId = firstPendingSampleId(builder);
             writeSamples(builder, synthetic, nextSampleId, RESUME_SPLIT_SAMPLE);
             System.out.println("paused after sample " + (RESUME_SPLIT_SAMPLE - 1));
         }
 
         try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
-                outDir,
+                stageDir,
                 sampleMetaPath,
                 featureMetaPath,
                 null,
-                buildConfig,
-                stageDir)) {
-            long nextSampleId = builder.status().nextExpectedSampleId;
+                buildConfig)) {
+            long nextSampleId = firstPendingSampleId(builder);
             writeSamples(builder, synthetic, nextSampleId, N_SAMPLES);
 
             String stageManifestPath = builder.finishStage();
@@ -95,10 +91,10 @@ public final class GenerateScalarShardTestsMain {
     }
 
     /**
-     * 주어진 구간의 sample을 순서대로 builder에 기록한다.
+     * 주어진 sample 구간을 순서대로 builder에 기록합니다.
      *
-     * <p>resume 예제에서는 반드시 {@code status().nextExpectedSampleId}부터 다시 써야 하므로,
-     * caller가 시작 sample을 builder status에서 받아 넘겨주는 형태로 유지한다.
+     * <p>이 예제는 순차적으로 쓰지만, 실제 작업에서는 {@code pendingSampleIds}를 여러
+     * worker에게 나눠주고 각 worker가 서로 다른 sample id를 처리해도 됩니다.</p>
      */
     private static void writeSamples(
             ScalarDatasetBuilder builder,
@@ -106,8 +102,13 @@ public final class GenerateScalarShardTestsMain {
             long startSampleId,
             int endExclusiveSampleId) throws Exception {
         for (SyntheticGenerator.SyntheticSample sample : synthetic.samples((int) startSampleId, endExclusiveSampleId)) {
-            builder.writeSample((long) sample.sampleId, sample.values);
+            builder.writeSample((long) sample.sampleId, sample.values, true);
         }
+    }
+
+    private static long firstPendingSampleId(ScalarDatasetBuilder builder) throws Exception {
+        List<Long> pending = builder.status().pendingSampleIds;
+        return pending.isEmpty() ? N_SAMPLES : pending.get(0).longValue();
     }
 
     private static List<Map<String, Object>> sampleRows(SyntheticGenerator.StreamingSource synthetic) {

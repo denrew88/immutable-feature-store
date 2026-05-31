@@ -13,7 +13,6 @@ if str(PACKAGE_SRC) not in sys.path:
 from scalar_feature_shard import (  # noqa: E402
     BuildOptions,
     ScalarDatasetBuilder,
-    ScalarRawDatasetBuilder,
     SelectionOptions,
     build_shard,
     open_dense_long_shard,
@@ -59,23 +58,24 @@ def main():
         feature_meta_path=str(feature_meta_path),
         build_options=BuildOptions(target_shard_mb=1, stats_y_cols=("y", "y_alt")),
     )
+    builder.write_sample(2, {"feature_b": 20.0})
     builder.write_sample(0, {"feature_a": 10.0, "feature_c": None})
     builder.write_sample(1, {"feature_a": 11.0, "feature_b": 21.0})
-    builder.write_sample(2, {"feature_b": 20.0})
     builder.write_sample(3, {})
-    stage_manifest = Path(builder.finish_sample_major())
+    assert builder.pending_sample_ids() == []
+    stage_manifest = Path(builder.finish_stage())
     assert stage_manifest.exists()
-    assert json.loads(stage_manifest.read_text(encoding="utf-8"))["format"] == "scalar-sample-bundles"
+    assert json.loads(stage_manifest.read_text(encoding="utf-8"))["format"] == "scalar-sample-major-v1"
 
     wrapper_manifest_path = build_shard(
         str(stage_manifest),
         str(root / "wrapper_dense_long"),
-        feature_meta_path=str(builder.sample_major_feature_meta_path),
+        feature_meta_path=str(builder.feature_meta_path),
         options=BuildOptions(target_shard_mb=1, stats_y_cols=("y", "y_alt")),
     )
     assert Path(wrapper_manifest_path).name == "dense_long_shard_manifest.json"
 
-    manifest_path = builder.build_shards(keep_sample_major=True)
+    manifest_path = builder.build_shards(keep_raw=True)
     assert Path(manifest_path).name == "dense_long_shard_manifest.json"
     with open_dense_long_shard(manifest_path) as ds:
         values_a, valid_a = ds.load_feature_by_id(0)
@@ -108,7 +108,7 @@ def main():
     assert selection.candidate_count >= selection.selected_count
 
     raw_out = root / "raw_dense_stage"
-    raw_builder = ScalarRawDatasetBuilder(
+    raw_builder = ScalarDatasetBuilder(
         out_dir=str(raw_out),
         sample_meta_path=str(sample_meta_path),
         feature_meta_path=str(feature_meta_path),

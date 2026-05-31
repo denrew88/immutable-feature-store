@@ -1,3 +1,3 @@
-from ._impl.builder import ArraySampleParquetDatasetBuilder, ArraySampleParquetSampleContext
+from ._impl.raw_builder import ArraySampleParquetDatasetBuilder, ArraySampleParquetSampleContext
 
 __all__ = ["ArraySampleParquetDatasetBuilder", "ArraySampleParquetSampleContext"]

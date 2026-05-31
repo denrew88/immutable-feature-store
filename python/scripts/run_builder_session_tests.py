@@ -48,9 +48,8 @@ def _run_scalar_session_test(root: Path):
         )
     )
     out_dir = root / "scalar_shards"
-    stage_dir = out_dir / "sample_major_stage"
-    state_path = stage_dir / "state.json"
-    log_path = stage_dir / "bundles.jsonl"
+    state_path = out_dir / "raw_state.json"
+    log_path = out_dir / "raw_samples.jsonl"
 
     with ScalarDatasetBuilder.open_session(
         out_dir=str(out_dir),
@@ -59,24 +58,22 @@ def _run_scalar_session_test(root: Path):
         build_options=ScalarShardBuildOptions(target_shard_mb=1),
     ) as builder:
         status0 = builder.status()
-        assert status0.last_committed_sample_id is None
-        assert status0.next_expected_sample_id == 0
+        assert status0.completed_sample_count == 0
+        assert status0.pending_sample_ids == [0, 1, 2]
         builder.write_sample(0, {"feature_a": 1.0})
         builder.write_sample(1, {"feature_b": 2.0})
         status1 = builder.status()
-        assert status1.last_committed_sample_id is None
-        assert status1.buffered_through_sample_id == 1
-        assert status1.next_expected_sample_id == 0
+        assert status1.completed_sample_count == 2
+        assert status1.pending_sample_ids == [2]
 
     assert state_path.exists()
     assert log_path.exists()
     state1 = _load_json(state_path)
     log1 = _load_jsonl(log_path)
-    assert state1["last_committed_sample_id"] == 1
-    assert state1["next_expected_sample_id"] == 2
-    assert len(log1) == 1
-    assert log1[0]["first_sample_id"] == 0
-    assert log1[0]["last_sample_id"] == 1
+    assert state1["format"] == "scalar-raw-samples"
+    assert len(log1) == 2
+    assert log1[0]["sample_id"] == 0
+    assert log1[1]["sample_id"] == 1
 
     with ScalarDatasetBuilder.open_session(
         out_dir=str(out_dir),
@@ -85,15 +82,15 @@ def _run_scalar_session_test(root: Path):
         build_options=ScalarShardBuildOptions(target_shard_mb=1),
     ) as builder:
         resumed = builder.status()
-        assert resumed.last_committed_sample_id == 1
-        assert resumed.next_expected_sample_id == 2
+        assert resumed.completed_sample_count == 2
+        assert resumed.pending_sample_ids == [2]
         builder.write_sample(2, {"feature_a": 3.0, "feature_b": 4.0})
         stage_manifest_path = Path(builder.finish_stage())
         assert stage_manifest_path.exists()
         finished = builder.status()
         assert finished.finished_stage
-        assert finished.bundle_manifest_path == str(stage_manifest_path)
-        manifest_path = Path(builder.build_shards(keep_sample_major=True))
+        assert finished.sample_major_manifest_path == str(stage_manifest_path)
+        manifest_path = Path(builder.build_shards(keep_raw=True))
         assert manifest_path.exists()
 
 

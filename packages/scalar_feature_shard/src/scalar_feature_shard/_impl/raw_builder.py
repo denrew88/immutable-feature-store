@@ -1,4 +1,4 @@
-"""Out-of-order raw-sample builder for scalar feature shards."""
+"""Resume-safe scalar builder backed by one raw parquet file per sample."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ..config import ScalarShardBuildOptions
-from .builder import _load_dense_metadata, _write_json_atomic
-from .dense_long import build_dense_long_shards_from_sample_bundles
+from .dense_long import build_dense_long_shards_from_sample_major_manifest
+from .storage_common import SAMPLE_MAJOR_MANIFEST_FORMAT, load_dense_metadata, write_json_atomic
 
 
 RAW_STATE_VERSION = 1
@@ -27,8 +27,13 @@ RAW_FORMAT_NAME = "scalar-raw-samples"
 
 
 @dataclass(frozen=True)
-class ScalarRawBuildStatus:
-    """Raw scalar build status with completed and pending sample ids."""
+class ScalarBuildSessionStatus:
+    """표준 scalar build session의 진행 상태.
+
+    현재 builder는 sample 하나를 raw parquet 파일 하나로 commit합니다. 따라서 재개
+    기준은 순차 watermark 하나가 아니라 완료된 sample id 목록과 아직 남은 sample id
+    목록입니다. 순차 실행을 원하면 `pending_sample_ids`를 앞에서부터 처리하면 됩니다.
+    """
 
     n_samples: int
     completed_sample_count: int
@@ -37,6 +42,10 @@ class ScalarRawBuildStatus:
     pending_sample_ids: list[int]
     finished_stage: bool
     sample_major_manifest_path: Optional[str]
+
+    @property
+    def next_pending_sample_id(self) -> Optional[int]:
+        return self.pending_sample_ids[0] if self.pending_sample_ids else None
 
 
 class _FileLock:
@@ -68,13 +77,13 @@ class _FileLock:
             pass
 
 
-class ScalarRawDatasetBuilder:
-    """Build scalar shards from independently completed raw sample files.
+class ScalarDatasetBuilder:
+    """sample별 raw parquet 파일에서 scalar dense-long shard를 만드는 builder.
 
-    Each completed sample is written to one parquet file under `raw_samples/`.
-    Samples may be produced in any order and by different workers as long as
-    they target distinct sample ids. Final shard materialization happens later
-    from the committed raw files.
+    완료된 sample은 `raw_samples/sample_*.parquet` 파일 하나와 `raw_samples.jsonl`
+    commit log 한 줄로 기록됩니다. sample id 순서를 강제하지 않으므로 supervisor가
+    `pending_sample_ids()`를 worker에게 나눠주고, 마지막에 한 프로세스가
+    `build_dense_long_shards()`를 호출해 최종 dense-long shard를 만들 수 있습니다.
     """
 
     def __init__(
@@ -89,7 +98,7 @@ class ScalarRawDatasetBuilder:
         if feature_meta_path and feature_keys is not None:
             raise ValueError("provide at most one of feature_meta_path or feature_keys")
         if not feature_meta_path and feature_keys is None:
-            raise ValueError("raw scalar builder requires feature_meta_path or feature_keys")
+            raise ValueError("scalar builder requires feature_meta_path or feature_keys")
 
         self.out_dir = str(Path(out_dir).expanduser().resolve())
         self.source_sample_meta_path = str(Path(sample_meta_path).expanduser().resolve())
@@ -103,7 +112,7 @@ class ScalarRawDatasetBuilder:
         self.sample_meta_path = os.path.join(self.out_dir, "sample_meta.parquet")
         self.feature_meta_path = os.path.join(self.out_dir, "feature_meta.parquet")
 
-        sample_meta_df = _load_dense_metadata(
+        sample_meta_df = load_dense_metadata(
             self.source_sample_meta_path,
             id_col=str(self.build_options.sample_id_col),
             entity_name="sample",
@@ -137,7 +146,7 @@ class ScalarRawDatasetBuilder:
             self._initialize(feature_meta_path=feature_meta_path, feature_keys=feature_keys)
 
     @classmethod
-    def open_session(cls, *args, **kwargs) -> "ScalarRawDatasetBuilder":
+    def open_session(cls, *args, **kwargs) -> "ScalarDatasetBuilder":
         return cls(*args, **kwargs)
 
     def _stats_y_cols(self) -> tuple[str, ...]:
@@ -171,7 +180,7 @@ class ScalarRawDatasetBuilder:
         }
 
     def _save_state(self):
-        _write_json_atomic(self.state_path, self._state_payload())
+        write_json_atomic(self.state_path, self._state_payload())
 
     def _initialize(self, *, feature_meta_path: Optional[str], feature_keys: Optional[Sequence[str]]):
         if os.path.exists(self.out_dir) and os.listdir(self.out_dir):
@@ -184,7 +193,7 @@ class ScalarRawDatasetBuilder:
 
     def _initialize_feature_meta(self, *, feature_meta_path: Optional[str], feature_keys: Optional[Sequence[str]]):
         if feature_meta_path:
-            feature_meta = _load_dense_metadata(
+            feature_meta = load_dense_metadata(
                 self._feature_meta_source_path,
                 id_col=str(self.build_options.feature_id_col),
                 entity_name="feature",
@@ -238,19 +247,19 @@ class ScalarRawDatasetBuilder:
 
     def _validate_resume_state(self, state: dict, *, feature_meta_path: Optional[str], feature_keys: Optional[Sequence[str]]):
         if state.get("format") != RAW_FORMAT_NAME:
-            raise ValueError(f"unsupported raw scalar build session format: {state.get('format')!r}")
+            raise ValueError(f"unsupported scalar build session format: {state.get('format')!r}")
         if int(state.get("raw_state_version", 0)) != RAW_STATE_VERSION:
             raise ValueError(f"unsupported raw scalar build session version: {state.get('raw_state_version')}")
         if str(Path(state["sample_meta_source_path"]).expanduser().resolve()) != self.source_sample_meta_path:
-            raise ValueError("sample_meta_path does not match existing raw scalar build session")
+            raise ValueError("sample_meta_path does not match existing scalar build session")
         if state.get("options") != self._options_payload():
             raise ValueError("options do not match existing raw scalar build session")
         normalized_feature_meta_path = "" if not feature_meta_path else str(Path(feature_meta_path).expanduser().resolve())
         stored_feature_meta_path = str(state.get("feature_meta_source_path") or "")
         if normalized_feature_meta_path and stored_feature_meta_path and normalized_feature_meta_path != stored_feature_meta_path:
-            raise ValueError("feature_meta_path does not match existing raw scalar build session")
+            raise ValueError("feature_meta_path does not match existing scalar build session")
         if feature_keys is not None and [str(value) for value in feature_keys] != list(state.get("feature_keys_in_order") or []):
-            raise ValueError("feature_keys do not match existing raw scalar build session")
+            raise ValueError("feature_keys do not match existing scalar build session")
 
     def _cleanup_tmp_files(self):
         if not os.path.isdir(self.raw_samples_path):
@@ -359,10 +368,10 @@ class ScalarRawDatasetBuilder:
         completed = set(self.completed_sample_ids())
         return [sample_id for sample_id in range(int(self.n_samples)) if sample_id not in completed]
 
-    def status(self) -> ScalarRawBuildStatus:
+    def status(self) -> ScalarBuildSessionStatus:
         completed = self.completed_sample_ids()
         pending = [idx for idx in range(int(self.n_samples)) if idx not in set(completed)]
-        return ScalarRawBuildStatus(
+        return ScalarBuildSessionStatus(
             n_samples=int(self.n_samples),
             completed_sample_count=len(completed),
             pending_sample_count=len(pending),
@@ -380,10 +389,12 @@ class ScalarRawDatasetBuilder:
         sample_key: Optional[str] = None,
         skip_if_completed: bool = False,
     ) -> bool:
-        """Write one raw scalar sample in any sample-id order.
+        """sample 하나를 raw parquet 파일로 commit합니다.
 
-        Returns `True` when a new raw file was committed and `False` when
-        `skip_if_completed=True` suppressed a duplicate completed sample.
+        `values`는 feature id 또는 feature key를 key로 갖는 mapping입니다. 값이
+        `None`이거나 `NaN`이면 missing으로 취급해서 raw row를 쓰지 않습니다.
+        새 sample 파일을 commit하면 `True`를 반환하고, `skip_if_completed=True`로
+        이미 완료된 sample을 건너뛰면 `False`를 반환합니다.
         """
 
         if self._finished_stage:
@@ -446,33 +457,34 @@ class ScalarRawDatasetBuilder:
             lock.release()
 
     def finish_stage(self):
-        """Finalize raw sample rows as a sample-major manifest.
+        """raw sample 파일 목록을 sample-major manifest로 확정합니다.
 
-        The manifest references committed raw sample parquet files directly;
-        it does not rewrite them into bundle files. Dense-long materialization
-        consumes those paths because the row schema is the same
-        `(sample_id, feature_id, value)` long schema.
+        이 단계는 raw parquet를 다시 쓰지 않습니다. commit log에 있는 sample 파일
+        경로를 `sample_major_manifest.json`에 연결할 뿐입니다. raw 파일 schema가
+        `(sample_id, feature_id, value)` long schema이므로 dense-long build가 이
+        manifest를 그대로 입력으로 사용할 수 있습니다.
         """
 
         if self._finished_stage:
             return self.sample_major_manifest_path
         records = self._raw_commit_records()
-        bundle_paths = [
+        sample_paths = [
             os.path.relpath(os.path.join(self.out_dir, records[sample_id]["path"]), self.out_dir).replace("\\", "/")
             for sample_id in sorted(records)
         ]
         payload = {
-            "format": "scalar-sample-bundles",
+            "format": SAMPLE_MAJOR_MANIFEST_FORMAT,
             "sample_meta_path": os.path.relpath(self.sample_meta_path, self.out_dir).replace("\\", "/"),
             "feature_meta_path": os.path.relpath(self.feature_meta_path, self.out_dir).replace("\\", "/"),
-            "bundle_paths": bundle_paths,
+            "sample_paths": sample_paths,
+            "sample_ids": [int(sample_id) for sample_id in sorted(records)],
             "sample_id_col": str(self.build_options.sample_id_col),
             "feature_id_col": str(self.build_options.feature_id_col),
             "value_col": str(self.build_options.value_col),
             "raw_sample_stage": True,
             "completed_sample_count": int(len(records)),
         }
-        _write_json_atomic(self.sample_major_manifest_path, payload)
+        write_json_atomic(self.sample_major_manifest_path, payload)
         self._finished_stage = True
         self._save_state()
         return self.sample_major_manifest_path
@@ -493,7 +505,7 @@ class ScalarRawDatasetBuilder:
                 raise ValueError(f"cannot build dense-long shards: {len(pending)} samples are still pending")
         manifest_path = self.finish_stage()
         dense_out_dir = str(Path(out_dir or os.path.join(self.out_dir, "dense_long_shards")).expanduser().resolve())
-        result = build_dense_long_shards_from_sample_bundles(
+        result = build_dense_long_shards_from_sample_major_manifest(
             manifest_path,
             dense_out_dir,
             feature_meta_path=self.feature_meta_path,
@@ -512,6 +524,27 @@ class ScalarRawDatasetBuilder:
         if not keep_raw:
             shutil.rmtree(self.raw_samples_path, ignore_errors=True)
         return result
+
+    def build_shards(
+        self,
+        *,
+        require_all: bool = True,
+        out_dir: Optional[str] = None,
+        target_part_mb: Optional[int] = None,
+        row_group_features: int = 128,
+        keep_raw: bool = True,
+        return_stats: bool = False,
+    ):
+        """Build the final dense-long shard from committed sample files."""
+
+        return self.build_dense_long_shards(
+            require_all=require_all,
+            out_dir=out_dir,
+            target_part_mb=target_part_mb,
+            row_group_features=row_group_features,
+            keep_raw=keep_raw,
+            return_stats=return_stats,
+        )
 
     def close(self):
         self._save_state()

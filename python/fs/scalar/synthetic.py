@@ -282,7 +282,10 @@ def write_sample_major(dataset: Dict, out_dir: str, sample_meta_path: str, featu
         feature_meta_path: Optional output path for `feature_meta.parquet`. When
             omitted, the file is written next to `sample_meta_path`.
     """
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir_abs = os.path.abspath(out_dir)
+    sample_meta_path_abs = os.path.abspath(sample_meta_path)
+    sample_meta_dir = os.path.dirname(sample_meta_path_abs)
+    os.makedirs(out_dir_abs, exist_ok=True)
     X = dataset["X"]
     M = dataset["M"]
     y_cols = tuple(str(value) for value in dataset.get("y_cols", ()))
@@ -303,19 +306,21 @@ def write_sample_major(dataset: Dict, out_dir: str, sample_meta_path: str, featu
     n_samples, n_features = X.shape
     sample_paths = []
     if feature_meta_path is None:
-        feature_meta_path = os.path.join(os.path.dirname(sample_meta_path), "feature_meta.parquet")
+        feature_meta_path = os.path.join(sample_meta_dir, "feature_meta.parquet")
+    feature_meta_path_abs = os.path.abspath(feature_meta_path)
 
     for s_idx in range(n_samples):
         values = X[s_idx]
         valid = M[s_idx].astype(bool)
         fids = np.arange(n_features, dtype=np.int32)
         df = pl.DataFrame({
+            "sample_id": pl.Series("sample_id", np.full(int(valid.sum()), s_idx, dtype=np.int64), dtype=pl.Int64),
             "feature_id": pl.Series("feature_id", fids[valid], dtype=pl.Int32),
             "value": values[valid],
         })
-        sample_path = os.path.join(out_dir, f"sample_{s_idx:06d}.parquet")
+        sample_path = os.path.join(out_dir_abs, f"sample_{s_idx:06d}.parquet")
         df.write_parquet(sample_path)
-        sample_paths.append(sample_path)
+        sample_paths.append(os.path.relpath(sample_path, sample_meta_dir).replace("\\", "/"))
 
     meta_data = {
         "sample_id": np.arange(n_samples, dtype=np.int64),
@@ -325,7 +330,7 @@ def write_sample_major(dataset: Dict, out_dir: str, sample_meta_path: str, featu
         meta_data[str(y_col)] = values
     meta_data["sample_path"] = sample_paths
     meta = pl.DataFrame(meta_data)
-    meta.write_parquet(sample_meta_path)
+    meta.write_parquet(sample_meta_path_abs)
 
     feature_meta_df = pl.DataFrame(
         {
@@ -336,4 +341,4 @@ def write_sample_major(dataset: Dict, out_dir: str, sample_meta_path: str, featu
             "pattern_idx": [row["pattern_idx"] for row in feature_meta],
         }
     )
-    feature_meta_df.write_parquet(feature_meta_path)
+    feature_meta_df.write_parquet(feature_meta_path_abs)

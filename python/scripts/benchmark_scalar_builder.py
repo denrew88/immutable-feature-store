@@ -90,8 +90,8 @@ def main():
     timings["writer_ingest_total_s"] = time.perf_counter() - ingest_total_t0
 
     t0 = time.perf_counter()
-    builder.finish_sample_major()
-    timings["finish_sample_major_s"] = time.perf_counter() - t0
+    builder.finish_stage()
+    timings["finish_stage_s"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
     manifest_path, build_stats = builder.build_shards(return_stats=True)
@@ -142,7 +142,7 @@ def main():
         "build_sample_value_mappings_s",
         "writer_write_sample_calls_s",
         "writer_ingest_total_s",
-        "finish_sample_major_s",
+        "finish_stage_s",
         "build_shards_wall_s",
     ):
         print(f"- {key}: {_format_seconds(float(timings[key]))}")

@@ -23,7 +23,7 @@ from .storage_common import (
     cleanup_empty_dir,
     close_memmap,
     load_feature_meta,
-    load_sample_bundle_manifest,
+    load_sample_major_manifest,
     load_sample_targets,
 )
 
@@ -120,7 +120,7 @@ def _assign_parts_by_target_bytes(
     return starts, ends
 
 
-def _read_bundle_batch(paths: list[str], columns: list[str], sample_ids: list[int] | None = None) -> pl.DataFrame:
+def _read_sample_path_batch(paths: list[str], columns: list[str], sample_ids: list[int] | None = None) -> pl.DataFrame:
     if not paths:
         return pl.DataFrame(schema={columns[0]: pl.Int64, columns[1]: pl.Int32, columns[2]: pl.Float64})
     try:
@@ -197,7 +197,7 @@ def _write_empty_dense_long_part(path: str, *, compression: str, row_group_featu
     )
 
 
-def build_dense_long_shards_from_sample_bundles(
+def build_dense_long_shards_from_sample_major_manifest(
     sample_major_manifest_path: str,
     out_dir: str,
     *,
@@ -216,7 +216,7 @@ def build_dense_long_shards_from_sample_bundles(
     row_group_features: int = DENSE_LONG_ROW_GROUP_FEATURES,
     return_stats: bool = False,
 ):
-    """Build dense-long scalar shards from sample-bundle or raw-sample rows.
+    """Build dense-long scalar shards from sample-major raw rows.
 
     Input parquet files are expected to contain `(sample_id, feature_id, value)`
     rows. The builder reads those files in batches, fills feature-major memmaps,
@@ -247,15 +247,15 @@ def build_dense_long_shards_from_sample_bundles(
     os.makedirs(tmp_dir, exist_ok=True)
 
     phase_t0 = time.perf_counter()
-    stage_manifest = load_sample_bundle_manifest(sample_major_manifest_path)
+    stage_manifest = load_sample_major_manifest(sample_major_manifest_path)
     sample_meta_path = str(stage_manifest["sample_meta_path"])
     if feature_meta_path is None:
         feature_meta_path = str(stage_manifest["feature_meta_path"])
-    bundle_paths = list(stage_manifest["bundle_paths"])
-    bundle_sample_ids_raw = stage_manifest.get("bundle_sample_ids")
-    bundle_sample_ids = None if bundle_sample_ids_raw is None else [int(value) for value in bundle_sample_ids_raw]
-    if bundle_sample_ids is not None and len(bundle_sample_ids) != len(bundle_paths):
-        raise ValueError("bundle_sample_ids length must match bundle_paths length")
+    sample_paths = list(stage_manifest["sample_paths"])
+    sample_ids_raw = stage_manifest.get("sample_ids")
+    sample_file_ids = None if sample_ids_raw is None else [int(value) for value in sample_ids_raw]
+    if sample_file_ids is not None and len(sample_file_ids) != len(sample_paths):
+        raise ValueError("sample_ids length must match sample_paths length")
     sample_id_col = str(stage_manifest.get("sample_id_col", sample_id_col))
     feature_id_col = str(stage_manifest.get("feature_id_col", feature_id_col))
     value_col = str(stage_manifest.get("value_col", value_col))
@@ -325,10 +325,10 @@ def build_dense_long_shards_from_sample_bundles(
         features_per_part = max(1, int(part_ends[0] - part_starts[0])) if part_count else 1
         phase_t0 = time.perf_counter()
         batch_size = max(1, int(input_batch_files))
-        for batch_start in range(0, len(bundle_paths), batch_size):
-            paths = bundle_paths[batch_start : batch_start + batch_size]
-            path_sample_ids = None if bundle_sample_ids is None else bundle_sample_ids[batch_start : batch_start + batch_size]
-            df = _read_bundle_batch(paths, [sample_id_col, feature_id_col, value_col], path_sample_ids)
+        for batch_start in range(0, len(sample_paths), batch_size):
+            paths = sample_paths[batch_start : batch_start + batch_size]
+            path_sample_ids = None if sample_file_ids is None else sample_file_ids[batch_start : batch_start + batch_size]
+            df = _read_sample_path_batch(paths, [sample_id_col, feature_id_col, value_col], path_sample_ids)
             if df.height <= 0:
                 continue
             sids = df[sample_id_col].to_numpy().astype(np.int64, copy=False)
@@ -344,12 +344,12 @@ def build_dense_long_shards_from_sample_bundles(
                 continue
             if int(np.min(sids)) < 0 or int(np.max(sids)) >= n_samples:
                 raise ValueError(
-                    f"bundle sample ids must be dense 0..{n_samples - 1}; "
+                    f"sample ids must be dense 0..{n_samples - 1}; "
                     f"found range [{int(sids.min())}, {int(sids.max())}]"
                 )
             if int(np.min(fids)) < 0 or int(np.max(fids)) >= n_features:
                 raise ValueError(
-                    f"bundle feature ids must be dense 0..{n_features - 1}; "
+                    f"feature ids must be dense 0..{n_features - 1}; "
                     f"found range [{int(fids.min())}, {int(fids.max())}]"
                 )
             part_ids = fids.astype(np.int64, copy=False) // features_per_part
