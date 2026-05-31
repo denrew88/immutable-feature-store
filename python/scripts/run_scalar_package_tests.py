@@ -15,8 +15,10 @@ from scalar_feature_shard import (
     FeatureNotFoundError,
     SampleNotFoundError,
     ScalarDatasetBuilder,
+    ScalarRawDatasetBuilder,
     SelectionOptions,
     build_shard,
+    open_dense_long_shard,
     open_shard,
     select_features,
     write_feature_meta,
@@ -217,6 +219,53 @@ def main():
         discovered_value = ds.get_value_by_key("feature_x", "sample_000001")
         assert discovered_value.present is True
         assert np.isclose(discovered_value.value, 101.0)
+
+    raw_out = root / "raw_shards"
+    raw_builder = ScalarRawDatasetBuilder(
+        out_dir=str(raw_out),
+        sample_meta_path=str(sample_meta_path),
+        feature_meta_path=str(feature_meta_path),
+        build_options=BuildOptions(target_shard_mb=1, stats_y_cols=("y", "y_alt")),
+    )
+    assert raw_builder.pending_sample_ids() == [0, 1, 2, 3]
+    raw_builder.write_sample(2, {"feature_b": 20.0})
+    raw_builder.write_sample(0, {"feature_a": 10.0, "feature_c": None})
+    raw_builder.write_sample(1, {"feature_a": 11.0, "feature_b": 21.0})
+    raw_builder.write_sample(3, {})
+    assert raw_builder.completed_sample_ids() == [0, 1, 2, 3]
+    assert raw_builder.pending_sample_ids() == []
+    assert raw_builder.write_sample(1, {"feature_c": 31.0}, skip_if_completed=True) is False
+    try:
+        raw_builder.write_sample(1, {"feature_c": 31.0})
+    except ValueError as exc:
+        assert "already completed" in str(exc)
+    else:  # pragma: no cover - sanity guard
+        raise AssertionError("expected duplicate raw sample write to fail")
+
+    raw_stage_manifest = raw_builder.finish_stage()
+    raw_stage_payload = json.loads(Path(raw_stage_manifest).read_text(encoding="utf-8"))
+    assert raw_stage_payload["raw_sample_stage"] is True
+    assert len(raw_stage_payload["bundle_paths"]) == 4
+
+    raw_blob_manifest_path = raw_builder.build_blob_shards(return_stats=False)
+    with open_shard(raw_blob_manifest_path) as ds:
+        raw_value = ds.get_value_by_key("feature_b", "sample_000002")
+        assert raw_value.present is True
+        assert np.isclose(raw_value.value, 20.0)
+
+    dense_manifest_path = raw_builder.build_dense_long_shards(
+        out_dir=str(root / "raw_dense_long"),
+        return_stats=False,
+    )
+    with open_dense_long_shard(dense_manifest_path) as ds:
+        dense_values_a, dense_valid_a = ds.load_feature_by_id(0)
+        assert bool(dense_valid_a[0]) and np.isclose(dense_values_a[0], 10.0)
+        assert bool(dense_valid_a[1]) and np.isclose(dense_values_a[1], 11.0)
+        assert not bool(dense_valid_a[2])
+        dense_values_s2, dense_valid_s2 = ds.load_sample_by_id(2)
+        assert bool(dense_valid_s2[1]) and np.isclose(dense_values_s2[1], 20.0)
+        dense_top = ds.top_features_from_stats("y", top_k=2)
+        assert dense_top.height == 2
 
     ordered_feature_meta_path = write_feature_meta(
         [{"feature_key": f"feature_{idx:02d}"} for idx in range(6)],

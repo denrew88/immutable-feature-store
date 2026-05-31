@@ -4,6 +4,7 @@ import fs.config.BuildShardConfig;
 import fs.config.SelectionConfig;
 import fs.io.scalar.DuckDBShardReader;
 import fs.io.scalar.ManifestIO;
+import fs.io.scalar.ScalarDenseLongShardBuilder;
 import fs.io.scalar.ScalarMetadataWriter;
 import fs.model.selection.Candidate;
 import fs.model.scalar.ShardManifest;
@@ -38,6 +39,13 @@ public final class ScalarFeatureShards {
     }
 
     /**
+     * dense-long scalar shard dataset을 연다.
+     */
+    public static ScalarDenseLongDataset openDenseLong(String manifestPath) throws Exception {
+        return new ScalarDenseLongDataset(manifestPath);
+    }
+
+    /**
      * sample metadata parquet를 작성한다.
      */
     public static String writeSampleMeta(List<Map<String, Object>> records, String path) throws Exception {
@@ -63,6 +71,18 @@ public final class ScalarFeatureShards {
      */
     public static ScalarDatasetBuilder openSession(String outDir, String sampleMetaPath) throws Exception {
         return ScalarDatasetBuilder.openSession(outDir, sampleMetaPath);
+    }
+
+    /**
+     * sample별 raw parquet를 쓰는 random-order scalar builder를 연다.
+     */
+    public static ScalarRawDatasetBuilder openRawSession(
+            String outDir,
+            String sampleMetaPath,
+            String featureMetaPath,
+            List<String> featureKeys,
+            BuildShardConfig buildConfig) throws Exception {
+        return ScalarRawDatasetBuilder.openSession(outDir, sampleMetaPath, featureMetaPath, featureKeys, buildConfig);
     }
 
     /**
@@ -92,6 +112,16 @@ public final class ScalarFeatureShards {
             BuildShardConfig buildConfig,
             String sampleMajorOutDir) throws Exception {
         return ScalarDatasetBuilder.openSession(outDir, sampleMetaPath, featureMetaPath, featureKeys, buildConfig, sampleMajorOutDir);
+    }
+
+    /**
+     * scalar sample-bundle/raw-sample manifest에서 dense-long parquet shard를 만든다.
+     */
+    public static String buildDenseLongShardsFromSampleBundles(
+            String sampleBundleManifestPath,
+            String outDir,
+            BuildShardConfig buildConfig) throws Exception {
+        return ScalarDenseLongShardBuilder.buildFromSampleBundles(sampleBundleManifestPath, outDir, buildConfig);
     }
 
     /**

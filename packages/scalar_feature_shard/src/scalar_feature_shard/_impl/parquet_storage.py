@@ -1001,8 +1001,10 @@ def build_shards_from_sample_bundles(
         stats["allocate_memmaps_s"] = time.perf_counter() - phase_t0
 
         phase_t0 = time.perf_counter()
-        for path in bundle_paths:
-            df = pl.read_parquet(path, columns=[sample_id_col, feature_id_col, value_col])
+        input_batch_files = 256
+        for batch_start in range(0, len(bundle_paths), input_batch_files):
+            paths = bundle_paths[batch_start : batch_start + input_batch_files]
+            df = pl.scan_parquet(paths, glob=False).select([sample_id_col, feature_id_col, value_col]).collect()
             if df.height <= 0:
                 continue
             sids = df[sample_id_col].to_numpy().astype(np.int64, copy=False)

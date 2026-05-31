@@ -141,7 +141,7 @@ String manifestPath = builder.compact();
 
 ## Jar Example
 
-sample meta, feature meta, array sample parquet dataset을 jar classpath만으로 생성하는 전체 예제는 다음 파일에 있습니다.
+sample meta, feature meta, raw sample stage 재개, 최종 array sample parquet dataset 생성을 jar classpath만으로 실행하는 전체 예제는 다음 파일에 있습니다.
 
 - `examples/BuildArraySampleParquetWithJarExample.java`
 

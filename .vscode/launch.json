@@ -95,6 +95,17 @@
             "type": "python",
             "name": "Serve Feature API (Python)",
             "request": "launch",
+            "program": "${workspaceFolder}/python/scripts/serve_feature_query_api.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/python"
+            }
+        },
+        {
+            "type": "python",
+            "name": "Serve Legacy Array API (Python)",
+            "request": "launch",
             "program": "${workspaceFolder}/python/scripts/serve_array_api.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",

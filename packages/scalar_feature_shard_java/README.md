@@ -7,12 +7,16 @@ Java 8용 scalar feature shard reader/builder/selection 패키지입니다.
 - `fs.io.ScalarFeatureShards`
 - `fs.io.ScalarShardDataset`
 - `fs.io.ScalarDatasetBuilder`
+- `fs.io.ScalarRawDatasetBuilder`
+- `fs.io.ScalarDenseLongDataset`
 
 이 패키지는 다음 작업을 지원합니다.
 
 - dense metadata parquet 작성
 - resumable scalar build session 실행
+- sample별 raw parquet를 임의 순서로 작성한 뒤 shard materialize
 - 최종 scalar shard 읽기
+- dense-long parquet shard 생성/읽기
 - selection 후보 생성과 최종 선택
 
 ## 준비
@@ -56,10 +60,16 @@ thin jar이므로 실행 시 DuckDB JDBC, Jackson, Parquet bundle, Hadoop common
 
 - `openSession(...)`
   - resumable scalar build session을 연다
+- `openRawSession(...)`
+  - sample별 raw parquet를 쓰는 random-order scalar session을 연다
 - `newBuilder(...)`
   - legacy alias 역할을 한다
 - `open(...)`
-  - 최종 scalar shard reader를 연다
+  - 기존 blob scalar shard reader를 연다
+- `openDenseLong(...)`
+  - dense-long scalar shard reader를 연다
+- `buildDenseLongShardsFromSampleBundles(...)`
+  - sample-bundle/raw-sample manifest에서 dense-long shard를 만든다
 - `writeSampleMeta(...)`, `writeFeatureMeta(...)`
   - dense metadata parquet를 쓴다
 - `buildCandidates(...)`
@@ -83,11 +93,49 @@ thin jar이므로 실행 시 DuckDB JDBC, Jackson, Parquet bundle, Hadoop common
 - `writeValue(...)` 같은 per-value public path는 제공하지 않습니다.
 - resume는 `status().nextExpectedSampleId`를 기준으로 합니다.
 
+### `ScalarRawDatasetBuilder`
+
+Python `ScalarRawDatasetBuilder`와 같은 random-order ingest 모델입니다.
+
+공통 lifecycle:
+
+- `ScalarFeatureShards.openRawSession(...)`
+- `status()`
+- `writeSample(sampleId, values, skipIfCompleted)`
+- `finishStage()`
+- `buildBlobShards(...)` 또는 `buildDenseLongShards(...)`
+
+중요:
+
+- sample 하나가 `raw_samples/sample_*.parquet` 파일 하나로 commit됩니다.
+- sample은 순서와 무관하게 작성할 수 있습니다.
+- 완료 여부는 `raw_samples.jsonl` commit log 기준입니다.
+- `status().pendingSampleIds`를 worker에게 나눠주면 중단 후 재개와 외부 병렬 처리를 같은 방식으로 다룰 수 있습니다.
+
 ### `ScalarShardDataset`
 
 - `getValue(...)`, `getValueByKey(...)`
 - `getValues(...)`, `getValuesByKeys(...)`
 - `iterMany(...)`, `iterManyByKey(...)`
+
+### `ScalarDenseLongDataset`
+
+dense-long shard는 모든 `(feature_id, sample_id)` 조합을 parquet row로 저장합니다.
+
+```text
+feature_id  Int32
+sample_id   Int64
+mask        UInt8   # 1=present, 0=missing
+value       Float64 # mask=0이면 무시
+```
+
+기본 row group은 feature 128개 단위입니다. feature 하나 조회는 해당 feature가 들어 있는 row group을 읽고, sample 기준 조회는 여러 part에 `sample_id` filter를 걸어 표준 parquet scan으로 처리합니다.
+
+주요 API:
+
+- `loadFeatureById(...)`, `loadFeatureByKey(...)`
+- `loadSampleById(...)`, `loadSampleByKey(...)`
+- `topFeaturesFromStats(...)`
 
 ## 예제
 
@@ -164,9 +212,43 @@ public class ScalarPackageExample {
 }
 ```
 
+### Raw + Dense-Long 예제
+
+```java
+BuildShardConfig cfg = new BuildShardConfig();
+cfg.targetShardBytes = 32L * 1024L * 1024L;
+cfg.statsYCols = Arrays.asList("y");
+cfg.denseLongRowGroupFeatures = 128;
+
+try (ScalarRawDatasetBuilder session = ScalarFeatureShards.openRawSession(
+        "C:\\data\\scalar_raw",
+        "C:\\data\\sample_meta.parquet",
+        "C:\\data\\feature_meta.parquet",
+        null,
+        cfg)) {
+    session.writeSample(10L, row("feature_a", 1.23), true);
+    session.writeSample(3L, row("feature_a", 2.34, "feature_b", 5.67), true);
+    System.out.println(session.status().pendingSampleIds.size());
+}
+
+try (ScalarRawDatasetBuilder session = ScalarFeatureShards.openRawSession(
+        "C:\\data\\scalar_raw",
+        "C:\\data\\sample_meta.parquet",
+        "C:\\data\\feature_meta.parquet",
+        null,
+        cfg)) {
+    String denseManifest = session.buildDenseLongShards(true, "C:\\data\\scalar_dense_long");
+
+    try (ScalarDenseLongDataset ds = ScalarFeatureShards.openDenseLong(denseManifest)) {
+        ScalarFeatureValues values = ds.loadFeatureByKey("feature_a");
+        System.out.println(values.values.size());
+    }
+}
+```
+
 ## Jar Example
 
-sample meta, feature meta, scalar feature shard dataset을 jar classpath만으로 생성하는 전체 예제는 다음 파일에 있습니다.
+sample meta, feature meta, raw sample stage, dense-long scalar shard를 jar classpath만으로 생성하는 전체 예제는 다음 파일에 있습니다.
 
 - `examples/BuildScalarFeatureShardWithJarExample.java`
 

@@ -121,20 +121,30 @@ Scalar shard 특징:
 
 서버 구현:
 
+- [python/scripts/serve_feature_query_api.py](python/scripts/serve_feature_query_api.py)
+  - 현재 Python wheel/package API 기준의 권장 조회 서버입니다.
+  - scalar blob shard, scalar dense-long shard, array sample parquet를 조회합니다.
 - [python/scripts/serve_array_api.py](python/scripts/serve_array_api.py)
+  - 기존 core `python/fs` 구현까지 포함한 legacy/통합 서버입니다.
 
-현재 엔드포인트:
+권장 서버 엔드포인트:
 
 - `GET /healthz`
 - `GET /cache-stats`
-- `POST /array-schema`
-- `POST /array-feature`
 - `POST /array-sample-parquet/schema`
 - `POST /array-sample-parquet/traces`
-- `POST /scalar-feature`
-- `POST /run-selection`
+- `POST /scalar/schema`
+- `POST /scalar/features`
+- `POST /scalar/sample`
+- `POST /scalar/top-features`
 
-엔드포인트에 따라 dense id 또는 external key를 사용할 수 있다.
+조회 요청은 dense id 또는 external key 중 하나만 받습니다. 같은 축에 id와 key를 동시에 주면 에러로 처리합니다.
+
+실행:
+
+```powershell
+python python\scripts\serve_feature_query_api.py --host 127.0.0.1 --port 8000
+```
 
 ## Python 패키지
 
@@ -165,13 +175,20 @@ python -m pip wheel . -w wheelhouse --no-deps --no-build-isolation
 주요 public API:
 
 - `ArraySampleParquetDatasetBuilder.open_session(...)`
+- `ArraySampleParquetRawDatasetBuilder.open_session(...)`
 - `builder.status()`
 - `builder.sample(...)`
 - `sample.add_trace(...)`
 - `builder.finish()`
+- `builder.compact()`
 - `open_array_sample_parquet(...)`
 - `reader.get_traces(...)`
 - `reader.get_traces_json(...)`
+
+예제:
+
+- [packages/array_sample_parquet/examples/build_array_sample_parquet_example.py](packages/array_sample_parquet/examples/build_array_sample_parquet_example.py)
+- [packages/array_sample_parquet_java/examples/BuildArraySampleParquetWithJarExample.java](packages/array_sample_parquet_java/examples/BuildArraySampleParquetWithJarExample.java)
 
 ### `scalar_feature_shard`
 
@@ -185,9 +202,17 @@ python -m pip wheel . -w wheelhouse --no-deps --no-build-isolation
 주요 public API:
 
 - `open_shard(...)`
+- `open_dense_long_shard(...)`
 - `ScalarDatasetBuilder`
+- `ScalarRawDatasetBuilder`
 - `build_shard(...)`
+- `build_dense_long_shards_from_sample_bundles(...)`
 - `select_features(...)`
+
+예제:
+
+- [packages/scalar_feature_shard/examples/build_scalar_dense_long_example.py](packages/scalar_feature_shard/examples/build_scalar_dense_long_example.py)
+- [packages/scalar_feature_shard_java/examples/BuildScalarFeatureShardWithJarExample.java](packages/scalar_feature_shard_java/examples/BuildScalarFeatureShardWithJarExample.java)
 
 ## VS Code launch
 

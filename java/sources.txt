@@ -8,8 +8,11 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\config\SyntheticConfi
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayBinaryShardReader.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayBinaryShards.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArrayDatasetBuilder.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ArraySampleParquets.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ScalarDatasetBuilder.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ScalarDenseLongDataset.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ScalarFeatureShards.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ScalarRawDatasetBuilder.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\ScalarShardDataset.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array\ArrayBinaryFormat.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array\ArrayBundleManifestIO.java
@@ -20,6 +23,15 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array\ArraySampleB
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array\ArraySampleIdIndex.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array\ArrayShardBuilder.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array\ArrayShardManifestIO.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array_sample_parquet\ArraySampleParquetCompactor.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array_sample_parquet\ArraySampleParquetDatasetBuilder.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array_sample_parquet\ArraySampleParquetDuckDB.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array_sample_parquet\ArraySampleParquetFileLock.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array_sample_parquet\ArraySampleParquetManifestIO.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array_sample_parquet\ArraySampleParquetOrderChecks.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array_sample_parquet\ArraySampleParquetRawSampleWriter.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array_sample_parquet\ArraySampleParquetReader.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\array_sample_parquet\ArraySampleParquetSampleContext.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\common\ArrayMetadataWriter.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\common\ArrayUtils.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\common\DuckDBUtils.java
@@ -31,7 +43,10 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\InMemorySha
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ManifestIO.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\SampleIdIndex.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\SampleMetaLoader.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarDenseLongManifestIO.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarDenseLongShardBuilder.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarMetadataWriter.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarRawSampleWriter.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarSampleBundleManifestIO.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarSampleBundleWriter.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarShardParquetWriter.java
@@ -46,6 +61,11 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayFeat
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayShardManifest.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArraySyntheticArtifacts.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array\ArrayTrace.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array_sample_parquet\ArraySampleParquetBuildOptions.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array_sample_parquet\ArraySampleParquetBuildSessionStatus.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array_sample_parquet\ArraySampleParquetManifest.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array_sample_parquet\ArraySampleParquetPart.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\array_sample_parquet\ArraySampleParquetTrace.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\common\Feature.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\common\FeatureLocation.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\common\LogicalType.java
@@ -54,7 +74,10 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\common\SampleMe
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\common\StorageType.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\RowBatch.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarBuildSessionStatus.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarDenseLongManifest.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarDenseLongPart.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarFeatureValues.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarRawBuildStatus.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarSampleBundleManifest.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ScalarValue.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\model\scalar\ShardManifest.java
@@ -66,6 +89,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\synth\ArraySyntheticG
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\synth\SyntheticGenerator.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\validate\Validation.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BenchmarkArrayReaderModesMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BenchmarkArraySampleParquetJavaMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildArrayShardsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\BuildShardsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateArrayShardTestsMain.java
@@ -74,6 +98,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\GenerateScalarSh
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateArrayFeatureMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\LocateFeatureMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayBuilderTestsMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArraySampleParquetTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayStorageTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArraySyntheticTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayV3TestsMain.java

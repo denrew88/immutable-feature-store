@@ -210,7 +210,13 @@ reader는 manifest를 읽고 sample 범위가 겹치는 candidate part만 선택
 
 ## API Server
 
-`python/scripts/serve_array_api.py`의 array sample parquet endpoint는 manifest path를 받아 같은 reader를 사용합니다.
+권장 조회 서버는 `python/scripts/serve_feature_query_api.py`입니다. endpoint는 manifest path를 받아 `array_sample_parquet` 패키지 reader를 열고, 응답 시에는 long point rows를 다시 `columns: {name: [...]}` 형태로 조립합니다.
+
+실행:
+
+```powershell
+python python\scripts\serve_feature_query_api.py --host 127.0.0.1 --port 8000
+```
 
 ### `POST /array-sample-parquet/schema`
 
@@ -218,12 +224,11 @@ reader는 manifest를 읽고 sample 범위가 겹치는 candidate part만 선택
 
 ```json
 {
-  "manifest_path": "data/array_sample_parquet/array_sample_parquet_manifest.json",
-  "include_dictionaries": true
+  "manifest_path": "data/array_sample_parquet/array_sample_parquet_manifest.json"
 }
 ```
 
-응답에는 point schema, sample/feature 수, part 수가 포함됩니다. array sample parquet에는 categorical sidecar dictionary가 없으므로 `categorical_dictionaries`는 `null`입니다.
+응답에는 format, version, sample/feature 수, part 수, sample/feature key column, point schema가 포함됩니다. array sample parquet에는 categorical sidecar dictionary가 없으므로 schema 응답도 dictionary payload를 반환하지 않습니다.
 
 ### `POST /array-sample-parquet/traces`
 

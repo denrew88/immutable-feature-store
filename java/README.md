@@ -277,19 +277,27 @@ public class ArrayReadExample {
 - `fs.io.ScalarFeatureShards`
 - `fs.io.ScalarShardDataset`
 - `fs.io.ScalarDatasetBuilder`
+- `fs.io.ScalarRawDatasetBuilder`
+- `fs.io.ScalarDenseLongDataset`
 
 ### Facade
 
 `ScalarFeatureShards`가 가장 바깥 entrypoint입니다.
 
 - `open(manifestPath)`
-  - 최종 scalar shard dataset을 reader로 엽니다.
+  - 기존 blob scalar shard dataset을 reader로 엽니다.
+- `openDenseLong(manifestPath)`
+  - dense-long scalar shard dataset을 reader로 엽니다.
 - `writeSampleMeta(...)`, `writeFeatureMeta(...)`
   - dense metadata parquet를 씁니다.
 - `openSession(...)`
   - resumable scalar build session을 엽니다.
+- `openRawSession(...)`
+  - sample별 raw parquet를 쓰는 random-order scalar session을 엽니다.
 - `newBuilder(...)`
   - 현재도 동작하지만, 새 코드는 `openSession(...)`을 권장합니다.
+- `buildDenseLongShardsFromSampleBundles(...)`
+  - sample-bundle/raw-sample manifest에서 dense-long shard를 만듭니다.
 - `buildCandidates(...)`
   - selection 후보만 만듭니다.
 - `selectFeatures(...)`
@@ -311,6 +319,34 @@ scalar session은 public write 단위를 **sample 하나**로 고정합니다.
 
 - `writeValue(...)` 같은 per-value public path는 제공하지 않습니다.
 - sample은 반드시 `status().nextExpectedSampleId`부터 순서대로 넣어야 합니다.
+
+### Scalar raw random-order session
+
+`ScalarRawDatasetBuilder`는 sample 하나를 `raw_samples/sample_*.parquet` 파일 하나로 commit합니다.
+sample 순서 제약이 없고, 완료 여부는 `raw_samples.jsonl` commit log로 판단합니다.
+
+공통 lifecycle:
+
+- `openRawSession(...)`
+- `status()`
+- `writeSample(sampleId, values, skipIfCompleted)`
+- `finishStage()`
+- `buildBlobShards(...)` 또는 `buildDenseLongShards(...)`
+
+`status().pendingSampleIds`가 아직 완료되지 않은 sample 목록입니다. supervisor가 이 목록을 worker에 나눠주면 중단 후 재개와 외부 병렬 처리를 같은 방식으로 운영할 수 있습니다.
+
+### Dense-long scalar shard
+
+dense-long은 모든 `(feature_id, sample_id)` 조합을 parquet row로 저장하고, missing은 `mask=0`으로 표현합니다.
+
+```text
+feature_id  Int32
+sample_id   Int64
+mask        UInt8
+value       Float64
+```
+
+기본 row group은 feature 128개 단위입니다. Java에서는 `BuildShardConfig.denseLongRowGroupFeatures`로 조정할 수 있습니다.
 
 ### Scalar session 예제
 

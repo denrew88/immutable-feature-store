@@ -1,5 +1,141 @@
 # Scalar Parquet Shard Format
 
+## 현재 구현 요약
+
+scalar에는 현재 세 가지 관련 포맷이 있습니다.
+
+1. `raw sample stage`
+   - `ScalarRawDatasetBuilder`가 사용하는 재개 가능 ingest 포맷입니다.
+   - sample 하나가 parquet 파일 하나입니다.
+   - sample은 임의 순서로 만들 수 있습니다.
+   - 완료된 sample은 `raw_samples.jsonl`에 기록됩니다.
+   - shard 생성은 모든 raw sample 작성이 끝난 뒤 별도로 수행합니다.
+
+2. `blob shard`
+   - 기존 최종 serving 포맷입니다.
+   - feature 하나가 parquet row 하나입니다.
+   - 모든 sample 값은 `values_blob`, `valid_blob`에 dense vector로 들어갑니다.
+   - feature batch 조회와 파일 크기에 유리합니다.
+
+3. `dense-long shard`
+   - 새로 추가된 최종 parquet 포맷입니다.
+   - 모든 `(feature_id, sample_id)` 조합을 row로 저장합니다.
+   - missing은 row 생략이 아니라 `mask=0`으로 표현합니다.
+   - 물리 정렬은 `feature_id asc, sample_id asc`입니다.
+   - 기본 row group은 feature 128개 단위입니다. feature-id filter는 해당 feature가 들어 있는 row group만 읽도록 pruning됩니다.
+
+## Raw Sample Stage
+
+`raw sample stage`는 array sample parquet의 raw-sample 방식과 같은 재개 모델입니다.
+
+```text
+scalar_raw_stage/
+  raw_state.json
+  raw_samples.jsonl
+  sample_meta.parquet
+  feature_meta.parquet
+  sample_major_manifest.json
+  raw_samples/
+    sample_000000000000.parquet
+    sample_000000000017.parquet
+```
+
+각 raw sample parquet schema:
+
+```text
+sample_id   Int64
+feature_id  Int32
+value       Float64
+```
+
+특징:
+
+- sample 파일은 `sample_id` 순서와 무관하게 생성할 수 있습니다.
+- 같은 sample을 동시에 쓰지 않도록 sample별 `.lock` 파일을 사용합니다.
+- 정상 commit은 `.tmp` 파일을 최종 `.parquet`로 rename한 뒤 `raw_samples.jsonl`에 기록합니다.
+- `pending_sample_ids()`로 아직 작성되지 않은 sample 목록을 얻을 수 있습니다.
+- `finish_stage()`는 raw 파일을 다시 쓰지 않고, raw sample parquet 경로들을 `sample_major_manifest.json`에 연결합니다.
+
+## Dense-Long Shard
+
+Dense-long shard artifact 구조:
+
+```text
+scalar_dense_long_shard/
+  dense_long_shard_manifest.json
+  sample_meta.parquet
+  feature_meta.parquet
+  feature_locator.parquet
+  selection_stats/
+    y.parquet
+  dense_long_parts/
+    part_0000.parquet
+    part_0001.parquet
+```
+
+`dense_long_parts/*.parquet` schema:
+
+```text
+feature_id  Int32
+sample_id   Int64
+mask        UInt8
+value       Float64
+```
+
+의미:
+
+- `mask=1`: `value`가 유효합니다.
+- `mask=0`: missing입니다. 이때 `value`는 무시합니다.
+- 모든 feature/sample 조합이 row로 존재하므로 sparse scatter로 missing 위치를 다시 채우지 않아도 됩니다.
+
+Build 최적화:
+
+- 입력 raw/bundle parquet를 파일 batch 단위로 한 번만 스캔합니다.
+- feature-major memmap에 `values[feature, sample]`, `valid[feature, sample]`를 채웁니다.
+- 같은 memmap에서 selection stats를 바로 계산합니다.
+- 최종 parquet는 `feature_id, sample_id` 순서로 씁니다.
+- 기본 row group size는 `n_samples * 128`입니다. 즉 feature 128개가 한 row group에 묶입니다. feature 하나만 읽을 때도 최대 128개 feature 묶음을 읽지만, row group 수와 metadata overhead가 줄어 파일 크기와 build 시간이 개선됩니다.
+
+포맷 선택:
+
+- feature batch 조회와 저장 크기가 중요하면 기존 `blob shard`가 유리합니다.
+- 표준 parquet 디버깅, sample 기준 조회, row 기반 처리 호환성이 중요하면 `dense-long shard`가 유리합니다.
+- sparse long 포맷은 현재 사용하지 않습니다.
+
+## 조회 API Server
+
+권장 조회 서버는 `python/scripts/serve_feature_query_api.py`입니다. 이 서버는 기존 blob shard와 dense-long shard를 모두 열 수 있고, `scalar_format="auto"`일 때 manifest의 `format` 필드로 dense-long 여부를 자동 판별합니다.
+
+실행:
+
+```powershell
+python python\scripts\serve_feature_query_api.py --host 127.0.0.1 --port 8000
+```
+
+주요 endpoint:
+
+- `POST /scalar/schema`: manifest 형식, sample/feature 수, key column, selection stats 목록을 반환합니다.
+- `POST /scalar/features`: 여러 feature와 여러 sample의 값을 feature 중심 layout으로 반환합니다.
+- `POST /scalar/sample`: sample 하나에 대한 feature vector를 반환합니다. dense-long shard에서는 sample 기준 parquet scan을 사용합니다.
+- `POST /scalar/top-features`: `selection_stats/<y>.parquet`를 사용해 r2y 기준 상위 feature를 반환합니다.
+
+요청 규칙:
+
+- feature 축은 `feature_ids` 또는 `feature_keys` 중 하나만 받습니다.
+- sample 축은 `sample_ids` 또는 `sample_keys` 중 하나만 받습니다.
+- id와 key를 같은 축에 동시에 주면 400 에러입니다.
+- 큰 요청은 `max_cells` 또는 `max_features`로 제한합니다.
+
+예시:
+
+```json
+{
+  "manifest_path": "data/scalar_dense_long/dense_long_shard_manifest.json",
+  "feature_keys": ["feature_a", "feature_b"],
+  "sample_keys": ["sample_000000", "sample_000001"]
+}
+```
+
 이 문서는 현재 저장소에서 사용하는 scalar feature shard 형식을 설명한다.
 
 중요한 특징:

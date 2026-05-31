@@ -17,4 +17,6 @@ public class BuildShardConfig {
     public java.util.List<String> statsYCols = null;
     public String valuesType = "FLOAT64";
     public String validType = "UINT8";
+    public int denseLongRowGroupFeatures = 128;
+    public int denseLongPartFeatures = 0;
 }

@@ -968,7 +968,9 @@ manifest의 shard 목록에서:
 
 ## 11. 서버 API
 
-현재 FastAPI 구현 기준으로 array 관련 주요 엔드포인트는 다음과 같다.
+array binary shard 조회는 기존 통합 서버 `python/scripts/serve_array_api.py`가 담당한다. 새 `serve_feature_query_api.py`는 package 기준 scalar/dense-long 및 array sample parquet 조회 서버이며, custom binary array shard endpoint는 포함하지 않는다.
+
+기존 통합 서버 기준 array binary 관련 주요 엔드포인트는 다음과 같다.
 
 - `POST /array-schema`
   - `point_schema` 조회

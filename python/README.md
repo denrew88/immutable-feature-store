@@ -222,29 +222,29 @@ python -m scripts.run_array_binary_package_tests
 
 ## Array Sample Parquet
 
-`fs.array_sample_parquet`는 기존 custom binary shard와 별개인 viewer/debugging용 sample-major Parquet 포맷입니다.
+`array_sample_parquet` 패키지는 기존 custom binary shard와 별개인 viewer/debugging용 sample-major Parquet 포맷입니다.
 
-- 행 하나는 `(sample_id, feature_id)` trace 하나입니다.
-- point column은 `list<typed value>` Parquet column으로 저장됩니다.
-- trace row는 `.parquet.tmp`에 streaming으로 바로 쓰고, part commit은 sample 경계에서만 일어납니다.
-- part 크기는 sample 개수가 아니라 `target_part_bytes` 기준으로 자동 조절합니다.
-- 중단 후 재개할 때는 `.tmp`를 버리고 `status().next_expected_sample_id`부터 다시 넣습니다.
-- API 서버 endpoint는 `/array-sample-parquet/schema`, `/array-sample-parquet/traces`입니다.
+- 최종 `sample_parts/*.parquet`의 행 하나는 trace point 하나입니다.
+- point part는 `sample_id`, `feature_id`, `point_idx`, point primitive columns로 구성됩니다.
+- present trace 목록과 길이는 `trace_index_parts/*.parquet`에 `(sample_id, feature_id, trace_len)`으로 따로 저장됩니다.
+- raw builder는 sample 하나를 `raw_samples/sample_*.parquet`와 `raw_trace_index/sample_*.parquet`로 commit하므로 sample 순서와 무관하게 재개할 수 있습니다.
+- part 크기는 sample 개수가 아니라 `target_part_bytes`, `max_part_rows`, `max_part_samples` 기준으로 자동 조절합니다.
+- categorical point column은 별도 dictionary sidecar 없이 string column으로 저장하고 Parquet writer의 dictionary/RLE encoding에 맡깁니다.
+- 권장 API 서버 endpoint는 `/array-sample-parquet/schema`, `/array-sample-parquet/traces`입니다.
 
 ```python
-from fs.array_sample_parquet import ArraySampleParquetDatasetBuilder, open_array_sample_parquet
+from array_sample_parquet import ArraySampleParquetRawDatasetBuilder, open_array_sample_parquet
 
-with ArraySampleParquetDatasetBuilder.open_session(
+with ArraySampleParquetRawDatasetBuilder.open_session(
     out_dir="..\\data\\array_sample_parquet",
     sample_meta_path="..\\data\\array_sample_meta.parquet",
     point_schema=point_schema,
     feature_meta_path="..\\data\\array_feature_meta.parquet",
 ) as session:
-    start = session.status().next_expected_sample_id
-    for sample_id in range(start, n_samples):
-        with session.sample(sample_id=sample_id) as sample:
+    for sample_id in session.pending_sample_ids():
+        with session.sample(sample_id=sample_id, skip_if_completed=True) as sample:
             sample.add_trace(feature_key="feature_a", columns=columns)
-    manifest_path = session.finish()
+    manifest_path = session.compact()
 
 reader = open_array_sample_parquet(manifest_path)
 payload = reader.get_traces_json(
@@ -265,3 +265,27 @@ python -m scripts.run_array_sample_parquet_tests
 
 - [../docs/array_sample_parquet_format_v1.md](../docs/array_sample_parquet_format_v1.md)
 - [../packages/array_sample_parquet/README.md](../packages/array_sample_parquet/README.md)
+
+## 조회 API 서버
+
+패키지 기준 조회 서버는 `python/scripts/serve_feature_query_api.py`입니다.
+
+```powershell
+python python\scripts\serve_feature_query_api.py --host 127.0.0.1 --port 8000
+```
+
+주요 endpoint:
+
+- `POST /array-sample-parquet/schema`
+- `POST /array-sample-parquet/traces`
+- `POST /scalar/schema`
+- `POST /scalar/features`
+- `POST /scalar/sample`
+- `POST /scalar/top-features`
+
+scalar endpoint는 blob shard와 dense-long shard를 모두 지원합니다. 요청에서 `feature_ids`와 `feature_keys`, `sample_ids`와 `sample_keys`는 각각 둘 중 하나만 지정해야 합니다.
+
+Python 패키지 예제:
+
+- [../packages/array_sample_parquet/examples/build_array_sample_parquet_example.py](../packages/array_sample_parquet/examples/build_array_sample_parquet_example.py)
+- [../packages/scalar_feature_shard/examples/build_scalar_dense_long_example.py](../packages/scalar_feature_shard/examples/build_scalar_dense_long_example.py)

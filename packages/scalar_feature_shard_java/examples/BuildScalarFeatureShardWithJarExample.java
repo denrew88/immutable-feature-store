@@ -1,8 +1,9 @@
 import fs.config.BuildShardConfig;
-import fs.io.ScalarDatasetBuilder;
+import fs.io.ScalarDenseLongDataset;
 import fs.io.ScalarFeatureShards;
-import fs.io.ScalarShardDataset;
+import fs.io.ScalarRawDatasetBuilder;
 import fs.model.scalar.ScalarFeatureValues;
+import fs.model.scalar.ScalarRawBuildStatus;
 import fs.model.scalar.ScalarValue;
 
 import java.io.File;
@@ -12,10 +13,10 @@ import java.util.Map;
 
 /**
  * scalar-feature-shard-java jar만 classpath에 넣어서 sample meta, feature meta,
- * scalar feature shard dataset을 생성하는 최소 예제다.
+ * raw sample stage, dense-long scalar shard를 만드는 end-to-end 예제입니다.
  *
- * <p>실행 결과는 기본적으로 data/tmp_scalar_feature_shard_jar_example 아래에 생성된다.
- * 첫 번째 인자로 출력 root directory를 넘기면 그 경로를 사용한다.
+ * <p>기본 출력 위치는 {@code data/tmp_scalar_feature_shard_jar_example}입니다.
+ * 첫 번째 인자로 출력 root directory를 넘기면 해당 경로를 사용합니다.</p>
  */
 public class BuildScalarFeatureShardWithJarExample {
     public static void main(String[] args) throws Exception {
@@ -25,17 +26,18 @@ public class BuildScalarFeatureShardWithJarExample {
             throw new IllegalStateException("failed to create root dir: " + root.getAbsolutePath());
         }
 
-        // 1. sample metadata를 만든다. row 순서가 dense sample_id가 된다.
+        // 1. sample metadata를 만듭니다. row 순서가 dense sample_id가 됩니다.
         String sampleMetaPath = ScalarFeatureShards.writeSampleMeta(
                 Arrays.<Map<String, Object>>asList(
                         row("sample_key", "sample_000000", "split", "train", "y", 1.0),
                         row("sample_key", "sample_000001", "split", "train", "y", 2.0),
-                        row("sample_key", "sample_000002", "split", "valid", "y", 3.0)
+                        row("sample_key", "sample_000002", "split", "valid", "y", 3.0),
+                        row("sample_key", "sample_000003", "split", "valid", "y", 4.0)
                 ),
                 new File(root, "sample_meta.parquet").getAbsolutePath()
         );
 
-        // 2. feature metadata를 만든다. row 순서가 dense feature_id가 된다.
+        // 2. feature metadata를 만듭니다. row 순서가 dense feature_id가 됩니다.
         String featureMetaPath = ScalarFeatureShards.writeFeatureMeta(
                 Arrays.<Map<String, Object>>asList(
                         row("feature_key", "feature_a", "group", "alpha"),
@@ -46,46 +48,48 @@ public class BuildScalarFeatureShardWithJarExample {
         );
 
         BuildShardConfig config = new BuildShardConfig();
-        config.targetShardBytes = 1024L * 1024L;
+        config.targetShardBytes = 16L * 1024L * 1024L;
         config.statsYCols = Arrays.asList("y");
+        config.denseLongRowGroupFeatures = 128;
 
-        File shardDir = new File(root, "scalar_shards");
-        File stageDir = new File(root, "scalar_stage");
-        String manifestPath;
+        File stageDir = new File(root, "scalar_raw_stage");
+        File denseDir = new File(root, "scalar_dense_long");
 
-        // 3. sample 순서대로 scalar 값을 넣고 shard를 만든다.
-        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
-                shardDir.getAbsolutePath(),
+        // 3. 첫 실행에서는 일부 sample만 완료하고 종료된 상황을 가정합니다.
+        try (ScalarRawDatasetBuilder builder = ScalarFeatureShards.openRawSession(
+                stageDir.getAbsolutePath(),
                 sampleMetaPath,
                 featureMetaPath,
                 null,
-                config,
-                stageDir.getAbsolutePath())) {
-            long start = builder.status().nextExpectedSampleId;
-            for (long sampleId = start; sampleId < 3L; sampleId++) {
-                if (sampleId == 0L) {
-                    builder.writeSample(sampleId, row(
-                            "feature_a", 1.25,
-                            "feature_b", 10.0));
-                } else if (sampleId == 1L) {
-                    builder.writeSample(sampleId, row(
-                            "feature_a", 2.50,
-                            "feature_c", 20.0));
-                } else {
-                    builder.writeSample(sampleId, row(
-                            "feature_b", 30.0,
-                            "feature_c", 40.0));
-                }
-            }
-            builder.finishStage();
-            manifestPath = builder.buildShards(false);
+                config)) {
+            builder.writeSample(2L, row("feature_b", 20.0), true);
+            builder.writeSample(0L, row("feature_a", 10.0, "feature_c", null), true);
+            System.out.println("first_pending=" + builder.status().pendingSampleIds);
         }
 
-        // 4. jar reader로 key 기반 조회를 검증한다.
-        try (ScalarShardDataset dataset = ScalarFeatureShards.open(manifestPath)) {
-            ScalarFeatureValues featureA = dataset.getValuesByKeys(
-                    "feature_a",
-                    new String[]{"sample_000000", "sample_000001", "sample_000002"});
+        String denseManifestPath;
+
+        // 4. 같은 session을 다시 열면 raw_samples.jsonl을 읽고 남은 sample만 이어서 씁니다.
+        try (ScalarRawDatasetBuilder builder = ScalarFeatureShards.openRawSession(
+                stageDir.getAbsolutePath(),
+                sampleMetaPath,
+                featureMetaPath,
+                null,
+                config)) {
+            ScalarRawBuildStatus status = builder.status();
+            for (Long sampleId : status.pendingSampleIds) {
+                if (sampleId.longValue() == 1L) {
+                    builder.writeSample(sampleId.longValue(), row("feature_a", 11.0, "feature_b", 21.0), true);
+                } else {
+                    builder.writeSample(sampleId.longValue(), row("feature_c", 40.0), true);
+                }
+            }
+            denseManifestPath = builder.buildDenseLongShards(true, denseDir.getAbsolutePath());
+        }
+
+        // 5. dense-long reader로 결과를 확인합니다.
+        try (ScalarDenseLongDataset dataset = ScalarFeatureShards.openDenseLong(denseManifestPath)) {
+            ScalarFeatureValues featureA = dataset.loadFeatureByKey("feature_a");
             System.out.println("feature_key=" + featureA.featureKey + ", feature_id=" + featureA.featureId);
             for (ScalarValue value : featureA.values) {
                 System.out.println(
@@ -94,11 +98,12 @@ public class BuildScalarFeatureShardWithJarExample {
                                 + ", present=" + value.present
                                 + ", value=" + value.value);
             }
+            System.out.println("top_features=" + dataset.topFeaturesFromStats("y", 2).size());
         }
 
         System.out.println("sample_meta=" + sampleMetaPath);
         System.out.println("feature_meta=" + featureMetaPath);
-        System.out.println("manifest=" + manifestPath);
+        System.out.println("dense_manifest=" + denseManifestPath);
     }
 
     private static LinkedHashMap<String, Object> row(Object... kvs) {
