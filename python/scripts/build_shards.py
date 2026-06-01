@@ -1,5 +1,9 @@
 import argparse
 
+from fs._package_sources import ensure_package_source
+
+ensure_package_source("scalar_feature_shard")
+
 from scalar_feature_shard import build_shard
 
 

@@ -5,6 +5,10 @@ from __future__ import annotations
 import numpy as np
 import polars as pl
 
+from .._package_sources import ensure_package_source
+
+ensure_package_source("scalar_feature_shard")
+
 from scalar_feature_shard._impl.storage_common import load_feature_meta, load_sample_targets
 from scalar_feature_shard.dense_long import (
     ScalarDenseLongDataset,

@@ -2,6 +2,10 @@ import argparse
 
 import polars as pl
 
+from fs._package_sources import ensure_package_source
+
+ensure_package_source("scalar_feature_shard")
+
 from scalar_feature_shard.dense_long import load_dense_long_manifest
 
 

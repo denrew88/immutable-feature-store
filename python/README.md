@@ -9,6 +9,19 @@
 - `fs.scalar`: scalar dense-long wrapper
 - `scripts/serve_feature_query_api.py`: 권장 조회 API 서버
 
+## Source Checkout Usage
+
+`python/fs`는 monorepo checkout에서 sibling package source를 자동으로 사용합니다.
+따라서 개발 중에는 scalar wheel을 설치하지 않아도 아래처럼 실행할 수 있습니다.
+
+```powershell
+$env:PYTHONPATH="python"
+python -c "from fs.scalar import ScalarDatasetBuilder; print(ScalarDatasetBuilder)"
+```
+
+배포 환경에서는 wheel을 설치해도 되고, checkout 환경에서는 `packages/scalar_feature_shard/src`가
+자동으로 `sys.path`에 추가됩니다.
+
 ## Config Quick Start
 
 처음에는 아래 설정만 넣으면 됩니다.

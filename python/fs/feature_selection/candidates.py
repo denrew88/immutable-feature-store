@@ -1,5 +1,9 @@
 """Dense-long compatible feature-selection candidate helpers."""
 
+from fs._package_sources import ensure_package_source
+
+ensure_package_source("scalar_feature_shard")
+
 from scalar_feature_shard._impl.candidates import (
     build_candidates_from_inmemory,
     build_candidates_from_stats,
