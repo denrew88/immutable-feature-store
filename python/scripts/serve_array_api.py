@@ -1,9 +1,11 @@
 import json
 import os
+import sys
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -12,6 +14,12 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = REPO_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
 from fs.feature_selection.candidates import build_candidates_from_stats
 from fs.config import SelectionConfig
@@ -1116,7 +1124,7 @@ def run_selection(req: SelectionRequest):
 def main():
     """uvicorn으로 로컬 FastAPI 서버를 실행한다."""
     uvicorn.run(
-        "scripts.serve_array_api:app",
+        app,
         host="127.0.0.1",
         port=8000,
         reload=False,
