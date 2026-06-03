@@ -73,7 +73,7 @@ public class BuildScalarDenseLongFromValueApiMain {
                 builder.writeSample(sampleId.longValue(), values, true);
                 System.out.println("scalar sample committed: " + sampleId + " values=" + values.size());
             }
-            manifestPath = builder.buildDenseLongShards(true, null);
+            manifestPath = builder.buildDenseLongShards(true, null, true);
         }
 
         System.out.println("manifest=" + manifestPath);

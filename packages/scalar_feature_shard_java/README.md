@@ -55,9 +55,16 @@ Lifecycle:
 - `writeSample(sampleId, values, skipIfCompleted)`
 - `finishStage()`
 - `buildShards(requireAll)`
+- `buildShards(requireAll, cleanupRaw)`
 - `buildDenseLongShards(requireAll, outDir)`
+- `buildDenseLongShards(requireAll, outDir, cleanupRaw)`
 
 `status().pendingSampleIds`로 아직 완료되지 않은 sample 목록을 확인할 수 있습니다. 순차 실행이 필요하면 이 목록을 앞에서부터 처리하면 됩니다.
+
+`cleanupRaw=true`를 주면 최종 dense-long shard 생성이 성공한 뒤 큰 용량을 차지하는
+`raw_samples/` parquet 파일들을 삭제합니다. `sample_major_manifest.json`,
+`raw_samples.jsonl`, `raw_state.json`, metadata 파일은 작고 감사/상태 확인에 쓸 수 있어서
+남깁니다. 기존 `buildShards(false)`의 `false`는 cleanup이 아니라 `requireAll=false`입니다.
 
 ### `ScalarDenseLongDataset`
 
@@ -132,7 +139,7 @@ public class ScalarPackageExample {
                 values.put("feature_b", null);
                 builder.writeSample(sampleId.longValue(), values, true);
             }
-            manifestPath = builder.buildShards(true);
+            manifestPath = builder.buildShards(true, true);
         }
 
         try (ScalarDenseLongDataset ds = ScalarFeatureShards.open(manifestPath)) {

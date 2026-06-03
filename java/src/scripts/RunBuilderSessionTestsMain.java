@@ -66,6 +66,7 @@ public final class RunBuilderSessionTestsMain {
         String outDir = new File(root, "scalar_shards").getAbsolutePath();
         File stateFile = new File(outDir, "raw_state.json");
         File logFile = new File(outDir, "raw_samples.jsonl");
+        File rawSamplesDir = new File(outDir, "raw_samples");
 
         BuildShardConfig cfg = new BuildShardConfig();
         cfg.targetShardBytes = 1L << 20;
@@ -108,8 +109,9 @@ public final class RunBuilderSessionTestsMain {
             String stageManifestPath = builder.finishStage();
             require(new File(stageManifestPath).exists(), "scalar stage manifest missing");
             require(builder.status().finishedStage, "scalar stage should be marked finished");
-            String shardManifestPath = builder.buildShards(true);
+            String shardManifestPath = builder.buildShards(true, true);
             require(new File(shardManifestPath).exists(), "scalar shard manifest missing");
+            require(!rawSamplesDir.exists(), "scalar raw_samples should be removed when cleanupRaw=true");
         }
     }
 

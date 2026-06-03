@@ -214,15 +214,40 @@ public class ScalarDatasetBuilder implements AutoCloseable {
     }
 
     public String buildDenseLongShards(boolean requireAll, String denseLongOutDir) throws Exception {
+        return buildDenseLongShards(requireAll, denseLongOutDir, false);
+    }
+
+    /**
+     * 현재 raw sample stage에서 최종 dense-long shard를 생성합니다.
+     *
+     * <p>{@code cleanupRaw}가 true이면 build가 성공한 뒤 큰 용량을 차지하는
+     * {@code raw_samples/} parquet 파일들을 삭제합니다. stage manifest, commit log,
+     * state, metadata는 작고 감사/재현에 쓸 수 있으므로 남깁니다.</p>
+     */
+    public String buildDenseLongShards(boolean requireAll, String denseLongOutDir, boolean cleanupRaw) throws Exception {
         String stageManifest = finishStage(requireAll);
         String target = denseLongOutDir == null || denseLongOutDir.isEmpty()
                 ? new File(outDir, "dense_long_shards").getAbsolutePath()
                 : denseLongOutDir;
-        return ScalarDenseLongShardBuilder.buildFromSampleMajorManifest(stageManifest, target, buildConfig);
+        String manifestPath = ScalarDenseLongShardBuilder.buildFromSampleMajorManifest(stageManifest, target, buildConfig);
+        if (cleanupRaw) {
+            deleteRecursively(rawSamplesDir);
+        }
+        return manifestPath;
     }
 
     public String buildShards(boolean requireAll) throws Exception {
         return buildDenseLongShards(requireAll, null);
+    }
+
+    /**
+     * 현재 raw sample stage에서 최종 dense-long shard를 생성하고, 필요하면 raw sample parquet를 삭제합니다.
+     *
+     * <p>두 번째 인자는 cleanup 여부입니다. 기존 {@code buildShards(false)}의 false는
+     * {@code requireAll=false}이므로 의미가 다릅니다.</p>
+     */
+    public String buildShards(boolean requireAll, boolean cleanupRaw) throws Exception {
+        return buildDenseLongShards(requireAll, null, cleanupRaw);
     }
 
     /**
@@ -234,6 +259,14 @@ public class ScalarDatasetBuilder implements AutoCloseable {
      */
     public String buildShards(boolean requireAll, String denseLongOutDir) throws Exception {
         return buildDenseLongShards(requireAll, denseLongOutDir);
+    }
+
+    /**
+     * 현재 raw sample stage에서 최종 dense-long shard를 지정 경로에 생성하고,
+     * 필요하면 raw sample parquet를 삭제합니다.
+     */
+    public String buildShards(boolean requireAll, String denseLongOutDir, boolean cleanupRaw) throws Exception {
+        return buildDenseLongShards(requireAll, denseLongOutDir, cleanupRaw);
     }
 
     @Override
@@ -474,6 +507,21 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         if (path != null && path.exists() && !path.delete()) {
             // best-effort cleanup
         }
+    }
+
+    private static void deleteRecursively(File path) {
+        if (path == null || !path.exists()) {
+            return;
+        }
+        if (path.isDirectory()) {
+            File[] children = path.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        deleteQuietly(path);
     }
 
     private static String relativeTo(String baseDir, String targetPath) {

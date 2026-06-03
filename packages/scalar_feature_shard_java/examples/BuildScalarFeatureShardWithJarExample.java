@@ -84,7 +84,7 @@ public class BuildScalarFeatureShardWithJarExample {
                     builder.writeSample(sampleId.longValue(), row("feature_c", 40.0), true);
                 }
             }
-            denseManifestPath = builder.buildDenseLongShards(true, denseDir.getAbsolutePath());
+            denseManifestPath = builder.buildDenseLongShards(true, denseDir.getAbsolutePath(), true);
         }
 
         // 5. dense-long reader로 결과를 확인합니다.
