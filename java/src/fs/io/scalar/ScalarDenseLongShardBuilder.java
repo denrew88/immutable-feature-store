@@ -29,6 +29,8 @@ import java.util.List;
 public final class ScalarDenseLongShardBuilder {
     private static final int DEFAULT_ROW_GROUP_FEATURES = 128;
     private static final long DENSE_LONG_ROW_ESTIMATE_BYTES = 21L;
+    private static final String DEFAULT_SCALAR_SHARD_MANIFEST_NAME = "scalar_shard_manifest.json";
+    private static final String DEFAULT_SCALAR_SHARD_PARTS_DIR = "parts";
 
     private ScalarDenseLongShardBuilder() {
     }
@@ -37,13 +39,13 @@ public final class ScalarDenseLongShardBuilder {
         BuildShardConfig cfg = config == null ? new BuildShardConfig() : config;
         ScalarSampleMajorManifest stage = ScalarSampleMajorManifestIO.read(sampleMajorManifestPath);
         File out = new File(outDir).getAbsoluteFile();
-        File partsDir = new File(out, "dense_long_parts");
+        File partsDir = new File(out, DEFAULT_SCALAR_SHARD_PARTS_DIR);
         File statsDir = new File(out, "selection_stats");
         if (!partsDir.exists() && !partsDir.mkdirs()) {
-            throw new IOException("failed to create dense-long parts dir: " + partsDir.getAbsolutePath());
+            throw new IOException("failed to create scalar shard parts dir: " + partsDir.getAbsolutePath());
         }
         if (!statsDir.exists() && !statsDir.mkdirs()) {
-            throw new IOException("failed to create dense-long selection stats dir: " + statsDir.getAbsolutePath());
+            throw new IOException("failed to create scalar shard selection stats dir: " + statsDir.getAbsolutePath());
         }
 
         String sampleMetaOut = new File(out, "sample_meta.parquet").getAbsolutePath();
@@ -95,7 +97,7 @@ public final class ScalarDenseLongShardBuilder {
                 selectionStats.put(yCol, statsPath);
             }
 
-            String manifestPath = new File(out, "dense_long_shard_manifest.json").getAbsolutePath();
+            String manifestPath = new File(out, DEFAULT_SCALAR_SHARD_MANIFEST_NAME).getAbsolutePath();
             ScalarDenseLongManifest manifest = new ScalarDenseLongManifest(
                     manifestPath,
                     sampleMetaOut,

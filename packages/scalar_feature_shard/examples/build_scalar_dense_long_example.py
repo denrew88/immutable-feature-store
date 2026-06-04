@@ -44,7 +44,7 @@ def main() -> None:
 
     build_options = BuildOptions(target_shard_mb=16, stats_y_cols=("y",))
     stage_dir = root / "scalar_stage"
-    dense_dir = root / "scalar_dense_long"
+    dense_dir = root / "scalar_shard"
 
     # 첫 실행에서는 일부 sample만 완료하고 종료한 상황을 가정합니다.
     with ScalarDatasetBuilder.open_session(

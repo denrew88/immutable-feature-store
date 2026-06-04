@@ -35,6 +35,9 @@ DENSE_LONG_ROW_MASK_BYTES = 1
 DENSE_LONG_ROW_ID_BYTES = 12
 DENSE_LONG_ROW_GROUP_FEATURES = 128
 JSON_REPLACE_RETRY_COUNT = 8
+DEFAULT_SCALAR_SHARD_MANIFEST_NAME = "scalar_shard_manifest.json"
+DEFAULT_SCALAR_SHARD_PARTS_DIR = "parts"
+DEFAULT_SCALAR_SHARD_TMP_DIR = "_tmp_scalar_shard"
 
 
 @dataclass(frozen=True)
@@ -258,10 +261,10 @@ def build_dense_long_shards_from_sample_major_manifest(
     }
 
     os.makedirs(out_dir, exist_ok=True)
-    parts_path = os.path.join(out_dir, "dense_long_parts")
+    parts_path = os.path.join(out_dir, DEFAULT_SCALAR_SHARD_PARTS_DIR)
     os.makedirs(parts_path, exist_ok=True)
     if tmp_dir is None:
-        tmp_dir = os.path.join(out_dir, "_tmp_dense_long")
+        tmp_dir = os.path.join(out_dir, DEFAULT_SCALAR_SHARD_TMP_DIR)
     os.makedirs(tmp_dir, exist_ok=True)
 
     phase_t0 = time.perf_counter()
@@ -539,14 +542,14 @@ def build_dense_long_shards_from_sample_major_manifest(
     stats["write_selection_stats_s"] = time.perf_counter() - phase_t0
 
     phase_t0 = time.perf_counter()
-    manifest_path = os.path.join(out_dir, "dense_long_shard_manifest.json")
+    manifest_path = os.path.join(out_dir, DEFAULT_SCALAR_SHARD_MANIFEST_NAME)
     manifest_payload = {
         "format": DENSE_LONG_FORMAT_NAME,
         "sample_meta_path": "sample_meta.parquet",
         "feature_meta_path": "feature_meta.parquet",
         "n_samples": int(n_samples),
         "n_features": int(n_features),
-        "parts_path": "dense_long_parts",
+        "parts_path": DEFAULT_SCALAR_SHARD_PARTS_DIR,
         "parts": [
             {
                 "part_id": part.part_id,

@@ -130,7 +130,7 @@ def build_shard(
 
     `source` may be a `scalar-sample-major-v1` manifest or a sample metadata
     parquet containing `path_col`. The generated artifact is always
-    `dense_long_shard_manifest.json` plus `dense_long_parts/*.parquet`.
+    `scalar_shard_manifest.json` plus `parts/*.parquet`.
     Deprecated fixed-shard options (`n_shards`, `values_dtype`, `valid_dtype`)
     are accepted for call-site convenience but ignored.
     """

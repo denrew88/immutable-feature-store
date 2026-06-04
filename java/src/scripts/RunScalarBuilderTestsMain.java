@@ -64,7 +64,7 @@ public class RunScalarBuilderTestsMain {
             builder.writeSample(1L, values("feature_01", 1.5, "feature_05", 5.0), true);
             String stageManifest = builder.finishStage();
             require(new File(stageManifest).exists(), "sample-major manifest missing");
-            manifestPath = builder.buildShards(true, new File(root, "dense_long").getAbsolutePath());
+            manifestPath = builder.buildShards(true, new File(root, "scalar_shard").getAbsolutePath());
         }
 
         ScalarDenseLongManifest manifest = ScalarFeatureShards.loadManifest(manifestPath);

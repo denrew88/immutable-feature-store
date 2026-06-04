@@ -103,7 +103,7 @@ def main():
         if args.skip_build:
             manifest_path = builder.finish_stage()
         else:
-            manifest_path = builder.build_dense_long_shards(out_dir=str(root / "dense_long"), keep_raw=True)
+            manifest_path = builder.build_dense_long_shards(out_dir=str(root / "scalar_shard"), keep_raw=True)
     finish_sec = time.perf_counter() - finish_started
 
     if not args.skip_build:

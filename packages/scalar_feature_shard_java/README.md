@@ -203,7 +203,7 @@ Python value API 호출 예제는 `python/scripts/serve_synthetic_value_api.py`�
   --base-url http://127.0.0.1:8010 `
   --sample-meta data\sample_meta.parquet `
   --feature-meta data\feature_meta.parquet `
-  --out-dir data\scalar_dense_long_from_api
+  --out-dir data\scalar_shard_from_api
 ```
 
 API 서버 실행:

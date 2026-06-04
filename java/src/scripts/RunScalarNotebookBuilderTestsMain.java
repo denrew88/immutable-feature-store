@@ -58,7 +58,7 @@ public final class RunScalarNotebookBuilderTestsMain {
         buildConfig.statsYCols = Arrays.asList(Y_COLS);
         buildConfig.denseLongRowGroupFeatures = 128;
 
-        String outDir = new File(root, "scalar_dense_long").getAbsolutePath();
+        String outDir = new File(root, "scalar_stage").getAbsolutePath();
         String manifestPath;
         try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
                 outDir,

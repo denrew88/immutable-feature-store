@@ -10,7 +10,7 @@ scalar shard는 scalar feature 값을 Parquet 기반 dense-long layout으로 저
 4. sample 하나가 완료되면 builder가 `raw_samples/sample_*.parquet.tmp`를 만들고, 정상 종료 후 `.parquet`로 rename한 뒤 `raw_samples.jsonl`에 commit record를 남깁니다.
 5. `finish_stage()`는 완료된 raw sample 파일 목록을 `sample_major_manifest.json`으로 확정합니다. 이 단계는 raw parquet를 다시 쓰지 않습니다.
 6. `build_shards(...)` 또는 `buildDenseLongShards(...)`가 raw sample long rows를 읽어 최종 dense-long parquet part를 만듭니다.
-7. reader나 API 서버는 `dense_long_shard_manifest.json`을 entrypoint로 사용합니다.
+7. reader나 API 서버는 `scalar_shard_manifest.json`을 entrypoint로 사용합니다.
 
 순차 builder와 random/raw builder는 더 이상 분리하지 않습니다. 순차 실행은 `pending_sample_ids`를 앞에서부터 처리하는 특수한 사용 방식일 뿐입니다.
 
@@ -86,19 +86,19 @@ commit 규칙:
 최종 artifact 구조:
 
 ```text
-scalar_dense_long_shard/
-  dense_long_shard_manifest.json
+scalar_shard/
+  scalar_shard_manifest.json
   sample_meta.parquet
   feature_meta.parquet
   feature_locator.parquet
-  dense_long_parts/
+  parts/
     part_0000.parquet
     part_0001.parquet
   selection_stats/
     y.parquet
 ```
 
-`dense_long_parts/*.parquet` schema:
+`parts/*.parquet` schema:
 
 ```text
 feature_id  Int32
@@ -138,7 +138,7 @@ dense-long build는 다음 순서로 동작합니다.
 5. 지정된 target column이 있으면 selection stats를 계산합니다.
 6. feature id 구간별로 dense-long rows를 만들어 part parquet로 씁니다.
 7. feature id가 어느 part의 어느 offset에 있는지 `feature_locator.parquet`에 기록합니다.
-8. 최종 연결 정보를 `dense_long_shard_manifest.json`에 기록합니다.
+8. 최종 연결 정보를 `scalar_shard_manifest.json`에 기록합니다.
 
 최종 parquet는 long format이지만 build 중간 배열은 feature-major입니다. selection stats 계산과 최종 part write가 모두 feature 단위 접근을 많이 하기 때문입니다.
 
@@ -385,7 +385,7 @@ id와 key는 같은 축에서 둘 중 하나만 허용합니다. 예를 들어 `
 `scalar-feature-shard-java`는 thin jar입니다. 실행 시 package jar와 함께 다음 runtime jar가 classpath에 있어야 합니다.
 
 - DuckDB JDBC: raw sample parquet, dense-long part parquet, selection stats parquet 생성과 조회를 담당합니다. zstd 압축도 DuckDB parquet writer가 처리합니다.
-- Jackson: `raw_state.json`, `sample_major_manifest.json`, `dense_long_shard_manifest.json` 같은 JSON 파일을 읽고 씁니다.
+- Jackson: `raw_state.json`, `sample_major_manifest.json`, `scalar_shard_manifest.json` 같은 JSON 파일을 읽고 씁니다.
 
 Hadoop/Parquet Java writer, Arrow, SLF4J, Woodstox, stax2, commons jar는 현재 scalar dense-long 구현에 필요하지 않습니다.
 

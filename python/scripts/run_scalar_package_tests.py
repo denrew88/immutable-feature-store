@@ -51,7 +51,7 @@ def main():
     assert tuple(pl.read_parquet(sample_meta_path).columns) == ("sample_id", "sample_key", "y", "y_alt")
     assert tuple(pl.read_parquet(feature_meta_path).columns) == ("feature_id", "feature_key", "group")
 
-    known_out = root / "known_dense_long"
+    known_out = root / "known_scalar_shard"
     builder = ScalarDatasetBuilder(
         out_dir=str(known_out),
         sample_meta_path=str(sample_meta_path),
@@ -69,14 +69,14 @@ def main():
 
     wrapper_manifest_path = build_shard(
         str(stage_manifest),
-        str(root / "wrapper_dense_long"),
+        str(root / "wrapper_scalar_shard"),
         feature_meta_path=str(builder.feature_meta_path),
         options=BuildOptions(target_shard_mb=1, stats_y_cols=("y", "y_alt")),
     )
-    assert Path(wrapper_manifest_path).name == "dense_long_shard_manifest.json"
+    assert Path(wrapper_manifest_path).name == "scalar_shard_manifest.json"
 
     manifest_path = builder.build_shards(keep_raw=True)
-    assert Path(manifest_path).name == "dense_long_shard_manifest.json"
+    assert Path(manifest_path).name == "scalar_shard_manifest.json"
     with open_dense_long_shard(manifest_path) as ds:
         values_a, valid_a = ds.load_feature_by_id(0)
         assert bool(valid_a[0]) and np.isclose(values_a[0], 10.0)
@@ -121,7 +121,7 @@ def main():
     raw_builder.write_sample(3, {})
     assert raw_builder.completed_sample_ids() == [0, 1, 2, 3]
     assert raw_builder.write_sample(1, {"feature_c": 31.0}, skip_if_completed=True) is False
-    dense_manifest_path = raw_builder.build_dense_long_shards(out_dir=str(root / "raw_dense_long"))
+    dense_manifest_path = raw_builder.build_dense_long_shards(out_dir=str(root / "raw_scalar_shard"))
     with open_dense_long_shard(dense_manifest_path) as ds:
         dense_values_b, dense_valid_b = ds.load_feature_by_id(1)
         assert bool(dense_valid_b[2]) and np.isclose(dense_values_b[2], 20.0)

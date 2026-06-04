@@ -53,7 +53,7 @@ public class BuildScalarFeatureShardWithJarExample {
         config.denseLongRowGroupFeatures = 128;
 
         File stageDir = new File(root, "scalar_stage");
-        File denseDir = new File(root, "scalar_dense_long");
+        File denseDir = new File(root, "scalar_shard");
 
         // 3. 첫 실행에서는 일부 sample만 완료하고 종료한 상황을 가정합니다.
         try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(

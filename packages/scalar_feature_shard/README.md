@@ -90,12 +90,12 @@ value       Float64 # mask=0이면 무시
 artifact 구조:
 
 ```text
-scalar_dense_long_shard/
-  dense_long_shard_manifest.json
+scalar_shard/
+  scalar_shard_manifest.json
   sample_meta.parquet
   feature_meta.parquet
   feature_locator.parquet
-  dense_long_parts/
+  parts/
     part_0000.parquet
   selection_stats/
     y.parquet
@@ -106,7 +106,7 @@ scalar_dense_long_shard/
 ```python
 from scalar_feature_shard import open_dense_long_shard
 
-with open_dense_long_shard("data/scalar_stage/dense_long_shards/dense_long_shard_manifest.json") as ds:
+with open_dense_long_shard("data/scalar_stage/scalar_shard/scalar_shard_manifest.json") as ds:
     values, valid = ds.load_feature_by_key("feature_a")
     sample_values, sample_valid = ds.load_sample_by_id(10)
     top = ds.top_features_from_stats("y", top_k=256)
@@ -120,7 +120,7 @@ build option의 `stats_y_cols`에 target column을 지정하면 build 시 `selec
 from scalar_feature_shard import SelectionOptions, select_features
 
 result = select_features(
-    "data/scalar_stage/dense_long_shards/dense_long_shard_manifest.json",
+    "data/scalar_stage/scalar_shard/scalar_shard_manifest.json",
     options=SelectionOptions(y_col="y", top_m=256),
 )
 ```

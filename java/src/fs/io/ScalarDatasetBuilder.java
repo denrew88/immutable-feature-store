@@ -224,7 +224,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
     public String buildDenseLongShards(boolean requireAll, String denseLongOutDir, boolean cleanupRaw) throws Exception {
         String stageManifest = finishStage(requireAll);
         String target = denseLongOutDir == null || denseLongOutDir.isEmpty()
-                ? new File(outDir, "dense_long_shards").getAbsolutePath()
+                ? new File(outDir, "scalar_shard").getAbsolutePath()
                 : denseLongOutDir;
         String manifestPath = ScalarDenseLongShardBuilder.buildFromSampleMajorManifest(stageManifest, target, buildConfig);
         if (cleanupRaw) {

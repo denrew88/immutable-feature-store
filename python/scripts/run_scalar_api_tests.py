@@ -29,7 +29,7 @@ def main():
     sample_dir = root / "samples"
     sample_meta_path = root / "sample_meta.parquet"
     feature_meta_path = root / "feature_meta.parquet"
-    shard_dir = root / "dense_long"
+    shard_dir = root / "scalar_shard"
 
     data = generate_synthetic(SyntheticConfig(n_samples=16, n_features=20, seed=13))
     write_sample_major(data, str(sample_dir), str(sample_meta_path), str(feature_meta_path))
@@ -42,7 +42,7 @@ def main():
     )
     manifest_json = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     assert manifest_json["format"] == "scalar-dense-long-shard-v1"
-    assert manifest_json["parts_path"] == "dense_long_parts"
+    assert manifest_json["parts_path"] == "parts"
     assert manifest_json["feature_locator_path"] == "feature_locator.parquet"
     assert (shard_dir / "sample_meta.parquet").exists()
     assert (shard_dir / "feature_meta.parquet").exists()

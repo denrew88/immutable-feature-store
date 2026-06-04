@@ -28,7 +28,7 @@ def main():
     sample_dir = root / "samples"
     sample_meta_path = root / "sample_meta.parquet"
     feature_meta_path = root / "feature_meta.parquet"
-    shard_dir = root / "dense_long"
+    shard_dir = root / "scalar_shard"
 
     data = generate_synthetic(
         SyntheticConfig(

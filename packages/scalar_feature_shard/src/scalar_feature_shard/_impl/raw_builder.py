@@ -500,7 +500,7 @@ class ScalarDatasetBuilder:
             if pending:
                 raise ValueError(f"cannot build dense-long shards: {len(pending)} samples are still pending")
         manifest_path = self.finish_stage()
-        dense_out_dir = str(Path(out_dir or os.path.join(self.out_dir, "dense_long_shards")).expanduser().resolve())
+        dense_out_dir = str(Path(out_dir or os.path.join(self.out_dir, "scalar_shard")).expanduser().resolve())
         result = build_dense_long_shards_from_sample_major_manifest(
             manifest_path,
             dense_out_dir,

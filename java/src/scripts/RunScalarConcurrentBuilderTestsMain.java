@@ -109,7 +109,7 @@ public final class RunScalarConcurrentBuilderTestsMain {
             if (skipBuild) {
                 manifestPath = builder.finishStage();
             } else {
-                manifestPath = builder.buildDenseLongShards(true, new File(root, "dense_long").getAbsolutePath(), false);
+                manifestPath = builder.buildDenseLongShards(true, new File(root, "scalar_shard").getAbsolutePath(), false);
             }
         }
         double finishSec = elapsedSec(finishStarted);
