@@ -4,19 +4,78 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import uuid
 from typing import Optional
 
 import numpy as np
 import polars as pl
 
 
-def write_json_atomic(path: str, payload: dict):
-    """Write JSON via a sibling temporary file and atomic replace."""
+_JSON_REPLACE_RETRY_COUNT = 8
+_JSON_LOCK_TIMEOUT_SECONDS = 30.0
 
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, path)
+
+class _JsonFileLock:
+    def __init__(self, path: str):
+        self.path = os.path.abspath(path)
+        self._fd: Optional[int] = None
+
+    def acquire(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        deadline = time.monotonic() + _JSON_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(self._fd, str(os.getpid()).encode("ascii"))
+                return
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"timed out acquiring JSON file lock: {self.path}")
+                time.sleep(0.05)
+
+    def release(self):
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+        try:
+            os.remove(self.path)
+        except FileNotFoundError:
+            pass
+
+
+def write_json_atomic(path: str, payload: dict):
+    """Write JSON via a unique temporary file and atomic replace.
+
+    Windows can briefly reject replace when an IDE, antivirus, or another reader
+    has the target JSON open. A unique tmp path avoids writer-side tmp-name
+    collisions, and the short retry handles those transient locks.
+    """
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    lock = _JsonFileLock(path + ".lock")
+    lock.acquire()
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        last_error = None
+        for attempt in range(_JSON_REPLACE_RETRY_COUNT):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt == _JSON_REPLACE_RETRY_COUNT - 1:
+                    break
+                time.sleep(0.025 * (attempt + 1))
+        raise last_error
+    finally:
+        lock.release()
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 def load_dense_metadata(

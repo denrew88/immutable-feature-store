@@ -37,6 +37,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\SampleIdInd
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\SampleMetaLoader.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarDenseLongManifestIO.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarDenseLongShardBuilder.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarFileLock.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarMetadataWriter.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarRawSampleWriter.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\fs\io\scalar\ScalarSampleMajorManifestIO.java
@@ -94,6 +95,7 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArraySamplePa
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunArrayV3TestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunBuilderSessionTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarBuilderTestsMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarConcurrentBuilderTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarNotebookBuilderTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunSelectionMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunTestsMain.java

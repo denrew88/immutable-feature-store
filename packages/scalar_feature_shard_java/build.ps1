@@ -76,6 +76,7 @@ $sourceSpecs = @(
     "java\src\fs\io\ScalarFeatureShards.java",
     "java\src\fs\io\scalar\ScalarDenseLongManifestIO.java",
     "java\src\fs\io\scalar\ScalarDenseLongShardBuilder.java",
+    "java\src\fs\io\scalar\ScalarFileLock.java",
     "java\src\fs\io\scalar\ScalarMetadataWriter.java",
     "java\src\fs\io\scalar\ScalarRawSampleWriter.java",
     "java\src\fs\io\scalar\ScalarSampleMajorManifestIO.java",

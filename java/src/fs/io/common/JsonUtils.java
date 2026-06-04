@@ -15,10 +15,12 @@ import java.io.FileOutputStream;
 import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 자바 쪽 JSON read/write를 모아 두는 공통 helper다.
@@ -28,6 +30,7 @@ import java.util.List;
  */
 public final class JsonUtils {
     private static final ObjectMapper MAPPER = createMapper();
+    private static final int ATOMIC_MOVE_RETRY_COUNT = 8;
 
     private JsonUtils() {
     }
@@ -59,6 +62,11 @@ public final class JsonUtils {
 
     /**
      * JSON tree를 임시 파일에 쓴 뒤 rename해서 원자적으로 교체한다.
+     *
+     * <p>Windows에서는 백신, IDE refresh, 이전 디버그 프로세스가 JSON 파일을
+     * 짧게 열고 있어도 replace가 실패할 수 있다. 그래서 writer끼리는
+     * {@code .lock} 파일 생성으로 직렬화하고, 임시 파일명은 호출마다 다르게 만들어
+     * {@code *.tmp} 이름 충돌을 피한다. 최종 move는 짧게 retry한다.</p>
      */
     public static void writeJsonAtomic(String path, JsonNode node) throws IOException {
         File file = new File(path);
@@ -66,9 +74,77 @@ public final class JsonUtils {
         if (parent != null && !parent.exists()) {
             parent.mkdirs();
         }
-        File tmp = new File(path + ".tmp");
-        MAPPER.writeValue(tmp, node);
-        Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        File lockFile = new File(path + ".lock");
+        File tmp = new File(path + "." + UUID.randomUUID().toString() + ".tmp");
+        acquireCreateFileLock(lockFile);
+        try {
+            MAPPER.writeValue(tmp, node);
+            moveJsonTmpWithRetry(tmp, file);
+        } finally {
+            releaseCreateFileLock(lockFile);
+            if (tmp.exists() && !tmp.delete()) {
+                tmp.deleteOnExit();
+            }
+        }
+    }
+
+    private static void acquireCreateFileLock(File lockFile) throws IOException {
+        File parent = lockFile.getAbsoluteFile().getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IOException("failed to create lock directory: " + parent.getAbsolutePath());
+        }
+        long deadline = System.currentTimeMillis() + 30000L;
+        while (true) {
+            if (lockFile.createNewFile()) {
+                try (FileOutputStream out = new FileOutputStream(lockFile, false)) {
+                    out.write(Thread.currentThread().getName().getBytes(StandardCharsets.UTF_8));
+                }
+                return;
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                throw new IOException("timed out acquiring JSON file lock: " + lockFile.getAbsolutePath());
+            }
+            try {
+                Thread.sleep(50L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("interrupted while acquiring JSON file lock: " + lockFile.getAbsolutePath(), e);
+            }
+        }
+    }
+
+    private static void releaseCreateFileLock(File lockFile) {
+        if (lockFile.exists() && !lockFile.delete()) {
+            // best-effort cleanup; a stale lock will be surfaced by the next acquire timeout.
+        }
+    }
+
+    private static void moveJsonTmpWithRetry(File tmp, File file) throws IOException {
+        IOException last = null;
+        for (int attempt = 0; attempt < ATOMIC_MOVE_RETRY_COUNT; attempt++) {
+            try {
+                try {
+                    Files.move(tmp.toPath(), file.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+                return;
+            } catch (IOException e) {
+                last = e;
+                if (attempt == ATOMIC_MOVE_RETRY_COUNT - 1) {
+                    break;
+                }
+                try {
+                    Thread.sleep(25L * (attempt + 1));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
+        throw last;
     }
 
     /**

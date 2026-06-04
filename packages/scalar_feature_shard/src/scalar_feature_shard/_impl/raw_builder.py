@@ -265,15 +265,11 @@ class ScalarDatasetBuilder:
         if not os.path.isdir(self.raw_samples_path):
             return
         for name in os.listdir(self.raw_samples_path):
-            if name.endswith(".tmp") or name.endswith(".lock"):
+            if name.endswith(".tmp"):
                 try:
                     os.remove(os.path.join(self.raw_samples_path, name))
                 except FileNotFoundError:
                     pass
-        try:
-            os.remove(self.raw_log_lock_path)
-        except FileNotFoundError:
-            pass
 
     def _sample_key_for_id(self, sample_id: Optional[int]) -> Optional[str]:
         if sample_id is None or int(sample_id) < 0 or int(sample_id) >= int(self.n_samples):

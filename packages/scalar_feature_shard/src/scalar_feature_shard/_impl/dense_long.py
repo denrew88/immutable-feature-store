@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,7 @@ DENSE_LONG_ROW_VALUE_BYTES = 8
 DENSE_LONG_ROW_MASK_BYTES = 1
 DENSE_LONG_ROW_ID_BYTES = 12
 DENSE_LONG_ROW_GROUP_FEATURES = 128
+JSON_REPLACE_RETRY_COUNT = 8
 
 
 @dataclass(frozen=True)
@@ -72,11 +74,27 @@ class ScalarDenseLongManifest:
 
 
 def _write_json_atomic(path: str, payload: dict):
-    tmp_path = path + ".tmp"
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, path)
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        last_error = None
+        for attempt in range(JSON_REPLACE_RETRY_COUNT):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt == JSON_REPLACE_RETRY_COUNT - 1:
+                    break
+                time.sleep(0.025 * (attempt + 1))
+        raise last_error
+    finally:
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 def _resolve_manifest_relative(manifest_path: str, value: str) -> str:

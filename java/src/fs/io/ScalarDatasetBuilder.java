@@ -6,6 +6,7 @@ import fs.config.BuildShardConfig;
 import fs.io.common.ArrayMetadataWriter;
 import fs.io.common.JsonUtils;
 import fs.io.scalar.ScalarDenseLongShardBuilder;
+import fs.io.scalar.ScalarFileLock;
 import fs.io.scalar.ScalarMetadataWriter;
 import fs.io.scalar.ScalarRawSampleWriter;
 import fs.io.scalar.ScalarSampleMajorManifestIO;
@@ -14,8 +15,6 @@ import fs.model.scalar.ScalarSampleMajorManifest;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
@@ -149,12 +148,9 @@ public class ScalarDatasetBuilder implements AutoCloseable {
             throw new IllegalArgumentException("sample already completed: " + sampleId);
         }
 
-        File lockFile = new File(rawSamplePath(sampleId) + ".lock");
-        FileChannel lockChannel = FileChannel.open(
-                lockFile.toPath(),
-                java.nio.file.StandardOpenOption.CREATE,
-                java.nio.file.StandardOpenOption.WRITE);
-        try (FileChannel channel = lockChannel; FileLock ignored = channel.lock()) {
+        ScalarFileLock lock = new ScalarFileLock(rawSamplePath(sampleId) + ".lock");
+        lock.acquire();
+        try {
             if (isSampleCompleted(sampleId)) {
                 if (skipIfCompleted) {
                     return;
@@ -168,7 +164,8 @@ public class ScalarDatasetBuilder implements AutoCloseable {
             int rowCount = ScalarRawSampleWriter.write(tmpPath, sampleId, normalized);
             Files.move(new File(tmpPath).toPath(), new File(finalPath).toPath(), StandardCopyOption.REPLACE_EXISTING);
             appendCommit(sampleId, finalPath, rowCount);
-            saveState();
+        } finally {
+            lock.release();
         }
     }
 
@@ -383,17 +380,12 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         node.put("sample_key", sampleKeyForId(sampleId));
         node.put("path", relativeTo(outDir.getAbsolutePath(), path));
         node.put("row_count", rowCount);
-        File lockPath = new File(rawLogPath + ".lock");
-        File parent = lockPath.getParentFile();
-        if (parent != null && !parent.exists()) {
-            parent.mkdirs();
-        }
-        try (FileChannel channel = FileChannel.open(
-                lockPath.toPath(),
-                java.nio.file.StandardOpenOption.CREATE,
-                java.nio.file.StandardOpenOption.WRITE);
-             FileLock ignored = channel.lock()) {
+        ScalarFileLock lock = new ScalarFileLock(rawLogPath + ".lock");
+        lock.acquire();
+        try {
             JsonUtils.appendJsonLine(rawLogPath, node);
+        } finally {
+            lock.release();
         }
     }
 
@@ -482,7 +474,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
             return;
         }
         for (File file : files) {
-            if (file.isFile() && (file.getName().endsWith(".tmp") || file.getName().endsWith(".lock"))) {
+            if (file.isFile() && file.getName().endsWith(".tmp")) {
                 deleteQuietly(file);
             }
         }
