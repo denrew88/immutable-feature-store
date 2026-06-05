@@ -89,7 +89,7 @@ public final class ScalarDenseLongDataset implements AutoCloseable {
                 int featureId = rs.getInt(1);
                 int mask = rs.getInt(2);
                 valid[featureId] = (byte) mask;
-                values[featureId] = mask == 0 ? 0.0 : rs.getDouble(3);
+                values[featureId] = rs.getDouble(3);
             }
         }
         return new SampleValues(sampleId, sampleIndex.keyForId(sampleId), values, valid);

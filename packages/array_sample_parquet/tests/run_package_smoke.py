@@ -1,7 +1,13 @@
 import shutil
+import sys
 from pathlib import Path
 
 import polars as pl
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+PACKAGE_SRC = REPO_ROOT / "packages" / "array_sample_parquet" / "src"
+if str(PACKAGE_SRC) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_SRC))
 
 from array_sample_parquet import (
     ArraySampleParquetBuildOptions,

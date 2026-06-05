@@ -13,15 +13,15 @@ PACKAGE_SRC = Path(__file__).resolve().parents[2] / "packages" / "scalar_feature
 if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
 
-from scalar_feature_shard import BuildOptions, ScalarDatasetBuilder, open_dense_long_shard, write_feature_meta, write_sample_meta
+from scalar_feature_shard import BuildOptions, ScalarDatasetBuilder, write_feature_meta, write_sample_meta
+from validate_scalar_dense_long_exhaustive import validate_manifest
 
 
 def _values_for(sample_id: int, n_features: int) -> dict[int, float]:
-    return {
-        feature_id: float(sample_id * 1000 + feature_id)
-        for feature_id in range(n_features)
-        if (sample_id + feature_id) % 5 != 0
-    }
+    rng = np.random.default_rng(0x5EED_0000 + int(sample_id))
+    present = rng.random(int(n_features)) >= 0.23
+    values = rng.normal(loc=0.0, scale=10.0, size=int(n_features)) + rng.uniform(-3.0, 3.0, size=int(n_features))
+    return {int(feature_id): float(values[feature_id]) for feature_id in np.flatnonzero(present)}
 
 
 def _write_samples(args) -> list[int]:
@@ -107,21 +107,11 @@ def main():
     finish_sec = time.perf_counter() - finish_started
 
     if not args.skip_build:
-        with open_dense_long_shard(manifest_path) as ds:
-            sample_id = min(7, n_samples - 1)
-            feature_id = min(11, n_features - 1)
-            sample_values, sample_valid = ds.load_sample_by_id(sample_id)
-            assert bool(sample_valid[feature_id])
-            assert np.isclose(sample_values[feature_id], float(sample_id * 1000 + feature_id))
-            values, valid = ds.load_feature_by_id(feature_id)
-            assert bool(valid[sample_id])
-            assert np.isclose(values[sample_id], float(sample_id * 1000 + feature_id))
-            missing_sample_id = min(2, n_samples - 1)
-            missing_feature_id = min(3, n_features - 1)
-            if (missing_sample_id + missing_feature_id) % 5 == 0:
-                missing_values, missing_valid = ds.load_sample_by_id(missing_sample_id)
-                assert not bool(missing_valid[missing_feature_id])
-                assert np.isclose(missing_values[missing_feature_id], 0.0)
+        validate_manifest(
+            Path(manifest_path),
+            sample_major_manifest_path=Path(out_dir) / "sample_major_manifest.json",
+            progress_every=0,
+        )
 
     total_sec = time.perf_counter() - started
     print(

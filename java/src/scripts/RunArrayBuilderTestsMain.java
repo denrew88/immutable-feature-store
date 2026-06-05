@@ -174,46 +174,23 @@ public final class RunArrayBuilderTestsMain {
         return out;
     }
 
-    private static double[] buildTime(int length) {
+    private static double[] buildTime(int length, Random rng) {
         double[] out = new double[length];
+        double cursor = rng.nextDouble();
         for (int i = 0; i < length; i++) {
-            out[i] = (i + 1) * 0.1;
+            cursor += 0.01 + rng.nextDouble() * 0.25;
+            out[i] = cursor;
         }
         return out;
     }
 
-    private static double[] buildBaseSignal(int length, double amplitude, double frequency) {
+    private static double[] buildRandomValues(int length, Random rng) {
         double[] out = new double[length];
         for (int i = 0; i < length; i++) {
-            double x = i * Math.PI / 50.0;
-            out[i] = amplitude * Math.sin(frequency * x);
+            out[i] = rng.nextGaussian() * 8.0 + (rng.nextDouble() * 3.0 - 1.5);
         }
-        return out;
-    }
-
-    private static double[] buildSignalVariant(double[] baseSignal, double[] time, double amplitude, double frequency, int order) {
-        double[] out = new double[baseSignal.length];
-        if (order == 0) {
-            System.arraycopy(baseSignal, 0, out, 0, baseSignal.length);
-            return out;
-        }
-
-        double dx = Math.PI / 50.0;
-        for (int i = 0; i < baseSignal.length; i++) {
-            double phase = frequency * i * dx;
-            switch (order) {
-                case 1:
-                    out[i] = amplitude * frequency * Math.cos(phase);
-                    break;
-                case 2:
-                    out[i] = -amplitude * frequency * frequency * Math.sin(phase);
-                    break;
-                case 3:
-                    out[i] = -amplitude * frequency * frequency * frequency * Math.cos(phase);
-                    break;
-                default:
-                    throw new IllegalArgumentException("unsupported derivative order: " + order);
-            }
+        if (length > 0 && rng.nextDouble() < 0.12) {
+            out[rng.nextInt(length)] = Double.NaN;
         }
         return out;
     }
@@ -265,27 +242,19 @@ public final class RunArrayBuilderTestsMain {
             int endSampleId) throws Exception {
         for (int sampleId = startSampleId; sampleId < endSampleId; sampleId++) {
             try (ArrayDatasetBuilder.ArraySampleContext sample = builder.sample((long) sampleId)) {
-                for (int featureBase = 0; featureBase < N_FEATURES; featureBase += FEATURES_PER_SENSOR) {
+                for (int featureId = 0; featureId < N_FEATURES; featureId++) {
                     int signalLength = 300 + rng.nextInt(200);
-                    double amplitude = -1.0 + rng.nextDouble() * 2.0;
-                    double frequency = 0.1 + rng.nextDouble() * 9.9;
-
-                    double[] time = buildTime(signalLength);
-                    double[] baseSignal = buildBaseSignal(signalLength, amplitude, frequency);
+                    double[] time = buildTime(signalLength, rng);
+                    double[] values = buildRandomValues(signalLength, rng);
                     String[] chSteps = buildChSteps(signalLength, rng);
 
-                    for (int featureTail = 0; featureTail < FEATURES_PER_SENSOR; featureTail++) {
-                        int featureId = featureBase + featureTail;
-                        double[] values = buildSignalVariant(baseSignal, time, amplitude, frequency, featureTail);
+                    LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
+                    columns.put("time", time.clone());
+                    columns.put("value", values.clone());
+                    columns.put("ch_step", chSteps.clone());
+                    sample.addTrace(Integer.valueOf(featureId), null, columns);
 
-                        LinkedHashMap<String, Object> columns = new LinkedHashMap<String, Object>();
-                        columns.put("time", time.clone());
-                        columns.put("value", values.clone());
-                        columns.put("ch_step", chSteps.clone());
-                        sample.addTrace(Integer.valueOf(featureId), null, columns);
-
-                        answers.put(key(sampleId, featureId), new ExpectedTrace(time, values, chSteps));
-                    }
+                    answers.put(key(sampleId, featureId), new ExpectedTrace(time, values, chSteps));
                 }
             }
         }

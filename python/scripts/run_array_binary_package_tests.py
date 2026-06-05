@@ -9,6 +9,9 @@ import polars as pl
 PACKAGE_SRC = Path(__file__).resolve().parents[2] / "packages" / "array_binary_shard" / "src"
 if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
+PYTHON_ROOT = Path(__file__).resolve().parents[2] / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
 from array_binary_shard import (
     ArrayDatasetBuilder,

@@ -359,6 +359,18 @@ def _json_float(value: float | None) -> Optional[float]:
     return out
 
 
+def _json_safe_nested(value):
+    """JSON 응답에 직접 넣을 수 없는 NaN/Inf float를 null로 바꾼다."""
+
+    if isinstance(value, float):
+        return None if math.isnan(value) or math.isinf(value) else value
+    if isinstance(value, dict):
+        return {key: _json_safe_nested(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_nested(item) for item in value]
+    return value
+
+
 def _validate_cells(feature_count: int, sample_count: int, max_cells: int):
     cells = int(feature_count) * int(sample_count)
     if cells > int(max_cells):
@@ -463,7 +475,7 @@ def array_sample_parquet_traces(req: ArraySampleParquetTraceRequest):
                 status_code=413,
                 detail=f"trace_count exceeds max_traces: {trace_count} > {int(req.max_traces)}",
             )
-        return {"manifest_path": entry.manifest_path, **result}
+        return {"manifest_path": entry.manifest_path, **_json_safe_nested(result)}
     except HTTPException:
         raise
     except KeyError as exc:

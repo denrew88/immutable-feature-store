@@ -17,7 +17,7 @@ import java.util.TreeMap;
  * <p>raw stage에서는 sample 하나가 파일 하나로 commit된다. 이 writer는 sample 안의
  * present scalar 값만 {@code (sample_id, feature_id, value)} row로 기록하고,
  * missing 값은 row를 쓰지 않는다. 최종 dense-long shard를 만들 때 missing row는
- * {@code mask=0}으로 다시 materialize된다.
+ * scalar Double value column 기준 {@code mask=0, value=NaN}으로 다시 materialize된다.
  */
 public final class ScalarRawSampleWriter {
     private ScalarRawSampleWriter() {

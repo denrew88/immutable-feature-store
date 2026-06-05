@@ -10,8 +10,8 @@ import java.util.Map;
  * dense-long scalar parquet shard 전체를 설명하는 manifest 모델이다.
  *
  * <p>dense-long은 모든 {@code (feature_id, sample_id)} 조합을 parquet row로 저장한다.
- * missing은 row 생략이 아니라 {@code mask=0}으로 표현하므로, sample 기준 조회에서
- * dense matrix를 다시 채우는 scatter 비용이 작다.
+ * missing은 row 생략이 아니라 {@code mask=0, value=NaN}으로 표현하므로,
+ * sample 기준 조회에서 dense matrix를 다시 채우는 scatter 비용이 작다.
  */
 public final class ScalarDenseLongManifest {
     public final String manifestPath;

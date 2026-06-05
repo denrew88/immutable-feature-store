@@ -82,7 +82,7 @@ SelectionOptions(y_col="y", top_m=256)
 feature_id  Int32
 sample_id   Int64
 mask        UInt8   # 1=present, 0=missing
-value       Float64 # mask=0이면 무시
+value       Float64 # mask=0이면 내부 parquet에서는 NaN, reader/API에서는 missing/null
 ```
 
 물리 정렬은 `feature_id asc, sample_id asc`입니다. 기본 row group은 feature 128개 단위입니다.

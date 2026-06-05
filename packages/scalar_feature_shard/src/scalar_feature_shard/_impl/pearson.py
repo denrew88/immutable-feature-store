@@ -77,7 +77,10 @@ def batch_r2_one_vs_many(x, mx, Z, Mz, min_non_null=2, sanitize=False):
     sum_xz = Z @ x_f
 
     r2 = np.zeros(Z.shape[0], dtype=np.float64)
-    valid = n >= min_non_null
+    # overlap count는 그대로 반환하되, 상관계수 계산은 최소 2개 이상의
+    # 공통 관측치가 있어야 한다. min_non_null=0으로 stats를 만들 때도
+    # 0/1 overlap row에서 divide-by-zero로 NaN r2가 새면 안 된다.
+    valid = n >= max(2, min_non_null)
     if np.any(valid):
         n_v = n[valid]
         mx_v = sum_x[valid] / n_v

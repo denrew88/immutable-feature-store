@@ -23,7 +23,7 @@ import java.util.List;
  *
  * <p>입력 parquet는 present 값만 가진 {@code (sample_id, feature_id, value)} row이다.
  * dense-long 최종 part는 모든 feature/sample 조합을 만들고, 입력 row가 없으면
- * {@code mask=0, value=0.0}으로 채운다. 이 방식은 파일 크기는 dense-long format
+ * {@code mask=0, value=NaN}으로 채운다. 이 방식은 파일 크기는 dense-long format
  * 표준 parquet 도구로 직접 디버깅하기 쉽고 sample 기준 batch 조회가 단순하다.
  */
 public final class ScalarDenseLongShardBuilder {
@@ -68,7 +68,8 @@ public final class ScalarDenseLongShardBuilder {
                     + "CAST(" + DuckDBUtils.quoteIdentifier(stage.featureIdCol) + " AS INTEGER) AS feature_id, "
                     + "CAST(" + DuckDBUtils.quoteIdentifier(stage.valueCol) + " AS DOUBLE) AS value "
                     + "FROM read_parquet(" + parquetList(stage.samplePaths) + ") "
-                    + "WHERE " + DuckDBUtils.quoteIdentifier(stage.valueCol) + " IS NOT NULL");
+                    + "WHERE " + DuckDBUtils.quoteIdentifier(stage.valueCol) + " IS NOT NULL "
+                    + "AND NOT isnan(CAST(" + DuckDBUtils.quoteIdentifier(stage.valueCol) + " AS DOUBLE))");
 
             int partId = 0;
             for (int start = 0; start < nFeatures; start += partFeatures) {
@@ -138,7 +139,7 @@ public final class ScalarDenseLongShardBuilder {
                         + "WHERE feature_id >= " + startFeatureId + " AND feature_id < " + endFeatureId + ") "
                         + "SELECT d.feature_id, d.sample_id, "
                         + "CAST(CASE WHEN s.value IS NULL THEN 0 ELSE 1 END AS UTINYINT) AS mask, "
-                        + "CAST(COALESCE(s.value, 0.0) AS DOUBLE) AS value "
+                        + "CASE WHEN s.value IS NULL THEN CAST('NaN' AS DOUBLE) ELSE CAST(s.value AS DOUBLE) END AS value "
                         + "FROM dense d LEFT JOIN sparse s USING (feature_id, sample_id) "
                         + "ORDER BY d.feature_id, d.sample_id";
         copyParquet(st, query, path, (long) nSamples * (long) rowGroupFeatures);
@@ -171,7 +172,8 @@ public final class ScalarDenseLongShardBuilder {
         String query =
                 "WITH features AS (SELECT CAST(range AS INTEGER) AS feature_id FROM range(0, " + nFeatures + ")), "
                         + "ys AS (SELECT CAST(sample_id AS BIGINT) AS sample_id, CAST(" + y + " AS DOUBLE) AS y "
-                        + "FROM read_parquet(" + DuckDBUtils.quotePath(sampleMetaPath) + ") WHERE " + y + " IS NOT NULL), "
+                        + "FROM read_parquet(" + DuckDBUtils.quotePath(sampleMetaPath) + ") "
+                        + "WHERE " + y + " IS NOT NULL AND NOT isnan(CAST(" + y + " AS DOUBLE))), "
                         + "agg AS (SELECT x.feature_id, COUNT(*)::DOUBLE AS n, "
                         + "SUM(x.value)::DOUBLE AS sx, SUM(x.value * x.value)::DOUBLE AS sx2, "
                         + "SUM(ys.y)::DOUBLE AS sy, SUM(ys.y * ys.y)::DOUBLE AS sy2, "
@@ -182,7 +184,7 @@ public final class ScalarDenseLongShardBuilder {
                         + "CAST(f.feature_id % " + partFeatures + " AS INTEGER) AS offset_in_part, "
                         + "CASE WHEN a.n > 1 AND (a.n * a.sx2 - a.sx * a.sx) > 0 AND (a.n * a.sy2 - a.sy * a.sy) > 0 "
                         + "THEN power(a.n * a.sxy - a.sx * a.sy, 2) / ((a.n * a.sx2 - a.sx * a.sx) * (a.n * a.sy2 - a.sy * a.sy)) "
-                        + "ELSE NULL END AS r2y, "
+                        + "ELSE 0.0 END AS r2y, "
                         + "CAST(COALESCE(a.n, 0) AS INTEGER) AS n_y_overlap "
                         + "FROM features f LEFT JOIN agg a USING(feature_id) ORDER BY f.feature_id";
         copyParquet(st, query, path, 0L);

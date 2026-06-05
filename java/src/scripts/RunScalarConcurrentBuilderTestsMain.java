@@ -1,16 +1,22 @@
 package scripts;
 
 import fs.config.BuildShardConfig;
+import fs.io.common.DuckDBUtils;
 import fs.io.ScalarDatasetBuilder;
 import fs.io.ScalarFeatureShards;
-import fs.io.ScalarDenseLongDataset;
 import fs.model.scalar.ScalarBuildSessionStatus;
+import fs.model.scalar.ScalarDenseLongManifest;
+import fs.model.scalar.ScalarDenseLongPart;
 
 import java.io.File;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -115,13 +121,7 @@ public final class RunScalarConcurrentBuilderTestsMain {
         double finishSec = elapsedSec(finishStarted);
 
         if (!skipBuild) {
-            try (ScalarDenseLongDataset ds = ScalarFeatureShards.openDenseLong(manifestPath)) {
-                long sampleId = Math.min(7L, nSamples - 1L);
-                int featureId = Math.min(11, nFeatures - 1);
-                ScalarDenseLongDataset.SampleValues sample = ds.loadSampleById(sampleId);
-                require(sample.valid[featureId] != 0, "sample feature should be present");
-                require(Math.abs(sample.values[featureId] - (sampleId * 1000.0 + featureId)) < 1e-9, "sample feature value mismatch");
-            }
+            assertFinalShardMatchesRaw(manifestPath, new File(outDir, "raw_samples"), nSamples, nFeatures);
         }
 
         double totalSec = elapsedSec(started);
@@ -171,9 +171,11 @@ public final class RunScalarConcurrentBuilderTestsMain {
 
     private static Map<Integer, Double> valuesFor(long sampleId, int nFeatures) {
         LinkedHashMap<Integer, Double> values = new LinkedHashMap<Integer, Double>();
+        Random rng = new Random(0x5EED0000L + sampleId);
         for (int featureId = 0; featureId < nFeatures; featureId++) {
-            if ((sampleId + featureId) % 5 != 0) {
-                values.put(Integer.valueOf(featureId), Double.valueOf(sampleId * 1000.0 + featureId));
+            if (rng.nextDouble() >= 0.23) {
+                double value = rng.nextGaussian() * 10.0 + (rng.nextDouble() * 6.0 - 3.0);
+                values.put(Integer.valueOf(featureId), Double.valueOf(value));
             }
         }
         return values;
@@ -185,6 +187,71 @@ public final class RunScalarConcurrentBuilderTestsMain {
             out.put((String) kv[i], kv[i + 1]);
         }
         return out;
+    }
+
+    private static void assertFinalShardMatchesRaw(
+            String manifestPath,
+            File rawSamplesDir,
+            int nSamples,
+            int nFeatures) throws Exception {
+        ScalarDenseLongManifest manifest = ScalarFeatureShards.loadManifest(manifestPath);
+        ArrayList<String> partPaths = new ArrayList<String>();
+        for (ScalarDenseLongPart part : manifest.parts) {
+            partPaths.add(part.path);
+        }
+        ArrayList<String> rawPaths = new ArrayList<String>();
+        File[] rawFiles = rawSamplesDir.listFiles();
+        if (rawFiles != null) {
+            for (File file : rawFiles) {
+                if (file.getName().endsWith(".parquet")) {
+                    rawPaths.add(file.getAbsolutePath());
+                }
+            }
+        }
+        require(!rawPaths.isEmpty(), "raw sample parquet files are missing");
+
+        String finalQuery = "SELECT CAST(feature_id AS INTEGER) AS feature_id, "
+                + "CAST(sample_id AS BIGINT) AS sample_id, "
+                + "CAST(mask AS UTINYINT) AS mask, "
+                + "CAST(value AS DOUBLE) AS value "
+                + "FROM read_parquet(" + parquetList(partPaths) + ")";
+        String expectedQuery =
+                "WITH features AS (SELECT CAST(range AS INTEGER) AS feature_id FROM range(0, " + nFeatures + ")), "
+                        + "samples AS (SELECT CAST(range AS BIGINT) AS sample_id FROM range(0, " + nSamples + ")), "
+                        + "dense AS (SELECT f.feature_id, s.sample_id FROM features f CROSS JOIN samples s), "
+                        + "raw AS (SELECT CAST(feature_id AS INTEGER) AS feature_id, "
+                        + "CAST(sample_id AS BIGINT) AS sample_id, CAST(value AS DOUBLE) AS value "
+                        + "FROM read_parquet(" + parquetList(rawPaths) + ") "
+                        + "WHERE value IS NOT NULL AND NOT isnan(CAST(value AS DOUBLE))) "
+                        + "SELECT d.feature_id, d.sample_id, "
+                        + "CAST(CASE WHEN raw.value IS NULL THEN 0 ELSE 1 END AS UTINYINT) AS mask, "
+                        + "CASE WHEN raw.value IS NULL THEN CAST('NaN' AS DOUBLE) ELSE CAST(raw.value AS DOUBLE) END AS value "
+                        + "FROM dense d LEFT JOIN raw USING(feature_id, sample_id)";
+        String sql = "WITH final AS (" + finalQuery + "), expected AS (" + expectedQuery + ") "
+                + "SELECT "
+                + "(SELECT COUNT(*) FROM (SELECT * FROM final EXCEPT SELECT * FROM expected)) AS final_extra, "
+                + "(SELECT COUNT(*) FROM (SELECT * FROM expected EXCEPT SELECT * FROM final)) AS final_missing";
+        try (Connection conn = DuckDBUtils.connect(null);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            require(rs.next(), "direct raw/final comparison did not return a row");
+            long extra = rs.getLong(1);
+            long missing = rs.getLong(2);
+            require(extra == 0L && missing == 0L, "final shard differs from raw samples: extra=" + extra + " missing=" + missing);
+        }
+    }
+
+    private static String parquetList(List<String> paths) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("[");
+        for (int i = 0; i < paths.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(DuckDBUtils.quotePath(paths.get(i)));
+        }
+        sb.append("]");
+        return sb.toString();
     }
 
     private static int intArg(String[] args, String key, int defaultValue) {

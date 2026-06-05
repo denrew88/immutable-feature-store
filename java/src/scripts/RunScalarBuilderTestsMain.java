@@ -1,6 +1,7 @@
 package scripts;
 
 import fs.config.BuildShardConfig;
+import fs.io.common.DuckDBUtils;
 import fs.io.ScalarDatasetBuilder;
 import fs.io.ScalarDenseLongDataset;
 import fs.io.ScalarFeatureShards;
@@ -10,6 +11,9 @@ import fs.model.scalar.ScalarFeatureValues;
 import fs.model.scalar.ScalarValue;
 
 import java.io.File;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,7 +37,7 @@ public class RunScalarBuilderTestsMain {
 
         BuildShardConfig cfg = new BuildShardConfig();
         cfg.targetShardBytes = 1L << 20;
-        cfg.statsYCols = java.util.Arrays.asList("y", "y_alt");
+        cfg.statsYCols = java.util.Arrays.asList("y", "y_alt", "y_const");
         cfg.denseLongRowGroupFeatures = 128;
         cfg.denseLongPartFeatures = 128;
 
@@ -73,6 +77,9 @@ public class RunScalarBuilderTestsMain {
         require(new File(manifest.featureMetaPath).exists(), "missing feature_meta.parquet");
         require(new File(manifest.sampleMetaPath).exists(), "missing sample_meta.parquet");
         require(!manifest.selectionStats.isEmpty(), "selection_stats should be populated");
+        assertStatsOverlap(manifest, "y_alt", 1, 2);
+        assertStatsOverlap(manifest, "y_const", 1, 3);
+        assertStatsR2Zero(manifest, "y_const");
 
         try (ScalarDenseLongDataset dataset = ScalarFeatureShards.openDenseLong(manifestPath)) {
             ScalarFeatureValues feature01 = dataset.loadFeatureByKey("feature_01");
@@ -86,6 +93,7 @@ public class RunScalarBuilderTestsMain {
             require(sample0.valid[1] == 1, "sample value should be present");
             require(Math.abs(sample0.values[1] - 1.0) <= 1e-12, "sample value mismatch");
             require(sample0.valid[2] == 0, "missing value should have mask=0");
+            require(Double.isNaN(sample0.values[2]), "missing value should be stored as NaN");
             require(!dataset.topFeaturesFromStats("y", 2).isEmpty(), "selection stats should produce candidates");
         }
 
@@ -94,10 +102,10 @@ public class RunScalarBuilderTestsMain {
 
     private static List<Map<String, Object>> sampleRows() {
         ArrayList<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
-        rows.add(row("sample_key", "sample_000000", "y", 0.0, "y_alt", 1.0, "split", "train"));
-        rows.add(row("sample_key", "sample_000001", "y", 1.0, "y_alt", 0.0, "split", "train"));
-        rows.add(row("sample_key", "sample_000002", "y", 0.0, "y_alt", 1.0, "split", "test"));
-        rows.add(row("sample_key", "sample_000003", "y", 1.0, "y_alt", 0.0, "split", "test"));
+        rows.add(row("sample_key", "sample_000000", "y", 0.0, "y_alt", 1.0, "y_const", 7.0, "split", "train"));
+        rows.add(row("sample_key", "sample_000001", "y", 1.0, "y_alt", 0.0, "y_const", 7.0, "split", "train"));
+        rows.add(row("sample_key", "sample_000002", "y", 0.0, "y_alt", Double.NaN, "y_const", 7.0, "split", "test"));
+        rows.add(row("sample_key", "sample_000003", "y", 1.0, "y_alt", 0.0, "y_const", 7.0, "split", "test"));
         return rows;
     }
 
@@ -136,6 +144,34 @@ public class RunScalarBuilderTestsMain {
         }
         require(actual.value != null, "present value should not be null");
         require(Math.abs(actual.value.doubleValue() - value.doubleValue()) <= 1e-12, "value mismatch for sample_id=" + sampleId);
+    }
+
+    private static void assertStatsOverlap(ScalarDenseLongManifest manifest, String yCol, int featureId, int expected) throws Exception {
+        String statsPath = manifest.selectionStatsPath(yCol);
+        require(statsPath != null && !statsPath.isEmpty(), "missing selection stats for " + yCol);
+        try (Connection conn = DuckDBUtils.connect(null);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT n_y_overlap FROM read_parquet(" + DuckDBUtils.quotePath(statsPath) + ") "
+                             + "WHERE feature_id = " + featureId)) {
+            require(rs.next(), "missing stats row for feature_id=" + featureId);
+            int actual = rs.getInt(1);
+            require(actual == expected, "n_y_overlap mismatch for " + yCol + "/feature_id=" + featureId
+                    + ": actual=" + actual + " expected=" + expected);
+        }
+    }
+
+    private static void assertStatsR2Zero(ScalarDenseLongManifest manifest, String yCol) throws Exception {
+        String statsPath = manifest.selectionStatsPath(yCol);
+        require(statsPath != null && !statsPath.isEmpty(), "missing selection stats for " + yCol);
+        try (Connection conn = DuckDBUtils.connect(null);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT COUNT(*) FROM read_parquet(" + DuckDBUtils.quotePath(statsPath) + ") "
+                             + "WHERE COALESCE(r2y, 0.0) <> 0.0")) {
+            require(rs.next(), "missing r2 count result for " + yCol);
+            require(rs.getLong(1) == 0L, "constant y should produce r2y=0.0 for " + yCol);
+        }
     }
 
     private static void require(boolean condition, String message) {

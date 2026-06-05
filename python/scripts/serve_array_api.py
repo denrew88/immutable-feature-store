@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import sys
 import threading
@@ -467,6 +468,18 @@ def _json_safe_array(values, sanitize_nonfinite: bool):
     return out
 
 
+def _json_safe_nested(value):
+    """JSON 응답에 직접 넣을 수 없는 NaN/Inf float를 null로 바꾼다."""
+
+    if isinstance(value, float):
+        return None if math.isnan(value) or math.isinf(value) else value
+    if isinstance(value, dict):
+        return {key: _json_safe_nested(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_nested(item) for item in value]
+    return value
+
+
 def _timedelta_ns_to_iso(value_ns: int) -> str:
     """부호가 있는 nanosecond delta 하나를 ISO 8601 duration 문자열로 변환한다."""
     total_ns = int(value_ns)
@@ -922,7 +935,7 @@ def array_sample_parquet_traces(req: ArraySampleParquetTraceRequest):
             )
         return {
             "manifest_path": entry.manifest_path,
-            **result,
+            **_json_safe_nested(result),
         }
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

@@ -110,7 +110,7 @@ value       Float64
 의미:
 
 - `mask=1`: 해당 `(feature_id, sample_id)` 값이 present입니다.
-- `mask=0`: missing입니다. 이때 `value`는 조회 결과에서 무시합니다.
+- `mask=0`: missing입니다. Double value column의 물리값은 `NaN`으로 저장합니다. 조회 reader와 API는 `mask=0`을 기준으로 missing을 판단하며, 외부 응답에서는 `null`로 노출합니다.
 - 모든 `(feature_id, sample_id)` 조합이 row로 존재합니다. 즉 sparse long이 아니라 dense long입니다.
 
 물리 정렬은 `feature_id asc, sample_id asc`입니다. feature 단위 조회가 많기 때문에 feature-major 정렬을 사용합니다.
@@ -134,7 +134,7 @@ dense-long build는 다음 순서로 동작합니다.
 1. sample metadata와 feature metadata를 읽어 전체 matrix 크기를 결정합니다.
 2. raw sample parquet의 `(sample_id, feature_id, value)` rows를 읽습니다.
 3. 내부 feature-major 배열에 present value와 valid mask를 채웁니다.
-4. 값이 없는 위치는 valid mask false로 둡니다.
+4. 값이 없는 위치는 `mask=0`, `value=NaN`으로 채웁니다. 이 `NaN` 규칙은 scalar Double value column에만 적용됩니다.
 5. 지정된 target column이 있으면 selection stats를 계산합니다.
 6. feature id 구간별로 dense-long rows를 만들어 part parquet로 씁니다.
 7. feature id가 어느 part의 어느 offset에 있는지 `feature_locator.parquet`에 기록합니다.
@@ -361,7 +361,7 @@ python python\scripts\serve_synthetic_value_api.py --host 127.0.0.1 --port 8010
 }
 ```
 
-`BuildScalarDenseLongFromValueApiMain`과 jar 예제 `BuildScalarDenseLongFromValueApiWithJarExample`는 `present=true`이고 `value`가 null이 아닌 항목만 `writeSample(...)`에 넘깁니다. 나머지는 raw row를 만들지 않고, dense-long materialize 단계에서 `mask=0` missing row로 채워집니다.
+`BuildScalarDenseLongFromValueApiMain`과 jar 예제 `BuildScalarDenseLongFromValueApiWithJarExample`는 `present=true`이고 `value`가 null이 아닌 항목만 `writeSample(...)`에 넘깁니다. 나머지는 raw row를 만들지 않고, dense-long materialize 단계에서 `mask=0, value=NaN` missing row로 채워집니다.
 
 ## 조회 API 서버
 
@@ -397,4 +397,4 @@ Hadoop/Parquet Java writer, Arrow, SLF4J, Woodstox, stax2, commons jar는 현재
 - part parquet schema는 `feature_id`, `sample_id`, `mask`, `value`입니다.
 - part rows는 `feature_id asc, sample_id asc`로 정렬되어야 합니다.
 - 각 feature에는 정확히 `n_samples` rows가 있어야 합니다.
-- `mask=0` row는 조회 결과에서 missing으로 처리해야 합니다.
+- `mask=0` row는 조회 결과에서 missing으로 처리해야 합니다. 내부 parquet의 Double `value`는 `NaN`이지만, 외부 API 응답에서는 JSON 호환성을 위해 `null`로 반환합니다.

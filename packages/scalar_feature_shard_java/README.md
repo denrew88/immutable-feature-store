@@ -253,7 +253,7 @@ python python\scripts\serve_synthetic_value_api.py --host 127.0.0.1 --port 8010
 }
 ```
 
-Java 예제는 `present=true`이고 `value`가 null이 아닌 항목만 raw sample stage에 씁니다. 누락된 값은 dense-long shard 생성 시 `mask=0`으로 채워집니다.
+Java 예제는 `present=true`이고 `value`가 null이 아닌 항목만 raw sample stage에 씁니다. 누락된 값은 dense-long shard 생성 시 `mask=0, value=NaN`으로 채워집니다. 이 `NaN`은 scalar Double value column의 내부 저장 규칙이며, reader/API 사용자는 `mask=0`을 missing으로 해석합니다.
 
 ## Tests
 

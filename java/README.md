@@ -192,7 +192,7 @@ mask        UInt8
 value       Float64
 ```
 
-모든 `(feature_id, sample_id)` 조합이 row로 존재합니다. missing은 `mask=0`입니다. 물리 정렬은 `feature_id asc, sample_id asc`입니다.
+모든 `(feature_id, sample_id)` 조합이 row로 존재합니다. missing은 내부 parquet에서 `mask=0, value=NaN`입니다. reader/API 사용자는 `mask=0`을 missing/null로 해석합니다. 물리 정렬은 `feature_id asc, sample_id asc`입니다.
 
 기본 row group은 feature 128개 단위이며 `BuildShardConfig.denseLongRowGroupFeatures`로 조정할 수 있습니다.
 

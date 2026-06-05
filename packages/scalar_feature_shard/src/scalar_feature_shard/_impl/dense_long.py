@@ -184,7 +184,7 @@ def _write_dense_long_part(
     n_samples = int(sample_ids.shape[0])
     flat_mask = np.asarray(valid, dtype=np.uint8).reshape(-1)
     flat_values = np.asarray(values, dtype=np.float64).reshape(-1)
-    flat_values = np.where(flat_mask.astype(bool, copy=False), flat_values, 0.0).astype(np.float64, copy=False)
+    flat_values = np.where(flat_mask.astype(bool, copy=False), flat_values, np.nan).astype(np.float64, copy=False)
     table = pa.table(
         {
             "feature_id": pa.array(np.repeat(feature_ids, n_samples), type=pa.int32()),

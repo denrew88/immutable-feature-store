@@ -276,7 +276,7 @@ class ArraySampleParquetDatasetBuilder:
             if not os.path.isdir(root):
                 continue
             for name in os.listdir(root):
-                if name.endswith(".tmp") or name.endswith(".lock"):
+                if name.endswith(".tmp"):
                     try:
                         os.remove(os.path.join(root, name))
                     except FileNotFoundError:

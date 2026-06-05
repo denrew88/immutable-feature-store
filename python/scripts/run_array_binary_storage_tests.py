@@ -1,9 +1,15 @@
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import numpy as np
 import polars as pl
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = REPO_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
 from fs.array import open_shard
 from fs.array.binary_storage import (
@@ -16,6 +22,7 @@ from fs.array.metadata import write_feature_meta, write_sample_meta
 from fs.array.storage import ArraySampleBundleWriter
 from fs.config import ArrayBinaryBuildOptions, ArrayBundleConfig, ArrayShardConfig
 from fs.types import LogicalType, PointColumnSpec, StorageType
+from validate_array_binary_shard_exhaustive import validate_manifest as validate_binary_manifest
 
 
 def assert_trace(trace, expected_flags, expected_time, expected_value):
@@ -145,6 +152,10 @@ def main():
     binary_default_manifest = load_array_binary_shard_manifest(binary_default_manifest_path)
     binary_zstd_manifest = load_array_binary_shard_manifest(binary_zstd_manifest_path)
     binary_spill_manifest = load_array_binary_shard_manifest(binary_spill_manifest_path)
+    validate_binary_manifest(binary_manifest_path, bundle_manifest_path)
+    validate_binary_manifest(binary_default_manifest_path, bundle_manifest_path)
+    validate_binary_manifest(binary_zstd_manifest_path, bundle_manifest_path)
+    validate_binary_manifest(binary_spill_manifest_path, bundle_manifest_path)
 
     with open(binary_manifest_path, "r", encoding="utf-8") as f:
         binary_manifest_json = json.load(f)
@@ -307,6 +318,7 @@ def main():
         str(root / "binary_v3_shards"),
         config=ArrayShardConfig(samples_per_block=4, target_shard_bytes=300),
     )
+    validate_binary_manifest(binary_v3_manifest_path, custom_bundle_manifest_path)
     binary_v3_manifest = load_array_binary_shard_manifest(binary_v3_manifest_path)
     assert int(binary_v3_manifest.version) == 3
     assert [spec.name for spec in binary_v3_manifest.point_schema] == ["phase", "state_code", "event_type"]
