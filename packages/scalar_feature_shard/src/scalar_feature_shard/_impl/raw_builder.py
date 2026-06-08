@@ -27,6 +27,8 @@ RAW_SAMPLE_PADDING = 12
 RAW_FORMAT_NAME = "scalar-raw-samples"
 FILE_REPLACE_RETRY_COUNT = 10
 FILE_REPLACE_RETRY_BASE_SECONDS = 0.025
+DEFAULT_STAGE_LOCK_TIMEOUT_SECONDS = 30.0
+STAGE_LOCK_TIMEOUT_ENV = "SCALAR_RAW_STAGE_LOCK_TIMEOUT_SECONDS"
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,7 @@ class ScalarDatasetBuilder:
 
         self.raw_samples_path = os.path.join(self.out_dir, "raw_samples")
         self.state_path = os.path.join(self.out_dir, "raw_state.json")
+        self.raw_stage_lock_path = os.path.join(self.out_dir, "raw_stage.lock")
         self.raw_log_path = os.path.join(self.out_dir, "raw_samples.jsonl")
         self.raw_log_lock_path = os.path.join(self.out_dir, "raw_samples.jsonl.lock")
         self.sample_major_manifest_path = os.path.join(self.out_dir, "sample_major_manifest.json")
@@ -170,6 +173,7 @@ class ScalarDatasetBuilder:
         return payload
 
     def _state_payload(self) -> dict:
+        finalized = bool(self._finished_stage or os.path.exists(self.sample_major_manifest_path))
         return {
             "format": RAW_FORMAT_NAME,
             "raw_state_version": RAW_STATE_VERSION,
@@ -178,8 +182,8 @@ class ScalarDatasetBuilder:
             "options": self._options_payload(),
             "feature_keys_in_order": list(self._feature_keys_in_order),
             "known_feature_count": self._known_feature_count,
-            "finished_stage": bool(self._finished_stage),
-            "sample_major_manifest_path": self.sample_major_manifest_path if self._finished_stage else None,
+            "finished_stage": finalized,
+            "sample_major_manifest_path": self.sample_major_manifest_path if finalized else None,
         }
 
     def _save_state(self):
@@ -281,6 +285,25 @@ class ScalarDatasetBuilder:
             if name.endswith(".tmp") and (name == legacy_name or name.startswith(unique_prefix)):
                 _remove_file_best_effort(os.path.join(self.raw_samples_path, name))
 
+    def _active_sample_lock_paths(self) -> list[str]:
+        if not os.path.isdir(self.raw_samples_path):
+            return []
+        return sorted(
+            os.path.join(self.raw_samples_path, name)
+            for name in os.listdir(self.raw_samples_path)
+            if name.startswith("sample_") and name.endswith(".parquet.lock")
+        )
+
+    def _wait_for_no_active_sample_locks(self):
+        deadline = time.monotonic() + _stage_lock_timeout_seconds()
+        while True:
+            locks = self._active_sample_lock_paths()
+            if not locks:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"active scalar sample locks remain: {locks[:5]}")
+            time.sleep(0.05)
+
     def _sample_key_for_id(self, sample_id: Optional[int]) -> Optional[str]:
         if sample_id is None or int(sample_id) < 0 or int(sample_id) >= int(self.n_samples):
             return None
@@ -333,7 +356,20 @@ class ScalarDatasetBuilder:
     def _raw_sample_rel_path(self, sample_id: int) -> str:
         return os.path.relpath(self._raw_sample_path(sample_id), self.out_dir).replace("\\", "/")
 
-    def _raw_commit_records(self) -> dict[int, dict]:
+    def _raw_sample_id_from_filename(self, name: str) -> Optional[int]:
+        prefix = "sample_"
+        suffix = ".parquet"
+        if not name.startswith(prefix) or not name.endswith(suffix):
+            return None
+        raw_id = name[len(prefix) : -len(suffix)]
+        if not raw_id.isdigit():
+            return None
+        sample_id = int(raw_id)
+        if sample_id < 0 or sample_id >= int(self.n_samples):
+            return None
+        return sample_id
+
+    def _read_raw_commit_records_unlocked(self) -> dict[int, dict]:
         records: dict[int, dict] = {}
         if not os.path.exists(self.raw_log_path):
             return records
@@ -347,14 +383,52 @@ class ScalarDatasetBuilder:
                 except json.JSONDecodeError:
                     break
                 sample_id = int(row["sample_id"])
-                records[sample_id] = row
+                path = os.path.join(self.out_dir, str(row.get("path", "")))
+                if 0 <= sample_id < int(self.n_samples) and os.path.exists(path):
+                    records[sample_id] = row
         return records
+
+    def _reconcile_raw_commit_records(self):
+        lock = _FileLock(self.raw_log_lock_path, timeout_seconds=_stage_lock_timeout_seconds())
+        lock.acquire()
+        try:
+            records = self._read_raw_commit_records_unlocked()
+            additions: list[dict] = []
+            if os.path.isdir(self.raw_samples_path):
+                for name in sorted(os.listdir(self.raw_samples_path)):
+                    sample_id = self._raw_sample_id_from_filename(name)
+                    if sample_id is None or sample_id in records:
+                        continue
+                    path = self._raw_sample_path(sample_id)
+                    if not os.path.isfile(path):
+                        continue
+                    parquet_file = pq.ParquetFile(path)
+                    record = {
+                        "sample_id": int(sample_id),
+                        "sample_key": self._sample_key_for_id(sample_id),
+                        "path": self._raw_sample_rel_path(sample_id),
+                        "row_count": int(parquet_file.metadata.num_rows),
+                        "byte_size": int(os.path.getsize(path)),
+                    }
+                    additions.append(record)
+                    records[sample_id] = record
+            if additions:
+                with open(self.raw_log_path, "a", encoding="utf-8") as f:
+                    for record in sorted(additions, key=lambda item: int(item["sample_id"])):
+                        f.write(json.dumps(record, ensure_ascii=False))
+                        f.write("\n")
+        finally:
+            lock.release()
+
+    def _raw_commit_records(self) -> dict[int, dict]:
+        self._reconcile_raw_commit_records()
+        return self._read_raw_commit_records_unlocked()
 
     def _append_raw_commit(self, record: dict):
         lock = _FileLock(self.raw_log_lock_path)
         lock.acquire()
         try:
-            records = self._raw_commit_records()
+            records = self._read_raw_commit_records_unlocked()
             sample_id = int(record["sample_id"])
             if sample_id in records:
                 return
@@ -366,6 +440,9 @@ class ScalarDatasetBuilder:
 
     def is_sample_completed(self, sample_id: int) -> bool:
         return int(sample_id) in self._raw_commit_records()
+
+    def _is_raw_sample_file_completed(self, sample_id: int) -> bool:
+        return os.path.exists(self._raw_sample_path(sample_id))
 
     def completed_sample_ids(self) -> list[int]:
         return sorted(self._raw_commit_records().keys())
@@ -403,20 +480,27 @@ class ScalarDatasetBuilder:
         이미 완료된 sample을 건너뛰면 `False`를 반환합니다.
         """
 
-        if self._finished_stage:
+        if self._finished_stage or os.path.exists(self.sample_major_manifest_path):
             raise RuntimeError("raw scalar stage is already finalized")
         sample_id = self._resolve_sample_id(sample_id=sample_id, sample_key=sample_key)
-        if self.is_sample_completed(sample_id):
-            if skip_if_completed:
-                return False
-            raise ValueError(f"sample already completed: {sample_id}")
-
-        lock = _FileLock(self._raw_sample_path(sample_id) + ".lock")
-        lock.acquire()
         final_path = self._raw_sample_path(sample_id)
+        stage_lock = _FileLock(self.raw_stage_lock_path, timeout_seconds=_stage_lock_timeout_seconds())
+        sample_lock: Optional[_FileLock] = None
+        stage_lock.acquire()
+        try:
+            if self._finished_stage or os.path.exists(self.sample_major_manifest_path):
+                raise RuntimeError("raw scalar stage is already finalized")
+            if self._is_raw_sample_file_completed(sample_id):
+                if skip_if_completed:
+                    return False
+                raise ValueError(f"sample already completed: {sample_id}")
+            sample_lock = _FileLock(final_path + ".lock", timeout_seconds=_stage_lock_timeout_seconds())
+            sample_lock.acquire()
+        finally:
+            stage_lock.release()
         tmp_path = f"{final_path}.{uuid.uuid4().hex}.tmp"
         try:
-            if self.is_sample_completed(sample_id):
+            if self._is_raw_sample_file_completed(sample_id):
                 if skip_if_completed:
                     return False
                 raise ValueError(f"sample already completed: {sample_id}")
@@ -455,9 +539,10 @@ class ScalarDatasetBuilder:
             _remove_file_best_effort(tmp_path)
             raise
         finally:
-            lock.release()
+            if sample_lock is not None:
+                sample_lock.release()
 
-    def finish_stage(self):
+    def finish_stage(self, *, require_all: bool = False):
         """raw sample 파일 목록을 sample-major manifest로 확정합니다.
 
         이 단계는 raw parquet를 다시 쓰지 않습니다. commit log에 있는 sample 파일
@@ -466,29 +551,44 @@ class ScalarDatasetBuilder:
         manifest를 그대로 입력으로 사용할 수 있습니다.
         """
 
-        if self._finished_stage:
+        if self._finished_stage or os.path.exists(self.sample_major_manifest_path):
+            self._finished_stage = True
             return self.sample_major_manifest_path
-        records = self._raw_commit_records()
-        sample_paths = [
-            os.path.relpath(os.path.join(self.out_dir, records[sample_id]["path"]), self.out_dir).replace("\\", "/")
-            for sample_id in sorted(records)
-        ]
-        payload = {
-            "format": SAMPLE_MAJOR_MANIFEST_FORMAT,
-            "sample_meta_path": os.path.relpath(self.sample_meta_path, self.out_dir).replace("\\", "/"),
-            "feature_meta_path": os.path.relpath(self.feature_meta_path, self.out_dir).replace("\\", "/"),
-            "sample_paths": sample_paths,
-            "sample_ids": [int(sample_id) for sample_id in sorted(records)],
-            "sample_id_col": str(self.build_options.sample_id_col),
-            "feature_id_col": str(self.build_options.feature_id_col),
-            "value_col": str(self.build_options.value_col),
-            "raw_sample_stage": True,
-            "completed_sample_count": int(len(records)),
-        }
-        write_json_atomic(self.sample_major_manifest_path, payload)
-        self._finished_stage = True
-        self._save_state()
-        return self.sample_major_manifest_path
+        stage_lock = _FileLock(self.raw_stage_lock_path, timeout_seconds=_stage_lock_timeout_seconds())
+        stage_lock.acquire()
+        try:
+            if self._finished_stage or os.path.exists(self.sample_major_manifest_path):
+                self._finished_stage = True
+                self._save_state()
+                return self.sample_major_manifest_path
+            self._wait_for_no_active_sample_locks()
+            records = self._raw_commit_records()
+            if require_all:
+                pending = [sample_id for sample_id in range(int(self.n_samples)) if sample_id not in records]
+                if pending:
+                    raise ValueError(f"cannot finish scalar stage: {len(pending)} samples are still pending")
+            sample_paths = [
+                os.path.relpath(os.path.join(self.out_dir, records[sample_id]["path"]), self.out_dir).replace("\\", "/")
+                for sample_id in sorted(records)
+            ]
+            payload = {
+                "format": SAMPLE_MAJOR_MANIFEST_FORMAT,
+                "sample_meta_path": os.path.relpath(self.sample_meta_path, self.out_dir).replace("\\", "/"),
+                "feature_meta_path": os.path.relpath(self.feature_meta_path, self.out_dir).replace("\\", "/"),
+                "sample_paths": sample_paths,
+                "sample_ids": [int(sample_id) for sample_id in sorted(records)],
+                "sample_id_col": str(self.build_options.sample_id_col),
+                "feature_id_col": str(self.build_options.feature_id_col),
+                "value_col": str(self.build_options.value_col),
+                "raw_sample_stage": True,
+                "completed_sample_count": int(len(records)),
+            }
+            write_json_atomic(self.sample_major_manifest_path, payload)
+            self._finished_stage = True
+            self._save_state()
+            return self.sample_major_manifest_path
+        finally:
+            stage_lock.release()
 
     def build_dense_long_shards(
         self,
@@ -500,11 +600,7 @@ class ScalarDatasetBuilder:
         keep_raw: bool = True,
         return_stats: bool = False,
     ):
-        if require_all:
-            pending = self.pending_sample_ids()
-            if pending:
-                raise ValueError(f"cannot build dense-long shards: {len(pending)} samples are still pending")
-        manifest_path = self.finish_stage()
+        manifest_path = self.finish_stage(require_all=bool(require_all))
         dense_out_dir = str(Path(out_dir or os.path.join(self.out_dir, "scalar_shard")).expanduser().resolve())
         result = build_dense_long_shards_from_sample_major_manifest(
             manifest_path,
@@ -570,6 +666,16 @@ def _replace_file_with_retry(tmp_path: str, final_path: str):
                 break
             time.sleep(FILE_REPLACE_RETRY_BASE_SECONDS * float(attempt + 1))
     raise last_error or OSError(f"failed to replace {final_path!r} with {tmp_path!r}")
+
+
+def _stage_lock_timeout_seconds() -> float:
+    raw = os.environ.get(STAGE_LOCK_TIMEOUT_ENV)
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_STAGE_LOCK_TIMEOUT_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_STAGE_LOCK_TIMEOUT_SECONDS
 
 
 def _remove_file_best_effort(path: str):

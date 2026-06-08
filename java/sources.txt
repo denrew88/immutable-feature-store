@@ -97,5 +97,6 @@ C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunBuilderSessio
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarBuilderTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarConcurrentBuilderTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarNotebookBuilderTestsMain.java
+C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunScalarRawStageRecoveryContractTestsMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunSelectionMain.java
 C:\Users\denrew88\Documents\Study\Codex\duckDB\java\src\scripts\RunTestsMain.java

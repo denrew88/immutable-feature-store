@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import fs.config.BuildShardConfig;
 import fs.io.common.ArrayMetadataWriter;
+import fs.io.common.DuckDBUtils;
 import fs.io.common.JsonUtils;
 import fs.io.scalar.ScalarDenseLongShardBuilder;
 import fs.io.scalar.ScalarFileLock;
@@ -18,6 +19,9 @@ import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Collections;
@@ -39,6 +43,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
     private static final int RAW_SAMPLE_PADDING = 12;
     private static final int FILE_OPERATION_RETRY_COUNT = 10;
     private static final long FILE_OPERATION_RETRY_BASE_MILLIS = 25L;
+    private static final long DEFAULT_STAGE_LOCK_TIMEOUT_MILLIS = 30000L;
 
     private final File outDir;
     private final File rawSamplesDir;
@@ -47,6 +52,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
     private final String sampleMetaPath;
     private final String featureMetaPath;
     private final String rawLogPath;
+    private final String rawStageLockPath;
     private final String statePath;
     private final String sampleMajorManifestPath;
     private final BuildShardConfig buildConfig;
@@ -79,6 +85,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         this.sampleMetaPath = new File(this.outDir, "sample_meta.parquet").getAbsolutePath();
         this.featureMetaPath = new File(this.outDir, "feature_meta.parquet").getAbsolutePath();
         this.rawLogPath = new File(this.outDir, "raw_samples.jsonl").getAbsolutePath();
+        this.rawStageLockPath = new File(this.outDir, "raw_stage.lock").getAbsolutePath();
         this.statePath = new File(this.outDir, "raw_state.json").getAbsolutePath();
         this.sampleMajorManifestPath = new File(this.outDir, "sample_major_manifest.json").getAbsolutePath();
         this.buildConfig = buildConfig == null ? new BuildShardConfig() : buildConfig;
@@ -145,24 +152,31 @@ public class ScalarDatasetBuilder implements AutoCloseable {
     public void writeSample(long sampleId, Map<?, ?> values, boolean skipIfCompleted) throws Exception {
         ensureOpenForWrites();
         validateSampleId(sampleId);
-        if (isSampleCompleted(sampleId)) {
-            if (skipIfCompleted) {
-                return;
-            }
-            throw new IllegalArgumentException("sample already completed: " + sampleId);
-        }
-
-        ScalarFileLock lock = new ScalarFileLock(rawSamplePath(sampleId) + ".lock");
-        lock.acquire();
+        String finalPath = rawSamplePath(sampleId);
+        ScalarFileLock stageLock = new ScalarFileLock(rawStageLockPath, stageLockTimeoutMillis());
+        ScalarFileLock lock = null;
+        stageLock.acquire();
         try {
-            if (isSampleCompleted(sampleId)) {
+            ensureOpenForWrites();
+            if (isRawSampleFileCompleted(sampleId)) {
+                if (skipIfCompleted) {
+                    return;
+                }
+                throw new IllegalArgumentException("sample already completed: " + sampleId);
+            }
+            lock = new ScalarFileLock(finalPath + ".lock", stageLockTimeoutMillis());
+            lock.acquire();
+        } finally {
+            stageLock.release();
+        }
+        try {
+            if (isRawSampleFileCompleted(sampleId)) {
                 if (skipIfCompleted) {
                     return;
                 }
                 throw new IllegalArgumentException("sample already completed: " + sampleId);
             }
             LinkedHashMap<Integer, Double> normalized = normalizeValues(values);
-            String finalPath = rawSamplePath(sampleId);
             cleanupSampleTmpFiles(sampleId);
             File tmpFile = uniqueRawSampleTmpFile(finalPath);
             try {
@@ -173,7 +187,9 @@ public class ScalarDatasetBuilder implements AutoCloseable {
                 deleteQuietly(tmpFile);
             }
         } finally {
-            lock.release();
+            if (lock != null) {
+                lock.release();
+            }
         }
     }
 
@@ -190,32 +206,45 @@ public class ScalarDatasetBuilder implements AutoCloseable {
      */
     public String finishStage(boolean requireAll) throws Exception {
         ensureOpen();
-        if (finishedStage) {
+        if (finishedStage || new File(sampleMajorManifestPath).exists()) {
+            finishedStage = true;
             return sampleMajorManifestPath;
         }
-        ScalarBuildSessionStatus status = status();
-        if (requireAll && !status.pendingSampleIds.isEmpty()) {
-            throw new IllegalStateException("cannot finish scalar stage: pending sample count=" + status.pendingSampleIds.size());
+        ScalarFileLock stageLock = new ScalarFileLock(rawStageLockPath, stageLockTimeoutMillis());
+        stageLock.acquire();
+        try {
+            if (finishedStage || new File(sampleMajorManifestPath).exists()) {
+                finishedStage = true;
+                saveState();
+                return sampleMajorManifestPath;
+            }
+            waitForNoActiveSampleLocks();
+            ScalarBuildSessionStatus status = status();
+            if (requireAll && !status.pendingSampleIds.isEmpty()) {
+                throw new IllegalStateException("cannot finish scalar stage: pending sample count=" + status.pendingSampleIds.size());
+            }
+            List<Long> completed = completedSampleIds();
+            Collections.sort(completed);
+            ArrayList<String> paths = new ArrayList<String>(completed.size());
+            for (Long sampleId : completed) {
+                paths.add(rawSamplePath(sampleId.longValue()));
+            }
+            ScalarSampleMajorManifestIO.write(
+                    new ScalarSampleMajorManifest(
+                            sampleMetaPath,
+                            featureMetaPath,
+                            paths,
+                            completed,
+                            buildConfig.sampleIdCol,
+                            buildConfig.featureIdCol,
+                            buildConfig.valueCol),
+                    sampleMajorManifestPath);
+            finishedStage = true;
+            saveState();
+            return sampleMajorManifestPath;
+        } finally {
+            stageLock.release();
         }
-        List<Long> completed = completedSampleIds();
-        Collections.sort(completed);
-        ArrayList<String> paths = new ArrayList<String>(completed.size());
-        for (Long sampleId : completed) {
-            paths.add(rawSamplePath(sampleId.longValue()));
-        }
-        ScalarSampleMajorManifestIO.write(
-                new ScalarSampleMajorManifest(
-                        sampleMetaPath,
-                        featureMetaPath,
-                        paths,
-                        completed,
-                        buildConfig.sampleIdCol,
-                        buildConfig.featureIdCol,
-                        buildConfig.valueCol),
-                sampleMajorManifestPath);
-        finishedStage = true;
-        saveState();
-        return sampleMajorManifestPath;
     }
 
     public String buildDenseLongShards(boolean requireAll, String denseLongOutDir) throws Exception {
@@ -388,9 +417,12 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         node.put("sample_key", sampleKeyForId(sampleId));
         node.put("path", relativeTo(outDir.getAbsolutePath(), path));
         node.put("row_count", rowCount);
-        ScalarFileLock lock = new ScalarFileLock(rawLogPath + ".lock");
+        ScalarFileLock lock = new ScalarFileLock(rawLogPath + ".lock", stageLockTimeoutMillis());
         lock.acquire();
         try {
+            if (readCompletedSampleIdsFromLog().contains(Long.valueOf(sampleId))) {
+                return;
+            }
             JsonUtils.appendJsonLine(rawLogPath, node);
         } finally {
             lock.release();
@@ -398,6 +430,11 @@ public class ScalarDatasetBuilder implements AutoCloseable {
     }
 
     private List<Long> completedSampleIds() throws IOException {
+        reconcileRawCommitLog();
+        return readCompletedSampleIdsFromLog();
+    }
+
+    private List<Long> readCompletedSampleIdsFromLog() throws IOException {
         ArrayList<Long> out = new ArrayList<Long>();
         BitSet seen = new BitSet(nSamples);
         for (JsonNode item : JsonUtils.readJsonLines(rawLogPath)) {
@@ -415,11 +452,95 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         return out;
     }
 
+    private void reconcileRawCommitLog() throws IOException {
+        ScalarFileLock lock = new ScalarFileLock(rawLogPath + ".lock", stageLockTimeoutMillis());
+        lock.acquire();
+        try {
+            List<Long> completed = readCompletedSampleIdsFromLog();
+            BitSet seen = new BitSet(nSamples);
+            for (Long sampleId : completed) {
+                long value = sampleId.longValue();
+                if (value >= 0L && value < nSamples) {
+                    seen.set((int) value);
+                }
+            }
+            ArrayList<Long> additions = new ArrayList<Long>();
+            File[] files = rawSamplesDir.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    Long sampleId = sampleIdFromRawSampleFile(file);
+                    if (sampleId == null || seen.get((int) sampleId.longValue())) {
+                        continue;
+                    }
+                    additions.add(sampleId);
+                    seen.set((int) sampleId.longValue());
+                }
+            }
+            Collections.sort(additions);
+            for (Long sampleId : additions) {
+                File path = new File(rawSamplePath(sampleId.longValue()));
+                ObjectNode node = JsonUtils.objectNode();
+                node.put("sample_id", sampleId.longValue());
+                node.put("sample_key", sampleKeyForId(sampleId.longValue()));
+                node.put("path", relativeTo(outDir.getAbsolutePath(), path.getAbsolutePath()));
+                node.put("row_count", countParquetRows(path.getAbsolutePath()));
+                node.put("byte_size", path.length());
+                JsonUtils.appendJsonLine(rawLogPath, node);
+            }
+        } finally {
+            lock.release();
+        }
+    }
+
+    private Long sampleIdFromRawSampleFile(File file) {
+        if (file == null || !file.isFile()) {
+            return null;
+        }
+        String name = file.getName();
+        String prefix = "sample_";
+        String suffix = ".parquet";
+        if (!name.startsWith(prefix) || !name.endsWith(suffix)) {
+            return null;
+        }
+        String raw = name.substring(prefix.length(), name.length() - suffix.length());
+        if (raw.isEmpty()) {
+            return null;
+        }
+        for (int i = 0; i < raw.length(); i++) {
+            if (!Character.isDigit(raw.charAt(i))) {
+                return null;
+            }
+        }
+        long sampleId = Long.parseLong(raw);
+        if (sampleId < 0L || sampleId >= nSamples) {
+            return null;
+        }
+        return Long.valueOf(sampleId);
+    }
+
+    private static int countParquetRows(String path) throws IOException {
+        try (Connection conn = DuckDBUtils.connect(null);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM read_parquet(" + DuckDBUtils.quotePath(path) + ")")) {
+            if (!rs.next()) {
+                return 0;
+            }
+            return (int) rs.getLong(1);
+        } catch (Exception e) {
+            throw new IOException("failed to count raw sample parquet rows: " + path, e);
+        }
+    }
+
     private boolean isSampleCompleted(long sampleId) throws IOException {
         return completedSampleIds().contains(Long.valueOf(sampleId));
     }
 
+    private boolean isRawSampleFileCompleted(long sampleId) {
+        return new File(rawSamplePath(sampleId)).isFile();
+    }
+
     private void saveState() throws IOException {
+        boolean finalized = finishedStage || new File(sampleMajorManifestPath).exists();
         ObjectNode root = JsonUtils.objectNode();
         root.put("format", "scalar_raw_stage_v1");
         root.put("raw_state_version", RAW_STATE_VERSION);
@@ -427,7 +548,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         root.put("feature_meta_source_path", featureMetaSourcePath);
         root.put("sample_meta_path", sampleMetaPath);
         root.put("feature_meta_path", featureMetaPath);
-        root.put("finished_stage", finishedStage);
+        root.put("finished_stage", finalized);
         root.put("n_samples", nSamples);
         com.fasterxml.jackson.databind.node.ArrayNode keys = root.putArray("feature_keys_in_order");
         for (String key : featureKeysInOrder) {
@@ -471,7 +592,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
 
     private void ensureOpenForWrites() {
         ensureOpen();
-        if (finishedStage) {
+        if (finishedStage || new File(sampleMajorManifestPath).exists()) {
             throw new IllegalStateException("scalar stage has already been finalized");
         }
     }
@@ -503,8 +624,66 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         }
     }
 
+    private void waitForNoActiveSampleLocks() throws IOException {
+        long deadline = System.currentTimeMillis() + stageLockTimeoutMillis();
+        while (true) {
+            ArrayList<String> locks = activeSampleLockPaths();
+            if (locks.isEmpty()) {
+                return;
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                throw new IOException("active scalar sample locks remain: " + locks);
+            }
+            try {
+                Thread.sleep(50L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("interrupted while waiting for active scalar sample locks", e);
+            }
+        }
+    }
+
+    private ArrayList<String> activeSampleLockPaths() {
+        ArrayList<String> out = new ArrayList<String>();
+        File[] files = rawSamplesDir.listFiles();
+        if (files == null) {
+            return out;
+        }
+        for (File file : files) {
+            String name = file.getName();
+            if (file.isFile() && name.startsWith("sample_") && name.endsWith(".parquet.lock")) {
+                out.add(file.getAbsolutePath());
+            }
+        }
+        Collections.sort(out);
+        return out;
+    }
+
     private static File uniqueRawSampleTmpFile(String finalPath) {
         return new File(finalPath + "." + UUID.randomUUID().toString() + ".tmp").getAbsoluteFile();
+    }
+
+    private static long stageLockTimeoutMillis() {
+        String value = System.getProperty("fs.scalar.rawStageLockTimeoutMillis");
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getenv("SCALAR_RAW_STAGE_LOCK_TIMEOUT_MILLIS");
+        }
+        if (value == null || value.trim().isEmpty()) {
+            String seconds = System.getenv("SCALAR_RAW_STAGE_LOCK_TIMEOUT_SECONDS");
+            if (seconds != null && !seconds.trim().isEmpty()) {
+                try {
+                    return Math.max(0L, (long) (Double.parseDouble(seconds) * 1000.0));
+                } catch (NumberFormatException ignored) {
+                    return DEFAULT_STAGE_LOCK_TIMEOUT_MILLIS;
+                }
+            }
+            return DEFAULT_STAGE_LOCK_TIMEOUT_MILLIS;
+        }
+        try {
+            return Math.max(0L, Long.parseLong(value));
+        } catch (NumberFormatException ignored) {
+            return DEFAULT_STAGE_LOCK_TIMEOUT_MILLIS;
+        }
     }
 
     private static ArrayList<String> loadKeys(List<LinkedHashMap<String, Object>> rows, String keyCol) {

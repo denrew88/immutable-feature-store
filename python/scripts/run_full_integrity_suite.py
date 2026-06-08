@@ -269,11 +269,21 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "Scalar Python concurrency",
         _python_script("run_scalar_concurrent_builder_tests.py", "--n-samples", "24", "--n-features", "128", "--n-workers", "6"),
     ),
+    CommandSpec(
+        "scalar.python.raw_recovery",
+        "Scalar Python raw-stage recovery/finalize locks",
+        _python_script("run_scalar_raw_stage_recovery_contract_tests.py"),
+    ),
     CommandSpec("scalar.java.builder", "Scalar Java builder", _java_main("scripts.RunScalarBuilderTestsMain")),
     CommandSpec(
         "scalar.java.concurrency",
         "Scalar Java concurrency",
         _java_main("scripts.RunScalarConcurrentBuilderTestsMain", "--n-samples", "24", "--n-features", "128", "--n-workers", "6"),
+    ),
+    CommandSpec(
+        "scalar.java.raw_recovery",
+        "Scalar Java raw-stage recovery/finalize locks",
+        _java_main("scripts.RunScalarRawStageRecoveryContractTestsMain"),
     ),
     CommandSpec("array.parquet.python", "Array sample parquet Python direct/API", _python_script("run_array_sample_parquet_tests.py")),
     CommandSpec(
@@ -365,6 +375,8 @@ CHECKS: tuple[CheckSpec, ...] = (
     CheckSpec("5.2", "Scalar 여러 worker 동시 write 후 commit/state/manifest 보존", ("scalar.python.concurrency", "scalar.java.concurrency")),
     CheckSpec("5.3", "Scalar 중단 후 재개 completed/pending 확인", ("scalar.python.package", "scalar.python.concurrency", "scalar.java.concurrency")),
     CheckSpec("5.4", "Scalar skip_if_completed=True overwrite 방지", ("scalar.python.package", "scalar.java.builder")),
+    CheckSpec("5.5", "Scalar final parquet 존재/commit log 누락 시 reconcile 복구", ("scalar.python.raw_recovery", "scalar.java.raw_recovery")),
+    CheckSpec("5.6", "Scalar finish/build stage lock과 active sample lock 경계 검증", ("scalar.python.raw_recovery", "scalar.java.raw_recovery")),
     CheckSpec("6.1", "Array sample parquet raw sample files 기준 compact final 전수 비교", ("array.parquet.python", "array.parquet.python.concurrency")),
     CheckSpec("6.2", "Array trace_index_parts row range 검증", ("array.parquet.python",)),
     CheckSpec("6.3", "Array part row count, trace count, sort order 검증", ("array.parquet.python", "array.parquet.python.concurrency")),
