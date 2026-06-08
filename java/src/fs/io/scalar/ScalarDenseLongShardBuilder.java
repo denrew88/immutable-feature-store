@@ -169,6 +169,10 @@ public final class ScalarDenseLongShardBuilder {
             int nFeatures,
             int partFeatures) throws SQLException {
         String y = DuckDBUtils.quoteIdentifier(yCol);
+        // n_y_overlap은 Y가 finite인 sample 수가 아니라
+        // `(feature value가 finite로 존재함) AND (Y가 finite임)`의 교집합 크기다.
+        // raw_values view가 이미 finite X만 포함하지만, stats SQL 자체도 같은 전제를
+        // 명시해 두어 raw view 정의가 바뀌어도 Y-only count로 퇴화하지 않게 한다.
         String query =
                 "WITH features AS (SELECT CAST(range AS INTEGER) AS feature_id FROM range(0, " + nFeatures + ")), "
                         + "ys AS (SELECT CAST(sample_id AS BIGINT) AS sample_id, CAST(" + y + " AS DOUBLE) AS y "
@@ -178,7 +182,8 @@ public final class ScalarDenseLongShardBuilder {
                         + "SUM(x.value)::DOUBLE AS sx, SUM(x.value * x.value)::DOUBLE AS sx2, "
                         + "SUM(ys.y)::DOUBLE AS sy, SUM(ys.y * ys.y)::DOUBLE AS sy2, "
                         + "SUM(x.value * ys.y)::DOUBLE AS sxy "
-                        + "FROM raw_values x JOIN ys USING(sample_id) GROUP BY x.feature_id) "
+                        + "FROM raw_values x JOIN ys USING(sample_id) "
+                        + "WHERE x.value IS NOT NULL AND NOT isnan(x.value) GROUP BY x.feature_id) "
                         + "SELECT f.feature_id, "
                         + "CAST(floor(f.feature_id / " + partFeatures + ") AS INTEGER) AS part_id, "
                         + "CAST(f.feature_id % " + partFeatures + " AS INTEGER) AS offset_in_part, "

@@ -263,6 +263,19 @@ def _compare_outputs(py_manifest_path: Path, java_manifest_path: Path):
         py_stats = pl.read_parquet(_resolve(py_manifest_path, str(py_manifest["selection_stats"][y_col]))).sort("feature_id")
         java_stats = pl.read_parquet(_resolve(java_manifest_path, str(java_manifest["selection_stats"][y_col]))).sort("feature_id")
         _assert_frame_equal(f"selection_stats.{y_col}", py_stats, java_stats, r2_atol=1e-10)
+        _assert_stats_are_not_y_only(py_manifest_path, py_manifest, y_col, py_stats)
+        _assert_stats_are_not_y_only(java_manifest_path, java_manifest, y_col, java_stats)
+
+
+def _assert_stats_are_not_y_only(manifest_path: Path, manifest: dict, y_col: str, stats: pl.DataFrame):
+    sample_meta = pl.read_parquet(_resolve(manifest_path, str(manifest["sample_meta_path"])), columns=[y_col])
+    y = sample_meta[y_col].to_numpy().astype(np.float64, copy=False)
+    y_valid_count = int((~np.isnan(y)).sum())
+    if y_valid_count <= 0:
+        return
+    overlaps = stats["n_y_overlap"].to_numpy().astype(np.int64, copy=False)
+    if not bool(np.any(overlaps < y_valid_count)):
+        raise AssertionError(f"{manifest_path}: {y_col} n_y_overlap looks like Y-only count")
 
 
 def main(argv=None):

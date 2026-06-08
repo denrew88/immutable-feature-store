@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,6 +25,8 @@ from .storage_common import SAMPLE_MAJOR_MANIFEST_FORMAT, load_dense_metadata, w
 RAW_STATE_VERSION = 1
 RAW_SAMPLE_PADDING = 12
 RAW_FORMAT_NAME = "scalar-raw-samples"
+FILE_REPLACE_RETRY_COUNT = 10
+FILE_REPLACE_RETRY_BASE_SECONDS = 0.025
 
 
 @dataclass(frozen=True)
@@ -266,10 +269,17 @@ class ScalarDatasetBuilder:
             return
         for name in os.listdir(self.raw_samples_path):
             if name.endswith(".tmp"):
-                try:
-                    os.remove(os.path.join(self.raw_samples_path, name))
-                except FileNotFoundError:
-                    pass
+                _remove_file_best_effort(os.path.join(self.raw_samples_path, name))
+
+    def _cleanup_sample_tmp_files(self, sample_id: int):
+        if not os.path.isdir(self.raw_samples_path):
+            return
+        final_name = os.path.basename(self._raw_sample_path(sample_id))
+        legacy_name = final_name + ".tmp"
+        unique_prefix = final_name + "."
+        for name in os.listdir(self.raw_samples_path):
+            if name.endswith(".tmp") and (name == legacy_name or name.startswith(unique_prefix)):
+                _remove_file_best_effort(os.path.join(self.raw_samples_path, name))
 
     def _sample_key_for_id(self, sample_id: Optional[int]) -> Optional[str]:
         if sample_id is None or int(sample_id) < 0 or int(sample_id) >= int(self.n_samples):
@@ -403,16 +413,14 @@ class ScalarDatasetBuilder:
 
         lock = _FileLock(self._raw_sample_path(sample_id) + ".lock")
         lock.acquire()
-        tmp_path = self._raw_sample_path(sample_id) + ".tmp"
+        final_path = self._raw_sample_path(sample_id)
+        tmp_path = f"{final_path}.{uuid.uuid4().hex}.tmp"
         try:
             if self.is_sample_completed(sample_id):
                 if skip_if_completed:
                     return False
                 raise ValueError(f"sample already completed: {sample_id}")
-            try:
-                os.remove(tmp_path)
-            except FileNotFoundError:
-                pass
+            self._cleanup_sample_tmp_files(sample_id)
             feature_values: dict[int, float] = {}
             for feature_ref, value in dict(values or {}).items():
                 normalized = self._normalize_scalar_value(value)
@@ -433,21 +441,18 @@ class ScalarDatasetBuilder:
                 }
             )
             pq.write_table(table, tmp_path, compression=_pyarrow_compression("zstd"), use_dictionary=True)
-            os.replace(tmp_path, self._raw_sample_path(sample_id))
+            _replace_file_with_retry(tmp_path, final_path)
             record = {
                 "sample_id": int(sample_id),
                 "sample_key": self._sample_key_for_id(sample_id),
                 "path": self._raw_sample_rel_path(sample_id),
                 "row_count": int(feature_ids.shape[0]),
-                "byte_size": int(os.path.getsize(self._raw_sample_path(sample_id))),
+                "byte_size": int(os.path.getsize(final_path)),
             }
             self._append_raw_commit(record)
             return True
         except Exception:
-            try:
-                os.remove(tmp_path)
-            except FileNotFoundError:
-                pass
+            _remove_file_best_effort(tmp_path)
             raise
         finally:
             lock.release()
@@ -551,6 +556,40 @@ class ScalarDatasetBuilder:
     def __exit__(self, exc_type, exc, tb):
         self.close()
         return False
+
+
+def _replace_file_with_retry(tmp_path: str, final_path: str):
+    last_error: Optional[OSError] = None
+    for attempt in range(FILE_REPLACE_RETRY_COUNT):
+        try:
+            os.replace(tmp_path, final_path)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt == FILE_REPLACE_RETRY_COUNT - 1:
+                break
+            time.sleep(FILE_REPLACE_RETRY_BASE_SECONDS * float(attempt + 1))
+    raise last_error or OSError(f"failed to replace {final_path!r} with {tmp_path!r}")
+
+
+def _remove_file_best_effort(path: str):
+    last_error: Optional[OSError] = None
+    for attempt in range(FILE_REPLACE_RETRY_COUNT):
+        try:
+            os.remove(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt == FILE_REPLACE_RETRY_COUNT - 1:
+                break
+            time.sleep(FILE_REPLACE_RETRY_BASE_SECONDS * float(attempt + 1))
+    if last_error is not None:
+        # Windows에서 백신/IDE/이전 디버그 프로세스가 stale tmp를 잠깐 잡고 있으면
+        # cleanup 실패가 새 sample commit을 막으면 안 된다. unique tmp를 쓰므로
+        # 잠긴 stale tmp는 다음 resume cleanup이나 OS 정리 대상으로 남겨 둔다.
+        return
 
 
 def _pyarrow_compression(compression: str) -> Optional[str]:

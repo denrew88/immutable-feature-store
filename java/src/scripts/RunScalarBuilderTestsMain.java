@@ -7,10 +7,12 @@ import fs.io.ScalarDenseLongDataset;
 import fs.io.ScalarFeatureShards;
 import fs.model.scalar.ScalarBuildSessionStatus;
 import fs.model.scalar.ScalarDenseLongManifest;
+import fs.model.scalar.ScalarDenseLongPart;
 import fs.model.scalar.ScalarFeatureValues;
 import fs.model.scalar.ScalarValue;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
@@ -51,7 +53,15 @@ public class RunScalarBuilderTestsMain {
                 cfg)) {
             ScalarBuildSessionStatus status = builder.status();
             require(status.pendingSampleIds.equals(java.util.Arrays.asList(0L, 1L, 2L, 3L)), "initial pending ids mismatch");
-            builder.writeSample(2L, values("feature_01", 2.0), true);
+            File staleLegacyTmp = new File(new File(outDir, "raw_samples"), "sample_000000000002.parquet.tmp");
+            try (FileOutputStream staleHandle = new FileOutputStream(staleLegacyTmp)) {
+                staleHandle.write(1);
+                staleHandle.flush();
+                builder.writeSample(2L, values("feature_01", 2.0), true);
+            }
+            if (staleLegacyTmp.exists() && !staleLegacyTmp.delete()) {
+                staleLegacyTmp.deleteOnExit();
+            }
             builder.writeSample(0L, values("feature_01", 1.0, "feature_04", 4.0), true);
             ScalarBuildSessionStatus mid = builder.status();
             require(mid.completedSampleCount == 2, "completed sample count mismatch");
@@ -77,6 +87,9 @@ public class RunScalarBuilderTestsMain {
         require(new File(manifest.featureMetaPath).exists(), "missing feature_meta.parquet");
         require(new File(manifest.sampleMetaPath).exists(), "missing sample_meta.parquet");
         require(!manifest.selectionStats.isEmpty(), "selection_stats should be populated");
+        assertStatsOverlapMatchesFinalMask(manifest, "y");
+        assertStatsOverlapMatchesFinalMask(manifest, "y_alt");
+        assertStatsOverlapMatchesFinalMask(manifest, "y_const");
         assertStatsOverlap(manifest, "y_alt", 1, 2);
         assertStatsOverlap(manifest, "y_const", 1, 3);
         assertStatsR2Zero(manifest, "y_const");
@@ -161,6 +174,41 @@ public class RunScalarBuilderTestsMain {
         }
     }
 
+    private static void assertStatsOverlapMatchesFinalMask(ScalarDenseLongManifest manifest, String yCol) throws Exception {
+        String statsPath = manifest.selectionStatsPath(yCol);
+        require(statsPath != null && !statsPath.isEmpty(), "missing selection stats for " + yCol);
+        ArrayList<String> partPaths = new ArrayList<String>();
+        for (ScalarDenseLongPart part : manifest.parts) {
+            partPaths.add(part.path);
+        }
+        require(!partPaths.isEmpty(), "scalar parts should not be empty");
+        String y = DuckDBUtils.quoteIdentifier(yCol);
+        String sql =
+                "WITH features AS (SELECT CAST(range AS INTEGER) AS feature_id FROM range(0, " + manifest.nFeatures + ")), "
+                        + "final_mask AS (SELECT CAST(feature_id AS INTEGER) AS feature_id, CAST(sample_id AS BIGINT) AS sample_id "
+                        + "FROM read_parquet(" + parquetList(partPaths) + ") WHERE CAST(mask AS INTEGER) = 1), "
+                        + "ys AS (SELECT CAST(sample_id AS BIGINT) AS sample_id FROM read_parquet(" + DuckDBUtils.quotePath(manifest.sampleMetaPath) + ") "
+                        + "WHERE " + y + " IS NOT NULL AND NOT isnan(CAST(" + y + " AS DOUBLE))), "
+                        + "expected AS (SELECT f.feature_id, CAST(COUNT(ys.sample_id) AS INTEGER) AS expected_n "
+                        + "FROM features f LEFT JOIN final_mask x ON x.feature_id = f.feature_id "
+                        + "LEFT JOIN ys ON ys.sample_id = x.sample_id GROUP BY f.feature_id), "
+                        + "stats AS (SELECT CAST(feature_id AS INTEGER) AS feature_id, CAST(n_y_overlap AS INTEGER) AS n_y_overlap "
+                        + "FROM read_parquet(" + DuckDBUtils.quotePath(statsPath) + ")), "
+                        + "valid_y AS (SELECT COUNT(*) AS y_count FROM ys) "
+                        + "SELECT "
+                        + "(SELECT COUNT(*) FROM stats s JOIN expected e USING(feature_id) WHERE s.n_y_overlap <> e.expected_n) AS mismatch_count, "
+                        + "(SELECT COUNT(*) FROM expected, valid_y WHERE expected.expected_n < valid_y.y_count) AS feature_limited_count";
+        try (Connection conn = DuckDBUtils.connect(null);
+             Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            require(rs.next(), "stats overlap direct check did not return a row for " + yCol);
+            long mismatchCount = rs.getLong(1);
+            long featureLimitedCount = rs.getLong(2);
+            require(mismatchCount == 0L, "n_y_overlap should equal count(mask=1 AND finite " + yCol + "); mismatch_count=" + mismatchCount);
+            require(featureLimitedCount > 0L, "test fixture does not prove " + yCol + " stats are feature-limited, not Y-only");
+        }
+    }
+
     private static void assertStatsR2Zero(ScalarDenseLongManifest manifest, String yCol) throws Exception {
         String statsPath = manifest.selectionStatsPath(yCol);
         require(statsPath != null && !statsPath.isEmpty(), "missing selection stats for " + yCol);
@@ -172,6 +220,19 @@ public class RunScalarBuilderTestsMain {
             require(rs.next(), "missing r2 count result for " + yCol);
             require(rs.getLong(1) == 0L, "constant y should produce r2y=0.0 for " + yCol);
         }
+    }
+
+    private static String parquetList(List<String> paths) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("[");
+        for (int i = 0; i < paths.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(DuckDBUtils.quotePath(paths.get(i)));
+        }
+        sb.append("]");
+        return sb.toString();
     }
 
     private static void require(boolean condition, String message) {

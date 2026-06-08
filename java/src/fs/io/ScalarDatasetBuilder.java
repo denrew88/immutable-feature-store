@@ -15,6 +15,7 @@ import fs.model.scalar.ScalarSampleMajorManifest;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
@@ -23,6 +24,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * scalar dense-long shard를 만들기 위한 표준 builder입니다.
@@ -35,6 +37,8 @@ import java.util.Map;
 public class ScalarDatasetBuilder implements AutoCloseable {
     private static final int RAW_STATE_VERSION = 1;
     private static final int RAW_SAMPLE_PADDING = 12;
+    private static final int FILE_OPERATION_RETRY_COUNT = 10;
+    private static final long FILE_OPERATION_RETRY_BASE_MILLIS = 25L;
 
     private final File outDir;
     private final File rawSamplesDir;
@@ -159,11 +163,15 @@ public class ScalarDatasetBuilder implements AutoCloseable {
             }
             LinkedHashMap<Integer, Double> normalized = normalizeValues(values);
             String finalPath = rawSamplePath(sampleId);
-            String tmpPath = finalPath + ".tmp";
-            deleteQuietly(new File(tmpPath));
-            int rowCount = ScalarRawSampleWriter.write(tmpPath, sampleId, normalized);
-            Files.move(new File(tmpPath).toPath(), new File(finalPath).toPath(), StandardCopyOption.REPLACE_EXISTING);
-            appendCommit(sampleId, finalPath, rowCount);
+            cleanupSampleTmpFiles(sampleId);
+            File tmpFile = uniqueRawSampleTmpFile(finalPath);
+            try {
+                int rowCount = ScalarRawSampleWriter.write(tmpFile.getAbsolutePath(), sampleId, normalized);
+                moveTmpToFinalWithRetry(tmpFile, new File(finalPath));
+                appendCommit(sampleId, finalPath, rowCount);
+            } finally {
+                deleteQuietly(tmpFile);
+            }
         } finally {
             lock.release();
         }
@@ -480,6 +488,25 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         }
     }
 
+    private void cleanupSampleTmpFiles(long sampleId) {
+        String fixedPrefix = new File(rawSamplePath(sampleId)).getName() + ".";
+        String legacyTmpName = new File(rawSamplePath(sampleId)).getName() + ".tmp";
+        File[] files = rawSamplesDir.listFiles();
+        if (files == null) {
+            return;
+        }
+        for (File file : files) {
+            String name = file.getName();
+            if (file.isFile() && name.endsWith(".tmp") && (name.equals(legacyTmpName) || name.startsWith(fixedPrefix))) {
+                deleteQuietly(file);
+            }
+        }
+    }
+
+    private static File uniqueRawSampleTmpFile(String finalPath) {
+        return new File(finalPath + "." + UUID.randomUUID().toString() + ".tmp").getAbsoluteFile();
+    }
+
     private static ArrayList<String> loadKeys(List<LinkedHashMap<String, Object>> rows, String keyCol) {
         ArrayList<String> out = new ArrayList<String>(rows.size());
         for (LinkedHashMap<String, Object> row : rows) {
@@ -496,8 +523,57 @@ public class ScalarDatasetBuilder implements AutoCloseable {
     }
 
     private static void deleteQuietly(File path) {
-        if (path != null && path.exists() && !path.delete()) {
-            // best-effort cleanup
+        if (path == null || !path.exists()) {
+            return;
+        }
+        try {
+            deleteWithRetry(path);
+        } catch (IOException ignored) {
+            path.deleteOnExit();
+        }
+    }
+
+    private static void deleteWithRetry(File path) throws IOException {
+        IOException last = null;
+        for (int attempt = 0; attempt < FILE_OPERATION_RETRY_COUNT; attempt++) {
+            if (!path.exists() || path.delete()) {
+                return;
+            }
+            last = new IOException("failed to delete file: " + path.getAbsolutePath());
+            sleepBeforeRetry(attempt, last);
+        }
+        throw last == null ? new IOException("failed to delete file: " + path.getAbsolutePath()) : last;
+    }
+
+    private static void moveTmpToFinalWithRetry(File tmp, File finalPath) throws IOException {
+        IOException last = null;
+        for (int attempt = 0; attempt < FILE_OPERATION_RETRY_COUNT; attempt++) {
+            try {
+                try {
+                    Files.move(tmp.toPath(), finalPath.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(tmp.toPath(), finalPath.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+                return;
+            } catch (IOException e) {
+                last = e;
+                sleepBeforeRetry(attempt, e);
+            }
+        }
+        throw last == null ? new IOException("failed to move tmp raw sample: " + tmp.getAbsolutePath()) : last;
+    }
+
+    private static void sleepBeforeRetry(int attempt, IOException cause) throws IOException {
+        if (attempt >= FILE_OPERATION_RETRY_COUNT - 1) {
+            return;
+        }
+        try {
+            Thread.sleep(FILE_OPERATION_RETRY_BASE_MILLIS * (long) (attempt + 1));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw cause;
         }
     }
 

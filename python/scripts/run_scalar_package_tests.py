@@ -32,6 +32,8 @@ def _assert_stats_overlap_matches_y_valid(manifest_path: str, y_col: str) -> Non
     sample_meta = pl.read_parquet(sample_meta_path)
     y_values = sample_meta[y_col].to_numpy().astype(np.float64, copy=False)
     y_valid = ~np.isnan(y_values)
+    y_valid_count = int(y_valid.sum())
+    saw_feature_limited_count = False
     stats = pl.read_parquet(stats_path).sort("feature_id")
 
     with open_dense_long_shard(str(manifest_path)) as ds:
@@ -40,6 +42,9 @@ def _assert_stats_overlap_matches_y_valid(manifest_path: str, y_col: str) -> Non
             _, valid = ds.load_feature_by_id(feature_id)
             expected = int((valid.astype(bool, copy=False) & y_valid).sum())
             assert int(row["n_y_overlap"]) == expected, (feature_id, row["n_y_overlap"], expected)
+            if expected < y_valid_count:
+                saw_feature_limited_count = True
+    assert saw_feature_limited_count, f"{y_col} fixture did not prove n_y_overlap is feature-limited"
 
 
 def _assert_stats_r2_all_zero(manifest_path: str, y_col: str) -> None:
@@ -87,7 +92,16 @@ def main():
         feature_meta_path=str(feature_meta_path),
         build_options=BuildOptions(target_shard_mb=1, stats_y_cols=("y", "y_alt", "y_const")),
     )
-    builder.write_sample(2, {"feature_b": 20.0})
+    stale_tmp = known_out / "raw_samples" / "sample_000000000002.parquet.tmp"
+    stale_tmp.parent.mkdir(parents=True, exist_ok=True)
+    with stale_tmp.open("wb") as stale_handle:
+        stale_handle.write(b"locked stale tmp")
+        stale_handle.flush()
+        builder.write_sample(2, {"feature_b": 20.0})
+    try:
+        stale_tmp.unlink()
+    except FileNotFoundError:
+        pass
     builder.write_sample(0, {"feature_a": 10.0, "feature_c": None})
     builder.write_sample(1, {"feature_a": 11.0, "feature_b": 21.0})
     builder.write_sample(3, {})

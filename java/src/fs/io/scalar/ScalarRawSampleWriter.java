@@ -20,6 +20,9 @@ import java.util.TreeMap;
  * scalar Double value column 기준 {@code mask=0, value=NaN}으로 다시 materialize된다.
  */
 public final class ScalarRawSampleWriter {
+    private static final int FILE_OPERATION_RETRY_COUNT = 10;
+    private static final long FILE_OPERATION_RETRY_BASE_MILLIS = 25L;
+
     private ScalarRawSampleWriter() {
     }
 
@@ -29,9 +32,7 @@ public final class ScalarRawSampleWriter {
         if (parent != null && !parent.exists() && !parent.mkdirs()) {
             throw new SQLException("failed to create raw sample dir: " + parent.getAbsolutePath());
         }
-        if (out.exists() && !out.delete()) {
-            throw new SQLException("failed to remove stale tmp raw sample: " + out.getAbsolutePath());
-        }
+        deleteIfExistsWithRetry(out);
 
         TreeMap<Integer, Double> sorted = new TreeMap<Integer, Double>();
         if (featureValues != null) {
@@ -61,5 +62,28 @@ public final class ScalarRawSampleWriter {
             st.execute("COPY tmp_scalar_raw_sample TO " + DuckDBUtils.quotePath(out.getAbsolutePath()) + " (FORMAT PARQUET, COMPRESSION ZSTD)");
         }
         return sorted.size();
+    }
+
+    private static void deleteIfExistsWithRetry(File file) throws SQLException {
+        if (!file.exists()) {
+            return;
+        }
+        SQLException last = null;
+        for (int attempt = 0; attempt < FILE_OPERATION_RETRY_COUNT; attempt++) {
+            if (!file.exists() || file.delete()) {
+                return;
+            }
+            last = new SQLException("failed to remove stale tmp raw sample: " + file.getAbsolutePath());
+            if (attempt >= FILE_OPERATION_RETRY_COUNT - 1) {
+                break;
+            }
+            try {
+                Thread.sleep(FILE_OPERATION_RETRY_BASE_MILLIS * (long) (attempt + 1));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new SQLException("interrupted while removing stale tmp raw sample: " + file.getAbsolutePath(), e);
+            }
+        }
+        throw last == null ? new SQLException("failed to remove stale tmp raw sample: " + file.getAbsolutePath()) : last;
     }
 }
