@@ -1,5 +1,7 @@
 import json
 import os
+import time
+import uuid
 
 import numpy as np
 import polars as pl
@@ -17,6 +19,50 @@ TRACE_LEN_BYTES = 4
 BUNDLE_TRACE_ROW_FIXED_BYTES = SAMPLE_ID_BYTES + FEATURE_ID_BYTES + FLAGS_BYTES + TRACE_LEN_BYTES
 BLOCK_HEADER_ESTIMATE_BYTES = 64
 BLOCK_PER_SAMPLE_CONTROL_BYTES = 9
+FILE_REPLACE_RETRY_COUNT = 10
+FILE_REPLACE_RETRY_BASE_SECONDS = 0.025
+JSON_REPLACE_RETRY_COUNT = 8
+
+
+def _replace_file_with_retry(tmp_path: str, final_path: str):
+    last_error = None
+    for attempt in range(FILE_REPLACE_RETRY_COUNT):
+        try:
+            # bundle parquet를 tmp에 완전히 쓴 뒤 final 이름으로 바꿉니다.
+            # 실패하면 final bundle이 없으므로 manifest에는 아직 포함되지 않습니다.
+            os.replace(tmp_path, final_path)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt == FILE_REPLACE_RETRY_COUNT - 1:
+                break
+            time.sleep(FILE_REPLACE_RETRY_BASE_SECONDS * float(attempt + 1))
+    raise last_error or OSError(f"failed to replace {final_path!r} with {tmp_path!r}")
+
+
+def _write_json_atomic(path: str, payload: dict):
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    try:
+        # manifest JSON은 reader가 바로 여는 파일이므로 partial write를 허용하지 않습니다.
+        # UUID tmp에 먼저 쓰고 replace해야 reader가 항상 완성된 JSON만 봅니다.
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        last_error = None
+        for attempt in range(JSON_REPLACE_RETRY_COUNT):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt == JSON_REPLACE_RETRY_COUNT - 1:
+                    break
+                time.sleep(0.025 * float(attempt + 1))
+        raise last_error or OSError(f"failed to replace {path!r} with {tmp_path!r}")
+    finally:
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 def _normalize_point_schema(point_schema):
@@ -184,8 +230,17 @@ class ArraySampleBundleWriter:
         )
         final_path = bundle_file_path(self.bundle_path, bundle_id)
         tmp_path = final_path + ".tmp"
-        df.write_parquet(tmp_path)
-        os.replace(tmp_path, final_path)
+        try:
+            # parquet write 자체는 tmp 파일에 수행합니다. final path로 이동하기 전까지는
+            # manifest의 n_bundles가 증가하지 않으므로, 중간 장애 시 reader가 보지 않습니다.
+            df.write_parquet(tmp_path)
+            _replace_file_with_retry(tmp_path, final_path)
+        except Exception:
+            try:
+                os.remove(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
         byte_size = os.path.getsize(final_path)
         self.n_bundles += 1
         self._reset_buffer()
@@ -210,8 +265,9 @@ class ArraySampleBundleWriter:
             "flags_dtype": "UINT8",
             "point_schema": [spec.to_json() for spec in self.point_schema],
         }
-        with open(self.manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
+        # 모든 pending bundle이 flush된 뒤 최종 manifest를 atomic하게 씁니다.
+        # manifest가 보인다는 것은 해당 bundle parquet들이 final 위치에 있다는 의미입니다.
+        _write_json_atomic(self.manifest_path, manifest)
         self._finished = True
         return self.manifest_path
 
@@ -243,8 +299,9 @@ def load_array_bundle_manifest(manifest_path: str):
 
 
 def _estimate_block_overhead_bytes(samples_per_block: int) -> int:
-    # Per-block size estimation includes one fixed binary payload header and
-    # one control section per sample for flags plus offsets.
+    # block 하나에는 고정 binary payload header가 있고, sample마다 flags/offset을 담는
+    # control section이 붙습니다. 이 추정치는 shard partitioning용이라 실제 직렬화와
+    # byte 단위로 완전히 같을 필요는 없지만, 같은 구성요소를 기준으로 잡아야 합니다.
     return int(BLOCK_HEADER_ESTIMATE_BYTES + BLOCK_PER_SAMPLE_CONTROL_BYTES * int(samples_per_block))
 
 

@@ -29,6 +29,7 @@ public final class ArrayMetadataWriter {
      * @param records row map 목록
      * @param path 출력 parquet 경로
      * @return 절대 경로
+     * @throws Exception metadata 검증, DuckDB write, parquet 생성 중 실패한 경우
      */
     public static String writeSampleMeta(List<Map<String, Object>> records, String path) throws Exception {
         return writeDenseMetadata(records, path, "sample_id", "sample_key", true);
@@ -40,6 +41,7 @@ public final class ArrayMetadataWriter {
      * @param records row map 목록
      * @param path 출력 parquet 경로
      * @return 절대 경로
+     * @throws Exception metadata 검증, DuckDB write, parquet 생성 중 실패한 경우
      */
     public static String writeFeatureMeta(List<Map<String, Object>> records, String path) throws Exception {
         return writeDenseMetadata(records, path, "feature_id", "feature_key", false);
@@ -52,6 +54,7 @@ public final class ArrayMetadataWriter {
      *
      * @param path parquet 경로
      * @return 읽은 row 목록
+     * @throws Exception DuckDB 연결, parquet read, result set 변환 중 실패한 경우
      */
     public static List<LinkedHashMap<String, Object>> readRows(String path) throws Exception {
         ArrayList<LinkedHashMap<String, Object>> rows = new ArrayList<LinkedHashMap<String, Object>>();

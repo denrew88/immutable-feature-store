@@ -3,12 +3,36 @@
 from __future__ import annotations
 
 import os
+import time
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ..types import LogicalType, PointColumnSpec, StorageType, point_storage_dtype
+
+
+FILE_REPLACE_RETRY_COUNT = 10
+FILE_REPLACE_RETRY_BASE_SECONDS = 0.025
+
+
+def replace_file_with_retry(tmp_path: str, final_path: str) -> None:
+    """Windows에서 백신/IDE가 파일을 순간적으로 잡아도 commit을 재시도한다."""
+
+    last_error: OSError | None = None
+    for attempt in range(FILE_REPLACE_RETRY_COUNT):
+        try:
+            # tmp parquet를 모두 닫은 뒤 final path로 한 번에 바꿉니다.
+            # 실패하면 아직 final path가 완료 파일로 바뀌지 않았으므로, caller가
+            # tmp를 정리하고 sample commit log append를 하지 않으면 resume이 안전합니다.
+            os.replace(tmp_path, final_path)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt == FILE_REPLACE_RETRY_COUNT - 1:
+                break
+            time.sleep(FILE_REPLACE_RETRY_BASE_SECONDS * float(attempt + 1))
+    raise last_error or OSError(f"failed to replace {final_path!r} with {tmp_path!r}")
 
 
 def normalize_array_sample_point_schema(point_schema: list[PointColumnSpec]) -> list[PointColumnSpec]:
@@ -168,8 +192,8 @@ class StreamingTracePartWriter:
         self._writer.close()
         self._trace_index_writer.close()
         self._closed = True
-        os.replace(self.tmp_path, self.path)
-        os.replace(self.trace_index_tmp_path, self.trace_index_path)
+        replace_file_with_retry(self.tmp_path, self.path)
+        replace_file_with_retry(self.trace_index_tmp_path, self.trace_index_path)
 
     def abort(self):
         if not self._closed:

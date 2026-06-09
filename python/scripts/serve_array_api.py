@@ -1,3 +1,4 @@
+import argparse
 import json
 import math
 import os
@@ -21,6 +22,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON_ROOT = REPO_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
+for package_src in [
+    REPO_ROOT / "packages" / "array_sample_parquet" / "src",
+]:
+    if str(package_src) not in sys.path:
+        sys.path.insert(0, str(package_src))
 
 from fs.feature_selection.candidates import build_candidates_from_stats
 from fs.config import SelectionConfig
@@ -31,7 +37,7 @@ from fs.array.binary_storage import (
     load_array_binary_categorical_dictionaries,
     load_array_binary_shard_manifest,
 )
-from fs.array_sample_parquet import (
+from array_sample_parquet import (
     ArraySampleParquetReader,
     load_array_sample_parquet_manifest,
 )
@@ -1136,12 +1142,13 @@ def run_selection(req: SelectionRequest):
 
 def main():
     """uvicorn으로 로컬 FastAPI 서버를 실행한다."""
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=8000,
-        reload=False,
-    )
+    parser = argparse.ArgumentParser(description="Array binary and array-sample-parquet FastAPI server")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--reload", action="store_true")
+    args = parser.parse_args()
+    target = "scripts.serve_array_api:app" if bool(args.reload) else app
+    uvicorn.run(target, host=str(args.host), port=int(args.port), reload=bool(args.reload))
 
 
 if __name__ == "__main__":

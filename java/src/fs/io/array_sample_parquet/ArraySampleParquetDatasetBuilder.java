@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import fs.io.common.ArrayMetadataWriter;
 import fs.io.common.ArrayUtils;
+import fs.io.common.FilePathLock;
 import fs.io.common.JsonUtils;
 import fs.model.array_sample_parquet.ArraySampleParquetBuildOptions;
 import fs.model.array_sample_parquet.ArraySampleParquetBuildSessionStatus;
@@ -49,6 +50,7 @@ import java.util.Map;
 public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     private static final int RAW_STATE_VERSION = 1;
     private static final int RAW_SAMPLE_PADDING = 12;
+    private static final long DEFAULT_FILE_LOCK_TIMEOUT_MILLIS = 30000L;
 
     private final File outDir;
     private final File rawSamplesDir;
@@ -76,7 +78,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     private boolean closed;
     private Long openSampleId;
     private ArraySampleParquetRawSampleWriter openWriter;
-    private ArraySampleParquetFileLock openLock;
+    private FilePathLock openLock;
 
     public ArraySampleParquetDatasetBuilder(
             String outDir,
@@ -252,12 +254,15 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             throw new IllegalArgumentException("sample already completed: " + sampleId);
         }
 
-        ArraySampleParquetFileLock lock = new ArraySampleParquetFileLock(rawSamplePath(sampleId) + ".lock");
+        // sample별 lock은 raw point parquet와 raw trace-index parquet 한 쌍을
+        // 같은 sample_id에 대해 한 worker만 commit하도록 보호합니다. 서로 다른
+        // sample_id는 각자 다른 lock 파일을 쓰므로 병렬 write가 가능합니다.
+        FilePathLock lock = new FilePathLock(rawSamplePath(sampleId) + ".lock", DEFAULT_FILE_LOCK_TIMEOUT_MILLIS);
         try {
             lock.acquire();
             if (isSampleCompleted(sampleId)) {
                 if (skipIfCompleted) {
-                    lock.release();
+                    lock.releaseUnchecked();
                     return true;
                 }
                 throw new IllegalArgumentException("sample already completed: " + sampleId);
@@ -274,10 +279,10 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             openLock = lock;
             return false;
         } catch (RuntimeException e) {
-            lock.release();
+            lock.releaseUnchecked();
             throw e;
         } catch (Exception e) {
-            lock.release();
+            lock.releaseUnchecked();
             throw new IllegalStateException("failed to begin raw sample " + sampleId, e);
         }
     }
@@ -288,7 +293,9 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         }
         long sampleId = openSampleId.longValue();
         ArraySampleParquetRawSampleWriter writer = openWriter;
-        ArraySampleParquetFileLock lock = openLock;
+        FilePathLock lock = openLock;
+        // open 상태를 먼저 비워 재진입을 막습니다. 이후 commit 중 예외가 나더라도
+        // finally에서 sample lock은 반드시 해제됩니다.
         openSampleId = null;
         openWriter = null;
         openLock = null;
@@ -306,6 +313,9 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             writer.close();
             File finalPoint = new File(rawSamplePath(sampleId));
             File finalTrace = new File(rawTraceIndexPath(sampleId));
+            // 두 raw parquet 파일을 모두 최종 이름으로 옮긴 뒤에만 commit log를 씁니다.
+            // resume 시에는 log와 실제 파일 존재를 함께 보므로, 중간 장애가 나도
+            // 불완전한 sample을 완료로 보지 않습니다.
             moveTmpToFinal(new File(rawSamplePath(sampleId) + ".tmp"), finalPoint);
             moveTmpToFinal(new File(rawTraceIndexPath(sampleId) + ".tmp"), finalTrace);
             appendRawCommit(new ArraySampleParquetCompactor.RawSampleRecord(
@@ -319,7 +329,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
                     finalTrace.length()));
         } finally {
             if (lock != null) {
-                lock.release();
+                lock.releaseUnchecked();
             }
         }
     }
@@ -487,7 +497,9 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     }
 
     private void appendRawCommit(ArraySampleParquetCompactor.RawSampleRecord record) throws IOException {
-        ArraySampleParquetFileLock lock = new ArraySampleParquetFileLock(rawLogPath + ".lock");
+        // raw_samples.jsonl은 모든 worker가 공유하는 append-only commit log입니다.
+        // JSONL 한 줄 단위 append가 섞이지 않도록 log 전용 FilePathLock으로 직렬화합니다.
+        FilePathLock lock = new FilePathLock(rawLogPath + ".lock", DEFAULT_FILE_LOCK_TIMEOUT_MILLIS);
         lock.acquire();
         try {
             ObjectNode node = JsonUtils.objectNode();
@@ -505,7 +517,7 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
             node.put("trace_index_byte_size", record.traceIndexByteSize);
             JsonUtils.appendJsonLine(rawLogPath, node);
         } finally {
-            lock.release();
+            lock.releaseUnchecked();
         }
     }
 

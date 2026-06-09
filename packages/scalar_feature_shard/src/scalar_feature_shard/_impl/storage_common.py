@@ -6,42 +6,15 @@ import json
 import os
 import time
 import uuid
-from typing import Optional
 
 import numpy as np
 import polars as pl
 
+from .file_lock import FilePathLock
+
 
 _JSON_REPLACE_RETRY_COUNT = 8
 _JSON_LOCK_TIMEOUT_SECONDS = 30.0
-
-
-class _JsonFileLock:
-    def __init__(self, path: str):
-        self.path = os.path.abspath(path)
-        self._fd: Optional[int] = None
-
-    def acquire(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        deadline = time.monotonic() + _JSON_LOCK_TIMEOUT_SECONDS
-        while True:
-            try:
-                self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(self._fd, str(os.getpid()).encode("ascii"))
-                return
-            except FileExistsError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"timed out acquiring JSON file lock: {self.path}")
-                time.sleep(0.05)
-
-    def release(self):
-        if self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
-        try:
-            os.remove(self.path)
-        except FileNotFoundError:
-            pass
 
 
 def write_json_atomic(path: str, payload: dict):
@@ -54,14 +27,18 @@ def write_json_atomic(path: str, payload: dict):
 
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
-    lock = _JsonFileLock(path + ".lock")
+    lock = FilePathLock(path + ".lock", timeout_seconds=_JSON_LOCK_TIMEOUT_SECONDS)
     lock.acquire()
     try:
+        # final JSON을 직접 덮어쓰지 않고 UUID tmp에 먼저 씁니다.
+        # 이렇게 해야 reader가 깨진 중간 JSON을 보는 일을 막을 수 있습니다.
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
         last_error = None
         for attempt in range(_JSON_REPLACE_RETRY_COUNT):
             try:
+                # Windows에서는 백신/IDE가 final JSON을 잠깐 열어 replace가 실패할 수
+                # 있으므로 짧은 backoff로 재시도합니다.
                 os.replace(tmp_path, path)
                 return
             except OSError as exc:

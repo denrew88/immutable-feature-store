@@ -124,6 +124,10 @@ manifest_path = session.build_shards(cleanup_bundles=False)
 - 같은 sample의 trace는 `with session.sample(...):` 안에서 모두 넣는 경로를 권장합니다.
 - `finish_bundles()`는 legacy alias입니다. 새 코드는 `finish_stage()`를 사용하십시오.
 
+## File Replace Retry
+
+custom binary builder는 동시 worker writer용 표준 경로가 아니므로 `.lock` 기반 병렬 commit 모델은 제공하지 않습니다. 다만 Windows에서 IDE, 백신, 인덱서가 JSON 또는 bundle parquet 파일 핸들을 짧게 잡는 경우를 대비해 state JSON, dictionary JSON, bundle parquet commit은 unique tmp 파일과 짧은 replace retry를 사용합니다.
+
 ## Reader
 
 ```python

@@ -207,6 +207,10 @@ def _build_id_to_key(meta_path: str, key_col: str, id_col: str) -> dict[int, str
     df = pl.read_parquet(meta_path)
     if key_col not in df.columns:
         return {}
+    if int(df[key_col].null_count()) != 0:
+        raise ValueError(f"metadata key column contains nulls: {key_col}")
+    if int(df[key_col].n_unique()) != int(df.height):
+        raise ValueError(f"metadata key column must be unique: {key_col}")
     ids = df[id_col].to_list() if id_col in df.columns else list(range(df.height))
     return {int(value): str(key) for key, value in zip(df[key_col].to_list(), ids)}
 

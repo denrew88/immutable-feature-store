@@ -5,9 +5,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import fs.config.BuildShardConfig;
 import fs.io.common.ArrayMetadataWriter;
 import fs.io.common.DuckDBUtils;
+import fs.io.common.FilePathLock;
 import fs.io.common.JsonUtils;
 import fs.io.scalar.ScalarDenseLongShardBuilder;
-import fs.io.scalar.ScalarFileLock;
 import fs.io.scalar.ScalarMetadataWriter;
 import fs.io.scalar.ScalarRawSampleWriter;
 import fs.io.scalar.ScalarSampleMajorManifestIO;
@@ -153,8 +153,11 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         ensureOpenForWrites();
         validateSampleId(sampleId);
         String finalPath = rawSamplePath(sampleId);
-        ScalarFileLock stageLock = new ScalarFileLock(rawStageLockPath, stageLockTimeoutMillis());
-        ScalarFileLock lock = null;
+        // stageLock은 finishStage/buildDenseLongShards가 stage를 마감하는 순간과
+        // 새 sample write가 시작되는 순간을 서로 배제합니다. 이 lock이 없으면
+        // finishStage가 active sample을 못 보고 manifest를 먼저 확정할 수 있습니다.
+        FilePathLock stageLock = new FilePathLock(rawStageLockPath, stageLockTimeoutMillis());
+        FilePathLock lock = null;
         stageLock.acquire();
         try {
             ensureOpenForWrites();
@@ -164,10 +167,13 @@ public class ScalarDatasetBuilder implements AutoCloseable {
                 }
                 throw new IllegalArgumentException("sample already completed: " + sampleId);
             }
-            lock = new ScalarFileLock(finalPath + ".lock", stageLockTimeoutMillis());
+            // sample별 lock은 같은 sample_id를 두 worker가 동시에 쓰지 못하게 합니다.
+            // 실제 parquet write는 stageLock을 놓은 뒤 수행하므로, 서로 다른 sample은
+            // 병렬로 쓸 수 있고 같은 sample만 직렬화됩니다.
+            lock = new FilePathLock(finalPath + ".lock", stageLockTimeoutMillis());
             lock.acquire();
         } finally {
-            stageLock.release();
+            stageLock.releaseUnchecked();
         }
         try {
             if (isRawSampleFileCompleted(sampleId)) {
@@ -188,7 +194,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
             }
         } finally {
             if (lock != null) {
-                lock.release();
+                lock.releaseUnchecked();
             }
         }
     }
@@ -210,7 +216,9 @@ public class ScalarDatasetBuilder implements AutoCloseable {
             finishedStage = true;
             return sampleMajorManifestPath;
         }
-        ScalarFileLock stageLock = new ScalarFileLock(rawStageLockPath, stageLockTimeoutMillis());
+        // stage finalize 중에는 새 sample write 진입을 막습니다. 이후
+        // waitForNoActiveSampleLocks()가 이미 시작된 sample write가 끝났는지도 봅니다.
+        FilePathLock stageLock = new FilePathLock(rawStageLockPath, stageLockTimeoutMillis());
         stageLock.acquire();
         try {
             if (finishedStage || new File(sampleMajorManifestPath).exists()) {
@@ -243,7 +251,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
             saveState();
             return sampleMajorManifestPath;
         } finally {
-            stageLock.release();
+            stageLock.releaseUnchecked();
         }
     }
 
@@ -417,7 +425,9 @@ public class ScalarDatasetBuilder implements AutoCloseable {
         node.put("sample_key", sampleKeyForId(sampleId));
         node.put("path", relativeTo(outDir.getAbsolutePath(), path));
         node.put("row_count", rowCount);
-        ScalarFileLock lock = new ScalarFileLock(rawLogPath + ".lock", stageLockTimeoutMillis());
+        // parquet 파일이 최종 위치로 이동된 뒤 commit log에 한 줄을 append합니다.
+        // log append는 sample writer 간 공유 자원이므로 별도 lock으로 직렬화합니다.
+        FilePathLock lock = new FilePathLock(rawLogPath + ".lock", stageLockTimeoutMillis());
         lock.acquire();
         try {
             if (readCompletedSampleIdsFromLog().contains(Long.valueOf(sampleId))) {
@@ -425,7 +435,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
             }
             JsonUtils.appendJsonLine(rawLogPath, node);
         } finally {
-            lock.release();
+            lock.releaseUnchecked();
         }
     }
 
@@ -453,7 +463,10 @@ public class ScalarDatasetBuilder implements AutoCloseable {
     }
 
     private void reconcileRawCommitLog() throws IOException {
-        ScalarFileLock lock = new ScalarFileLock(rawLogPath + ".lock", stageLockTimeoutMillis());
+        // 장애 시점이 "parquet 파일 이동 성공 후 JSONL append 전"이면 raw 파일은
+        // 존재하지만 log에는 없습니다. 같은 log lock 아래에서 스캔/보강해야 여러
+        // builder가 동시에 같은 sample commit record를 추가하지 않습니다.
+        FilePathLock lock = new FilePathLock(rawLogPath + ".lock", stageLockTimeoutMillis());
         lock.acquire();
         try {
             List<Long> completed = readCompletedSampleIdsFromLog();
@@ -488,7 +501,7 @@ public class ScalarDatasetBuilder implements AutoCloseable {
                 JsonUtils.appendJsonLine(rawLogPath, node);
             }
         } finally {
-            lock.release();
+            lock.releaseUnchecked();
         }
     }
 

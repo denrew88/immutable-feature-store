@@ -9,6 +9,9 @@ import fs.model.scalar.ScalarDenseLongManifest;
 import fs.model.scalar.ScalarDenseLongPart;
 
 import java.io.File;
+import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
@@ -23,22 +26,34 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 /**
- * scalar raw stage에 여러 worker가 동시에 sample을 commit해도 되는지 검증한다.
+ * scalar raw stage에 여러 worker가 동시에 sample을 commit해도 되는지 검증합니다.
  *
  * <p>각 worker는 같은 {@code outDir}을 독립적으로 {@link ScalarDatasetBuilder#openSession}
- * 한 뒤 자신에게 배정된 sample만 쓴다. 이 패턴은 실제 supervisor/worker 구조에서 가장
- * 중요한 병렬 사용 형태이며, sample 파일 lock, commit log lock, state JSON write가 서로
- * 충돌하지 않는지 확인한다.</p>
+ * 하고, 자신에게 배정된 sample만 씁니다. 이 패턴은 실제 supervisor/worker 구조에서 가장
+ * 중요한 병렬 사용 형태입니다. 따라서 sample 파일 lock, commit log lock, state JSON write가
+ * 서로 충돌하지 않는지 이 스크립트에서 함께 확인합니다.</p>
+ *
+ * <p>{@code --lock-interferer}를 주면 별도 JVM이 백신/인덱서처럼 {@code .lock} 파일을 짧게
+ * 열었다 닫습니다. Windows에서는 외부 프로세스가 파일 handle을 들고 있으면 삭제가 실패할 수
+ * 있으므로, release retry가 실제 방해 상황에서도 동작하는지 확인하기 위한 옵션입니다.</p>
  */
 public final class RunScalarConcurrentBuilderTestsMain {
     private RunScalarConcurrentBuilderTestsMain() {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length > 0 && "--interfere-locks".equals(args[0])) {
+            runLockInterferer(args);
+            return;
+        }
+
         int nSamples = intArg(args, "--n-samples", 24);
         int nFeatures = intArg(args, "--n-features", 128);
         int nWorkers = intArg(args, "--n-workers", 6);
         boolean skipBuild = hasFlag(args, "--skip-build");
+        boolean lockInterferer = hasFlag(args, "--lock-interferer");
+        long lockHoldMillis = longArg(args, "--lock-hold-millis", 30L);
+        long lockScanSleepMillis = longArg(args, "--lock-scan-sleep-millis", 10L);
         File root = new File(stringArg(args, "--out-dir", "data/tmp_java_scalar_concurrent_builder_test"));
         long started = System.nanoTime();
         deleteRecursively(root);
@@ -58,7 +73,8 @@ public final class RunScalarConcurrentBuilderTestsMain {
         final BuildShardConfig cfg = new BuildShardConfig();
         cfg.targetShardBytes = 1L << 20;
 
-        // 병렬 worker가 동시에 처음 초기화하지 않도록 supervisor가 먼저 stage를 만든다.
+        // 병렬 worker가 동시에 최초 초기화를 수행하지 않도록 supervisor가 stage를 먼저 만듭니다.
+        // 이후 worker들은 이미 존재하는 stage를 열어 자신에게 배정된 sample만 추가합니다.
         try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
                 outDir,
                 sampleMetaPath,
@@ -69,59 +85,89 @@ public final class RunScalarConcurrentBuilderTestsMain {
         }
         double initSec = elapsedSec(started);
 
-        long writeStarted = System.nanoTime();
-        ExecutorService executor = Executors.newFixedThreadPool(nWorkers);
-        ArrayList<Future<List<Long>>> futures = new ArrayList<Future<List<Long>>>();
-        for (int workerId = 0; workerId < nWorkers; workerId++) {
-            final List<Long> assigned = assignedSamples(workerId, nSamples, nWorkers);
-            futures.add(executor.submit(new Callable<List<Long>>() {
-                @Override
-                public List<Long> call() throws Exception {
-                    try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
-                            outDir,
-                            finalSampleMetaPath,
-                            finalFeatureMetaPath,
-                            null,
-                            cfg)) {
-                        for (Long sampleId : assigned) {
-                            builder.writeSample(sampleId.longValue(), valuesFor(sampleId.longValue(), finalNFeatures), true);
+        File lockInterfererStopPath = new File(root, "lock_interferer.stop");
+        File lockInterfererReadyPath = new File(root, "lock_interferer.ready");
+        File lockInterfererCountPath = new File(root, "lock_interferer_count.txt");
+        Process lockInterfererProcess = null;
+        if (lockInterferer) {
+            lockInterfererProcess = startLockInterferer(
+                    new File(outDir),
+                    lockInterfererStopPath,
+                    lockInterfererReadyPath,
+                    lockInterfererCountPath,
+                    lockHoldMillis,
+                    lockScanSleepMillis);
+            waitForFile(lockInterfererReadyPath, 5000L, "lock interferer did not become ready");
+        }
+
+        double writeSec;
+        double finishSec;
+        long lockInterfererOpenCount = 0L;
+        try {
+            long writeStarted = System.nanoTime();
+            ExecutorService executor = Executors.newFixedThreadPool(nWorkers);
+            ArrayList<Future<List<Long>>> futures = new ArrayList<Future<List<Long>>>();
+            for (int workerId = 0; workerId < nWorkers; workerId++) {
+                final List<Long> assigned = assignedSamples(workerId, nSamples, nWorkers);
+                futures.add(executor.submit(new Callable<List<Long>>() {
+                    @Override
+                    public List<Long> call() throws Exception {
+                        // 각 worker는 builder 객체를 공유하지 않습니다. 공유 대상은 파일 시스템의
+                        // stage 디렉터리뿐이므로, 동시성 제어는 FilePathLock과 commit log lock이 담당합니다.
+                        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
+                                outDir,
+                                finalSampleMetaPath,
+                                finalFeatureMetaPath,
+                                null,
+                                cfg)) {
+                            for (Long sampleId : assigned) {
+                                builder.writeSample(sampleId.longValue(), valuesFor(sampleId.longValue(), finalNFeatures), true);
+                            }
                         }
+                        return assigned;
                     }
-                    return assigned;
+                }));
+            }
+            executor.shutdown();
+
+            ArrayList<Long> committed = new ArrayList<Long>();
+            for (Future<List<Long>> future : futures) {
+                committed.addAll(future.get());
+            }
+            java.util.Collections.sort(committed);
+            require(committed.equals(allSampleIds(nSamples)), "committed sample ids mismatch");
+            writeSec = elapsedSec(writeStarted);
+
+            long finishStarted = System.nanoTime();
+            String manifestPath;
+            try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
+                    outDir,
+                    sampleMetaPath,
+                    featureMetaPath,
+                    null,
+                    cfg)) {
+                ScalarBuildSessionStatus status = builder.status();
+                require(status.completedSampleCount == nSamples, "completed sample count mismatch");
+                require(status.pendingSampleIds.isEmpty(), "pending samples should be empty");
+                if (skipBuild) {
+                    manifestPath = builder.finishStage();
+                } else {
+                    manifestPath = builder.buildDenseLongShards(true, new File(root, "scalar_shard").getAbsolutePath(), false);
                 }
-            }));
-        }
-        executor.shutdown();
+            }
+            finishSec = elapsedSec(finishStarted);
 
-        ArrayList<Long> committed = new ArrayList<Long>();
-        for (Future<List<Long>> future : futures) {
-            committed.addAll(future.get());
-        }
-        java.util.Collections.sort(committed);
-        require(committed.equals(allSampleIds(nSamples)), "committed sample ids mismatch");
-        double writeSec = elapsedSec(writeStarted);
-
-        long finishStarted = System.nanoTime();
-        String manifestPath;
-        try (ScalarDatasetBuilder builder = ScalarFeatureShards.openSession(
-                outDir,
-                sampleMetaPath,
-                featureMetaPath,
-                null,
-                cfg)) {
-            ScalarBuildSessionStatus status = builder.status();
-            require(status.completedSampleCount == nSamples, "completed sample count mismatch");
-            require(status.pendingSampleIds.isEmpty(), "pending samples should be empty");
-            if (skipBuild) {
-                manifestPath = builder.finishStage();
-            } else {
-                manifestPath = builder.buildDenseLongShards(true, new File(root, "scalar_shard").getAbsolutePath(), false);
+            if (!skipBuild) {
+                assertFinalShardMatchesRaw(manifestPath, new File(outDir, "raw_samples"), nSamples, nFeatures);
+            }
+        } finally {
+            if (lockInterfererProcess != null) {
+                stopLockInterferer(lockInterfererProcess, lockInterfererStopPath);
             }
         }
-        double finishSec = elapsedSec(finishStarted);
-
-        if (!skipBuild) {
-            assertFinalShardMatchesRaw(manifestPath, new File(outDir, "raw_samples"), nSamples, nFeatures);
+        if (lockInterferer) {
+            lockInterfererOpenCount = readLongFile(lockInterfererCountPath);
+            require(lockInterfererOpenCount > 0L, "lock interferer did not open any lock file");
         }
 
         double totalSec = elapsedSec(started);
@@ -131,10 +177,106 @@ public final class RunScalarConcurrentBuilderTestsMain {
                         + " n_features=" + nFeatures
                         + " n_workers=" + nWorkers
                         + " skip_build=" + skipBuild
+                        + " lock_interferer=" + lockInterferer
+                        + " lock_interferer_open_count=" + lockInterfererOpenCount
                         + " init_sec=" + formatSeconds(initSec)
                         + " write_sec=" + formatSeconds(writeSec)
                         + " finish_sec=" + formatSeconds(finishSec)
                         + " total_sec=" + formatSeconds(totalSec));
+    }
+
+    private static Process startLockInterferer(
+            File scanRoot,
+            File stopPath,
+            File readyPath,
+            File countPath,
+            long holdMillis,
+            long scanSleepMillis) throws Exception {
+        // 테스트 본문과 같은 classpath로 자식 JVM을 띄웁니다. 같은 프로세스 안의 thread가 아니라
+        // 별도 프로세스를 쓰는 이유는 Windows 파일 handle 충돌이 process boundary에서 더 현실적으로
+        // 재현되기 때문입니다.
+        String javaExe = new File(new File(System.getProperty("java.home"), "bin"), isWindows() ? "java.exe" : "java").getAbsolutePath();
+        return new ProcessBuilder(
+                javaExe,
+                "-cp",
+                System.getProperty("java.class.path"),
+                RunScalarConcurrentBuilderTestsMain.class.getName(),
+                "--interfere-locks",
+                scanRoot.getAbsolutePath(),
+                stopPath.getAbsolutePath(),
+                readyPath.getAbsolutePath(),
+                countPath.getAbsolutePath(),
+                String.valueOf(holdMillis),
+                String.valueOf(scanSleepMillis))
+                .redirectErrorStream(true)
+                .start();
+    }
+
+    private static void stopLockInterferer(Process process, File stopPath) throws Exception {
+        // 자식 JVM은 stop 파일을 발견하면 정상 종료합니다. 강제 종료는 테스트 실패로 처리해서
+        // lock 방해 프로세스가 뒤에 남아 다음 테스트에 영향을 주지 않게 합니다.
+        Files.write(stopPath.toPath(), "stop".getBytes(StandardCharsets.UTF_8));
+        if (!process.waitFor(10L, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroy();
+            throw new IllegalStateException("lock interferer did not stop");
+        }
+        if (process.exitValue() != 0) {
+            throw new IllegalStateException("lock interferer failed with exit code " + process.exitValue());
+        }
+    }
+
+    private static void runLockInterferer(String[] args) throws Exception {
+        if (args.length != 7) {
+            throw new IllegalArgumentException("usage: --interfere-locks <scan-root> <stop-path> <ready-path> <count-path> <hold-ms> <scan-sleep-ms>");
+        }
+        File scanRoot = new File(args[1]);
+        File stopPath = new File(args[2]);
+        File readyPath = new File(args[3]);
+        File countPath = new File(args[4]);
+        long holdMillis = Long.parseLong(args[5]);
+        long scanSleepMillis = Long.parseLong(args[6]);
+        long opened = 0L;
+        Files.write(readyPath.toPath(), "ready".getBytes(StandardCharsets.UTF_8));
+        while (!stopPath.isFile()) {
+            ArrayList<File> locks = new ArrayList<File>();
+            collectLockFiles(scanRoot, locks);
+            for (File lock : locks) {
+                if (stopPath.isFile()) {
+                    break;
+                }
+                try (RandomAccessFile ignored = new RandomAccessFile(lock, "r")) {
+                    // lock 파일을 읽기 handle로 잠깐 잡아 백신/인덱서가 파일을 스캔하는 상황을 흉내냅니다.
+                    // builder의 release/delete retry가 충분하면 이 방해가 있어도 최종 stage는 정상 완료됩니다.
+                    opened++;
+                    Thread.sleep(holdMillis);
+                } catch (Exception ignored) {
+                    // 스캔 직후 builder가 lock을 지울 수 있으므로, 실패한 open은 정상 race로 보고 계속 진행합니다.
+                }
+            }
+            Thread.sleep(scanSleepMillis);
+        }
+        Files.write(countPath.toPath(), String.valueOf(opened).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void collectLockFiles(File root, List<File> out) {
+        // builder가 lock 파일을 만들고 지우는 중에 스캔하므로, 경로가 사라지거나 listFiles가 null을
+        // 반환하는 race는 정상입니다. 테스트 방해 프로세스는 가능한 lock만 열고 나머지는 무시합니다.
+        if (root == null || !root.exists()) {
+            return;
+        }
+        if (root.isFile()) {
+            if (root.getName().endsWith(".lock")) {
+                out.add(root);
+            }
+            return;
+        }
+        File[] children = root.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File child : children) {
+            collectLockFiles(child, out);
+        }
     }
 
     private static List<Map<String, Object>> sampleRows(int nSamples) {
@@ -170,6 +312,8 @@ public final class RunScalarConcurrentBuilderTestsMain {
     }
 
     private static Map<Integer, Double> valuesFor(long sampleId, int nFeatures) {
+        // 공식 기반 값이 아니라 sample별 seed를 둔 random sparse 값을 씁니다. 그래야 빌더가 우연히
+        // 같은 공식을 재현해서 통과하는 문제가 없고, raw parquet와 final shard를 실제 값으로 비교합니다.
         LinkedHashMap<Integer, Double> values = new LinkedHashMap<Integer, Double>();
         Random rng = new Random(0x5EED0000L + sampleId);
         for (int featureId = 0; featureId < nFeatures; featureId++) {
@@ -194,6 +338,9 @@ public final class RunScalarConcurrentBuilderTestsMain {
             File rawSamplesDir,
             int nSamples,
             int nFeatures) throws Exception {
+        // 최종 dense-long shard는 모든 (feature_id, sample_id) 조합을 row로 가집니다.
+        // raw sample parquet에는 실제 값이 있는 sparse row만 있으므로, DuckDB에서 dense grid를 만든 뒤
+        // raw를 LEFT JOIN하여 최종 shard가 가져야 할 mask/value를 직접 구성합니다.
         ScalarDenseLongManifest manifest = ScalarFeatureShards.loadManifest(manifestPath);
         ArrayList<String> partPaths = new ArrayList<String>();
         for (ScalarDenseLongPart part : manifest.parts) {
@@ -210,11 +357,14 @@ public final class RunScalarConcurrentBuilderTestsMain {
         }
         require(!rawPaths.isEmpty(), "raw sample parquet files are missing");
 
+        // finalQuery는 빌더가 만든 결과입니다. 비교 안정성을 위해 parquet column type을 명시적으로 cast합니다.
         String finalQuery = "SELECT CAST(feature_id AS INTEGER) AS feature_id, "
                 + "CAST(sample_id AS BIGINT) AS sample_id, "
                 + "CAST(mask AS UTINYINT) AS mask, "
                 + "CAST(value AS DOUBLE) AS value "
                 + "FROM read_parquet(" + parquetList(partPaths) + ")";
+        // expectedQuery는 raw sample parquet만 기준으로 만든 기대 결과입니다. raw에 값이 없거나 NaN이면
+        // missing으로 보고 mask=0/value=NaN이어야 합니다. 이 기준을 final과 EXCEPT로 전수 비교합니다.
         String expectedQuery =
                 "WITH features AS (SELECT CAST(range AS INTEGER) AS feature_id FROM range(0, " + nFeatures + ")), "
                         + "samples AS (SELECT CAST(range AS BIGINT) AS sample_id FROM range(0, " + nSamples + ")), "
@@ -259,6 +409,11 @@ public final class RunScalarConcurrentBuilderTestsMain {
         return value == null ? defaultValue : Integer.parseInt(value);
     }
 
+    private static long longArg(String[] args, String key, long defaultValue) {
+        String value = stringArg(args, key, null);
+        return value == null ? defaultValue : Long.parseLong(value);
+    }
+
     private static String stringArg(String[] args, String key, String defaultValue) {
         for (int i = 0; i < args.length - 1; i++) {
             if (args[i].equals(key)) {
@@ -275,6 +430,32 @@ public final class RunScalarConcurrentBuilderTestsMain {
             }
         }
         return false;
+    }
+
+    private static void waitForFile(File file, long timeoutMillis, String message) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (System.currentTimeMillis() < deadline) {
+            if (file.isFile()) {
+                return;
+            }
+            Thread.sleep(25L);
+        }
+        throw new IllegalStateException(message + ": " + file.getAbsolutePath());
+    }
+
+    private static long readLongFile(File file) throws Exception {
+        waitForFile(file, 5000L, "expected count file is missing");
+        String text = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8).trim();
+        return text.isEmpty() ? 0L : Long.parseLong(text);
+    }
+
+    private static boolean isWindows() {
+        try {
+            // "darwin" 같은 문자열에 걸리지 않도록 startsWith("windows")만 Windows로 봅니다.
+            return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).startsWith("windows");
+        } catch (SecurityException exc) {
+            return false;
+        }
     }
 
     private static double elapsedSec(long startedNanos) {

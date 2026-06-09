@@ -66,6 +66,12 @@ raw sample write는 Java 8 호환 Apache Arrow vector batch를 DuckDB에 `regist
 
 `ArraySampleParquetBuildOptions.arrowBatchRows`는 DuckDB로 넘기는 Arrow record batch의 최대 point row 수입니다. 기본값은 `262144`이며, 값을 키우면 batch 수가 줄지만 sample close 시점의 off-heap buffer 사용량이 커집니다.
 
+### File lock behavior
+
+raw stage는 sample parquet, trace index, commit log 경계를 `.lock` 파일로 보호합니다. lock 파일에는 `token`, `pid`, `thread`, `host`, `created_at_ms`가 기록됩니다. release 시에는 token이 같은 경우에만 삭제하며, Windows 백신/인덱서가 잠깐 파일을 잡는 경우를 고려해 짧은 backoff로 삭제를 재시도합니다. 최종 release 실패는 조용히 무시하지 않고 예외로 드러납니다.
+
+프로세스가 죽어 stale lock이 남은 경우 기본값은 자동 삭제하지 않는 것입니다. 필요할 때만 JVM system property `-Dfs.fileLockStaleMillis=<millis>` 또는 환경변수 `FS_FILE_LOCK_STALE_MILLIS`로 켤 수 있습니다. stale 삭제는 같은 host이고, lock 파일의 pid가 살아있지 않으며, 삭제 직전 token이 그대로인 경우에만 시도합니다.
+
 ## Config Guide
 
 처음에는 아래 설정만 넣으면 됩니다.

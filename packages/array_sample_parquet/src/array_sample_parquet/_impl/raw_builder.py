@@ -22,6 +22,7 @@ import pyarrow.parquet as pq
 
 from ..types import LogicalType, PointColumnSpec, StorageType, point_storage_dtype
 from .dictionaries import append_jsonl, load_jsonl, write_json_atomic
+from .file_lock import FilePathLock as _FileLock
 from .manifest import (
     FORMAT_NAME,
     ArraySampleParquetBuildOptions,
@@ -29,7 +30,7 @@ from .manifest import (
     ArraySampleParquetPart,
     write_array_sample_parquet_manifest,
 )
-from .parquet_io import arrow_value_type, normalize_array_sample_point_schema
+from .parquet_io import arrow_value_type, normalize_array_sample_point_schema, replace_file_with_retry
 from .support import _load_dense_meta, _normalize_point_schema
 
 
@@ -398,6 +399,8 @@ class ArraySampleParquetDatasetBuilder:
                 return True
             raise ValueError(f"sample already completed: {sample_id}")
 
+        # sample 하나는 point parquet와 trace-index parquet 두 파일로 commit됩니다.
+        # sample별 lock을 잡아야 두 worker가 같은 sample_id의 파일 쌍을 동시에 만들지 않습니다.
         lock = _FileLock(self._raw_sample_path(sample_id) + ".lock")
         lock.acquire()
         try:
@@ -437,6 +440,8 @@ class ArraySampleParquetDatasetBuilder:
         sample_id = int(self._open_sample_id)
         writer = self._open_writer
         lock = self._open_lock
+        # builder 내부 open 상태를 먼저 비워 재진입을 막습니다. 이후 close/rename/log append
+        # 중 예외가 나도 finally에서 sample lock은 반드시 release됩니다.
         self._open_sample_id = None
         self._open_writer = None
         self._open_lock = None
@@ -455,8 +460,11 @@ class ArraySampleParquetDatasetBuilder:
             writer.close()
             final_path = self._raw_sample_path(sample_id)
             final_trace_index_path = self._raw_trace_index_path(sample_id)
-            os.replace(writer.path, final_path)
-            os.replace(writer.trace_index_path, final_trace_index_path)
+            # point parquet와 trace-index parquet가 모두 final 이름으로 이동한 뒤에만
+            # sample commit log를 append합니다. 둘 중 하나라도 실패하면 log를 쓰지
+            # 않으므로 resume/compact가 불완전한 sample을 완료로 보지 않습니다.
+            replace_file_with_retry(writer.path, final_path)
+            replace_file_with_retry(writer.trace_index_path, final_trace_index_path)
             record = {
                 "sample_id": int(sample_id),
                 "sample_key": self._sample_key_for_id(sample_id),
@@ -501,6 +509,9 @@ class ArraySampleParquetDatasetBuilder:
         self._open_point_count += int(trace_len)
 
     def _append_raw_commit(self, record: dict):
+        # raw_samples.jsonl은 모든 worker가 공유하는 append-only commit log입니다.
+        # sample 파일 쌍이 final 위치에 있다는 사실을 한 줄 JSON으로 남기므로, append는
+        # log 전용 lock 아래에서 직렬화합니다.
         lock = _FileLock(self.raw_log_path + ".lock")
         lock.acquire()
         try:
@@ -744,35 +755,6 @@ class _RawSampleFileWriter:
                 os.remove(path)
             except FileNotFoundError:
                 pass
-
-
-class _FileLock:
-    def __init__(self, path: str, *, timeout_seconds: float = 30.0):
-        self.path = os.path.abspath(path)
-        self.timeout_seconds = float(timeout_seconds)
-        self._fd: Optional[int] = None
-
-    def acquire(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        deadline = time.monotonic() + self.timeout_seconds
-        while True:
-            try:
-                self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(self._fd, str(os.getpid()).encode("ascii"))
-                return
-            except FileExistsError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"timed out acquiring file lock: {self.path}")
-                time.sleep(0.05)
-
-    def release(self):
-        if self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
-        try:
-            os.remove(self.path)
-        except FileNotFoundError:
-            pass
 
 
 def _raw_point_arrow_schema(point_schema: list[PointColumnSpec]) -> pa.Schema:

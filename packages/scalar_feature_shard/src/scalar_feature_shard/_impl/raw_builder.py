@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 
 from ..config import ScalarShardBuildOptions
 from .dense_long import build_dense_long_shards_from_sample_major_manifest
+from .file_lock import FilePathLock as _FileLock
 from .storage_common import SAMPLE_MAJOR_MANIFEST_FORMAT, load_dense_metadata, write_json_atomic
 
 
@@ -51,35 +52,6 @@ class ScalarBuildSessionStatus:
     @property
     def next_pending_sample_id(self) -> Optional[int]:
         return self.pending_sample_ids[0] if self.pending_sample_ids else None
-
-
-class _FileLock:
-    def __init__(self, path: str, *, timeout_seconds: float = 30.0):
-        self.path = os.path.abspath(path)
-        self.timeout_seconds = float(timeout_seconds)
-        self._fd: Optional[int] = None
-
-    def acquire(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        deadline = time.monotonic() + self.timeout_seconds
-        while True:
-            try:
-                self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(self._fd, str(os.getpid()).encode("ascii"))
-                return
-            except FileExistsError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"timed out acquiring file lock: {self.path}")
-                time.sleep(0.05)
-
-    def release(self):
-        if self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
-        try:
-            os.remove(self.path)
-        except FileNotFoundError:
-            pass
 
 
 class ScalarDatasetBuilder:
@@ -389,6 +361,9 @@ class ScalarDatasetBuilder:
         return records
 
     def _reconcile_raw_commit_records(self):
+        # final parquet 이동에는 성공했지만 raw_samples.jsonl append 전에 프로세스가 죽으면
+        # raw 파일만 남습니다. log lock을 잡은 상태에서 디렉터리를 스캔해 이런 sample을
+        # commit record로 복구해야 여러 builder가 같은 record를 중복 append하지 않습니다.
         lock = _FileLock(self.raw_log_lock_path, timeout_seconds=_stage_lock_timeout_seconds())
         lock.acquire()
         try:
@@ -425,6 +400,8 @@ class ScalarDatasetBuilder:
         return self._read_raw_commit_records_unlocked()
 
     def _append_raw_commit(self, record: dict):
+        # JSONL append는 모든 worker가 공유하는 단일 파일 write입니다. 한 줄 단위 JSON이
+        # 서로 섞이지 않도록 log lock으로 직렬화합니다.
         lock = _FileLock(self.raw_log_lock_path)
         lock.acquire()
         try:
@@ -525,6 +502,9 @@ class ScalarDatasetBuilder:
                 }
             )
             pq.write_table(table, tmp_path, compression=_pyarrow_compression("zstd"), use_dictionary=True)
+            # tmp parquet를 final path로 옮긴 뒤에만 commit log를 append합니다.
+            # 장애가 이 줄 이전에 나면 final parquet가 없거나 tmp만 남으므로 resume에서
+            # 완료 sample로 보지 않습니다.
             _replace_file_with_retry(tmp_path, final_path)
             record = {
                 "sample_id": int(sample_id),
@@ -533,6 +513,9 @@ class ScalarDatasetBuilder:
                 "row_count": int(feature_ids.shape[0]),
                 "byte_size": int(os.path.getsize(final_path)),
             }
+            # raw_samples.jsonl은 "sample 파일이 최종 위치에 있다"는 commit 기록입니다.
+            # 파일 이동과 log append 사이에서 죽어도 reconcile 단계가 실제 parquet를
+            # 스캔해 빠진 commit record를 복구합니다.
             self._append_raw_commit(record)
             return True
         except Exception:

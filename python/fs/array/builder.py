@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
+import uuid
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -19,11 +21,33 @@ from .binary_storage import _load_dense_meta, build_array_binary_shards_from_bun
 from .storage import ArraySampleBundleWriter, _normalize_point_schema
 
 
+JSON_REPLACE_RETRY_COUNT = 8
+
+
 def _write_json_atomic(path: str, payload: dict):
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, path)
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    try:
+        # custom binary builder의 state/dictionary JSON도 final path를 직접 덮어쓰지
+        # 않고 UUID tmp에 먼저 씁니다. 이전 실행의 stale tmp와 이름이 겹치지 않습니다.
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        last_error = None
+        for attempt in range(JSON_REPLACE_RETRY_COUNT):
+            try:
+                # Windows에서 final JSON을 외부 프로세스가 잠깐 잡는 경우를 짧게 재시도합니다.
+                os.replace(tmp_path, path)
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt == JSON_REPLACE_RETRY_COUNT - 1:
+                    break
+                time.sleep(0.025 * float(attempt + 1))
+        raise last_error or OSError(f"failed to replace {path!r} with {tmp_path!r}")
+    finally:
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 def _append_jsonl(path: str, payload: dict):

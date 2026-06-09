@@ -48,6 +48,12 @@ scalar_stage/
 
 `raw_samples.jsonl`에 기록되고 실제 parquet 파일도 존재하는 sample만 완료로 인정합니다. 중간에 중단되면 같은 `out_dir`로 session을 다시 열고 `pending_sample_ids()`만 처리하면 됩니다.
 
+## File Lock / Windows Retry
+
+raw sample, commit log, state JSON write는 `.lock` 파일 생성으로 직렬화합니다. lock 파일에는 owner token, pid, host가 기록되며 release 시 본인이 만든 token인지 확인한 뒤 삭제합니다. Windows에서 IDE, 백신, 인덱서가 `.json` 또는 `.parquet` 파일 핸들을 짧게 잡는 경우를 대비해 atomic replace와 lock release는 짧게 재시도합니다.
+
+프로세스가 강제 종료되어 lock이 남은 경우 기본적으로 자동 삭제하지 않습니다. 같은 호스트의 죽은 pid lock을 자동 회수하고 싶을 때만 환경 변수 `FS_FILE_LOCK_STALE_MILLIS`에 millisecond 값을 넣습니다. 예를 들어 10분 이상 된 죽은 pid lock을 회수하려면 `FS_FILE_LOCK_STALE_MILLIS=600000`을 사용합니다.
+
 ## Config Guide
 
 처음에는 아래 설정만 넣으면 됩니다.

@@ -40,6 +40,7 @@ public final class JsonUtils {
      *
      * @param path JSON 파일 경로
      * @return 파싱된 root node
+     * @throws IOException 파일을 읽거나 JSON을 파싱하지 못한 경우
      */
     public static JsonNode readJson(String path) throws IOException {
         return MAPPER.readTree(new File(path));
@@ -50,6 +51,7 @@ public final class JsonUtils {
      *
      * @param path 대상 파일 경로
      * @param node 기록할 JSON tree
+     * @throws IOException parent directory 생성 또는 JSON write가 실패한 경우
      */
     public static void writeJson(String path, JsonNode node) throws IOException {
         File file = new File(path);
@@ -67,6 +69,10 @@ public final class JsonUtils {
      * 짧게 열고 있어도 replace가 실패할 수 있다. 그래서 writer끼리는
      * {@code .lock} 파일 생성으로 직렬화하고, 임시 파일명은 호출마다 다르게 만들어
      * {@code *.tmp} 이름 충돌을 피한다. 최종 move는 짧게 retry한다.</p>
+     *
+     * @param path 최종 JSON 파일 경로입니다.
+     * @param node 저장할 JSON tree입니다.
+     * @throws IOException lock 획득, tmp write, final replace, lock release 중 실패한 경우
      */
     public static void writeJsonAtomic(String path, JsonNode node) throws IOException {
         File file = new File(path);
@@ -76,50 +82,28 @@ public final class JsonUtils {
         }
         File lockFile = new File(path + ".lock");
         File tmp = new File(path + "." + UUID.randomUUID().toString() + ".tmp");
-        acquireCreateFileLock(lockFile);
+        FilePathLock lock = new FilePathLock(lockFile.getAbsolutePath(), 30000L);
+        // 같은 JSON을 두 writer가 동시에 갱신하면 마지막 replace 순서만 남습니다.
+        // 따라서 JSON 단위로 lock을 잡고, lock을 잡은 writer만 tmp -> final 교체를 합니다.
+        lock.acquire();
         try {
+            // tmp 파일명에 UUID를 넣어 이전 실행의 stale tmp나 다른 writer의 tmp와
+            // 충돌하지 않게 합니다. reader는 final path만 보므로 partial JSON을 보지 않습니다.
             MAPPER.writeValue(tmp, node);
             moveJsonTmpWithRetry(tmp, file);
         } finally {
-            releaseCreateFileLock(lockFile);
+            lock.release();
             if (tmp.exists() && !tmp.delete()) {
                 tmp.deleteOnExit();
             }
         }
     }
 
-    private static void acquireCreateFileLock(File lockFile) throws IOException {
-        File parent = lockFile.getAbsoluteFile().getParentFile();
-        if (parent != null && !parent.exists() && !parent.mkdirs()) {
-            throw new IOException("failed to create lock directory: " + parent.getAbsolutePath());
-        }
-        long deadline = System.currentTimeMillis() + 30000L;
-        while (true) {
-            if (lockFile.createNewFile()) {
-                try (FileOutputStream out = new FileOutputStream(lockFile, false)) {
-                    out.write(Thread.currentThread().getName().getBytes(StandardCharsets.UTF_8));
-                }
-                return;
-            }
-            if (System.currentTimeMillis() >= deadline) {
-                throw new IOException("timed out acquiring JSON file lock: " + lockFile.getAbsolutePath());
-            }
-            try {
-                Thread.sleep(50L);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("interrupted while acquiring JSON file lock: " + lockFile.getAbsolutePath(), e);
-            }
-        }
-    }
-
-    private static void releaseCreateFileLock(File lockFile) {
-        if (lockFile.exists() && !lockFile.delete()) {
-            // best-effort cleanup; a stale lock will be surfaced by the next acquire timeout.
-        }
-    }
-
     private static void moveJsonTmpWithRetry(File tmp, File file) throws IOException {
+        // 가능한 파일 시스템에서는 atomic move를 먼저 시도합니다. 지원하지 않는 경우에도
+        // 같은 lock 안에서 replace하므로 writer 간 충돌은 막을 수 있습니다.
+        // Windows에서는 백신/IDE가 final JSON을 잠깐 열어 replace가 실패할 수 있어
+        // 짧은 backoff로 재시도합니다.
         IOException last = null;
         for (int attempt = 0; attempt < ATOMIC_MOVE_RETRY_COUNT; attempt++) {
             try {
@@ -149,6 +133,10 @@ public final class JsonUtils {
 
     /**
      * JSON object 한 줄을 JSONL 파일 끝에 append한다.
+     *
+     * @param path JSONL 파일 경로입니다.
+     * @param node 한 줄로 append할 JSON object입니다.
+     * @throws IOException parent directory 생성, JSON 직렬화, 파일 append가 실패한 경우
      */
     public static void appendJsonLine(String path, JsonNode node) throws IOException {
         File file = new File(path);
@@ -165,6 +153,10 @@ public final class JsonUtils {
 
     /**
      * JSONL 파일을 한 줄씩 읽어 JsonNode 목록으로 돌려준다.
+     *
+     * @param path JSONL 파일 경로입니다. 파일이 없으면 빈 목록을 반환합니다.
+     * @return 각 유효한 JSONL line을 파싱한 node 목록입니다.
+     * @throws IOException 파일을 읽는 중 I/O 오류가 난 경우
      */
     public static List<JsonNode> readJsonLines(String path) throws IOException {
         ArrayList<JsonNode> out = new ArrayList<JsonNode>();
@@ -191,6 +183,8 @@ public final class JsonUtils {
 
     /**
      * 빈 object node를 만든다.
+     *
+     * @return 같은 ObjectMapper 설정을 쓰는 빈 object node입니다.
      */
     public static ObjectNode objectNode() {
         return MAPPER.createObjectNode();
@@ -198,6 +192,8 @@ public final class JsonUtils {
 
     /**
      * 빈 array node를 만든다.
+     *
+     * @return 같은 ObjectMapper 설정을 쓰는 빈 array node입니다.
      */
     public static ArrayNode arrayNode() {
         return MAPPER.createArrayNode();
@@ -211,6 +207,7 @@ public final class JsonUtils {
      *
      * @param path dictionary JSON 경로
      * @return code와 label의 대응 map
+     * @throws IOException dictionary 파일을 읽지 못했거나 지원하지 않는 구조인 경우
      */
     public static HashMap<Long, String> readCategoricalDictionary(String path) throws IOException {
         JsonNode root = readJson(path);
@@ -251,6 +248,7 @@ public final class JsonUtils {
      * @param path 대상 JSON 경로
      * @param columnName categorical point column 이름
      * @param labels code 1..N에 대응하는 label 목록
+     * @throws IOException dictionary JSON write가 실패한 경우
      */
     public static void writeCategoricalDictionary(String path, String columnName, List<String> labels) throws IOException {
         ObjectNode root = objectNode();
