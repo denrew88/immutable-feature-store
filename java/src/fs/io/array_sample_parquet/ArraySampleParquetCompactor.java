@@ -24,6 +24,9 @@ import java.util.List;
  * 순서이므로 compact 단계에서는 별도 SQL sort를 하지 않는다.</p>
  */
 final class ArraySampleParquetCompactor {
+    private static final int FILE_OPERATION_RETRY_COUNT = 10;
+    private static final long FILE_OPERATION_RETRY_BASE_MILLIS = 25L;
+
     private ArraySampleParquetCompactor() {
     }
 
@@ -89,6 +92,9 @@ final class ArraySampleParquetCompactor {
         int maxSamples = options == null ? 0 : options.maxPartSamples;
 
         for (RawSampleRecord record : records) {
+            if (record.traceCount <= 0) {
+                continue;
+            }
             boolean wouldExceed = current.sampleCount > 0
                     && ((maxRows > 0 && current.rowCount + record.rowCount > maxRows)
                     || (targetBytes > 0L && current.byteSize + record.totalByteSize() > targetBytes)
@@ -111,7 +117,8 @@ final class ArraySampleParquetCompactor {
         for (PointColumnSpec spec : pointSchema) {
             sb.append(", ").append(DuckDBUtils.quoteIdentifier(spec.name));
         }
-        sb.append(" FROM read_parquet(").append(ArraySampleParquetDuckDB.pathListLiteral(rawPaths)).append("))");
+        sb.append(" FROM read_parquet(").append(ArraySampleParquetDuckDB.pathListLiteral(rawPaths)).append(")");
+        sb.append(" ORDER BY sample_id, feature_id, point_idx)");
         sb.append(" TO ").append(DuckDBUtils.quotePath(outPath)).append(" ");
         sb.append(ArraySampleParquetDuckDB.parquetCopyOptions(compression));
         return sb.toString();
@@ -120,19 +127,32 @@ final class ArraySampleParquetCompactor {
     private static String copyTraceIndexSql(List<String> rawPaths, String outPath, String compression) {
         return "COPY (SELECT sample_id, feature_id, trace_len FROM read_parquet("
                 + ArraySampleParquetDuckDB.pathListLiteral(rawPaths)
-                + ")) TO "
+                + ") ORDER BY sample_id, feature_id) TO "
                 + DuckDBUtils.quotePath(outPath) + " "
                 + ArraySampleParquetDuckDB.parquetCopyOptions(compression);
     }
 
     private static void moveTmpToFinal(File tmp, File finalPath) throws IOException {
-        try {
-            Files.move(tmp.toPath(), finalPath.toPath(),
-                    StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp.toPath(), finalPath.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        IOException last = null;
+        for (int attempt = 0; attempt < FILE_OPERATION_RETRY_COUNT; attempt++) {
+            try {
+                try {
+                    Files.move(tmp.toPath(), finalPath.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(tmp.toPath(), finalPath.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+                return;
+            } catch (IOException e) {
+                last = e;
+                if (attempt >= FILE_OPERATION_RETRY_COUNT - 1) {
+                    break;
+                }
+                sleepBeforeRetry(tmp, attempt);
+            }
         }
+        throw last == null ? new IOException("failed to move tmp parquet: " + tmp.getAbsolutePath()) : last;
     }
 
     private static void ensureDir(File dir) throws IOException {
@@ -171,6 +191,15 @@ final class ArraySampleParquetCompactor {
     private static void deleteQuietly(File file) {
         if (file.exists() && !file.delete()) {
             // best-effort cleanup
+        }
+    }
+
+    private static void sleepBeforeRetry(File file, int attempt) throws IOException {
+        try {
+            Thread.sleep(FILE_OPERATION_RETRY_BASE_MILLIS * (long) (attempt + 1));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while moving tmp parquet: " + file.getAbsolutePath(), e);
         }
     }
 

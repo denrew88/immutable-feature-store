@@ -58,13 +58,13 @@ categorical point column은 별도 dictionary sidecar 없이 string primitive로
 
 Java builder는 Python 표준 builder와 같은 2단계 구조입니다. sample이 닫히면 먼저 `raw_samples/sample_*.parquet`와 `raw_trace_index/sample_*.parquet`를 확정하고, `raw_samples.jsonl`에 commit record를 append합니다. `finish()` 또는 `compact()`는 raw 파일들을 `targetPartBytes`, `maxPartRows`, `maxPartSamples` 기준으로 묶어서 최종 `sample_parts`와 `trace_index_parts`를 만듭니다.
 
-raw sample write는 Java 8 호환 Apache Arrow vector batch를 DuckDB에 `registerArrowStream(...)`으로 넘기고, sample close 시 `COPY ... TO parquet`로 raw 파일을 씁니다. 이 경로는 point row마다 `DuckDBAppender`를 호출하지 않습니다.
+raw sample write는 `DuckDBAppender`로 DuckDB temp table에 row를 바로 append하고, sample close 시 `COPY ... TO parquet`로 raw 파일을 씁니다. Java heap에는 현재 trace와 중복 검사 set만 남기고, 대량 row buffering과 정렬은 DuckDB temp storage에 맡깁니다.
 
-사용자가 `addTrace(...)`를 feature 순서대로 호출한다는 보장은 없으므로, sample close 직전에 Java가 trace 목록을 `(sample_id, feature_id)` 순서로 정렬합니다. 그 뒤 raw write와 compact는 DuckDB SQL `ORDER BY` 없이 이미 정렬된 stream/file 목록을 그대로 `COPY TO parquet`로 씁니다. `ArraySampleParquetOrderChecks`는 raw/final parquet의 물리 row 순서가 실제로 `(sample_id, feature_id, point_idx)` 또는 `(sample_id, feature_id)`인지 검사합니다.
+같은 sample 안에서 같은 feature에 대해 `addTrace(...)`를 두 번 호출할 수 없습니다. reader와 trace index는 `(sample_id, feature_id)` 하나가 trace 하나를 뜻한다고 가정하므로, 중복 trace는 raw writer에서 즉시 예외로 막습니다.
+
+사용자가 `addTrace(...)`를 feature 순서대로 호출한다는 보장은 없으므로, sample close 시 DuckDB가 point rows를 `(sample_id, feature_id, point_idx)`, trace index rows를 `(sample_id, feature_id)` 순서로 정렬해서 씁니다. compact 단계도 final parquet를 만들 때 같은 정렬을 명시합니다. `ArraySampleParquetOrderChecks`는 raw/final parquet의 물리 row 순서가 실제로 이 기준을 만족하는지 검사합니다.
 
 중간에 종료되면 `raw_samples.jsonl`에 기록된 sample만 완료로 인정합니다. resume 시 `.tmp` 파일을 삭제하고 `status().pendingSampleIds`를 worker에게 나눠주면 됩니다. 순차 실행을 원하면 이 목록을 앞에서부터 처리하면 됩니다.
-
-`ArraySampleParquetBuildOptions.arrowBatchRows`는 DuckDB로 넘기는 Arrow record batch의 최대 point row 수입니다. 기본값은 `262144`이며, 값을 키우면 batch 수가 줄지만 sample close 시점의 off-heap buffer 사용량이 커집니다.
 
 ### File lock behavior
 
@@ -91,7 +91,6 @@ options.compression = "zstd";
 | `sampleKeyCol` | `"sample_key"` | sample metadata의 key column 이름이 다를 때만 바꿉니다. |
 | `featureKeyCol` | `"feature_key"` | feature metadata의 key column 이름이 다를 때만 바꿉니다. |
 | `duckdbThreads` | 0 | DuckDB writer thread 수입니다. 0이면 DuckDB 기본값입니다. |
-| `arrowBatchRows` | 262,144 | Java raw sample writer가 DuckDB로 넘기는 Arrow batch의 최대 point row 수입니다. 크면 batch overhead는 줄지만 off-heap memory 사용량이 커집니다. |
 
 ## Build
 
@@ -111,16 +110,8 @@ thin jar이므로 실행 시 필요한 runtime jar를 classpath에 같이 넣어
 - `jackson-core-2.20.0.jar`
 - `jackson-databind-2.20.0.jar`
 - `jackson-annotations-2.20.jar`
-- `arrow-c-data-14.0.2.jar`
-- `arrow-memory-core-14.0.2.jar`
-- `arrow-memory-unsafe-14.0.2.jar`
-- `arrow-vector-14.0.2-shade-format-flatbuffers.jar`
-- `netty-common-4.1.96.Final.jar`
-- `slf4j-api-1.7.36.jar`
 
-Hadoop/Parquet Java writer jar는 필요하지 않습니다. parquet 파일 생성과 `zstd` 압축은 DuckDB JDBC가 수행합니다.
-
-Arrow 관련 jar는 raw sample write fast path에 필요합니다. Java trace 배열을 Arrow vector batch로 묶고 `ArrowArrayStream`을 DuckDB `registerArrowStream(...)`에 등록한 뒤, DuckDB `COPY ... TO parquet`로 파일을 씁니다. 이 구조 덕분에 point row마다 JDBC append를 호출하지 않습니다. `slf4j-api`는 Arrow의 logging API 의존성입니다. 별도 binding이 없으면 SLF4J NOP 경고가 출력될 수 있지만 실행에는 문제가 없습니다.
+Hadoop/Parquet Java writer, Arrow, Netty, SLF4J jar는 필요하지 않습니다. parquet 파일 생성과 `zstd` 압축은 DuckDB JDBC가 수행합니다.
 
 ## Performance Notes
 
@@ -142,7 +133,6 @@ options.targetPartBytes = 128L * 1024L * 1024L;
 options.maxPartRows = 10000000;
 options.maxPartSamples = 0;
 options.compression = "zstd";
-options.arrowBatchRows = 262144;
 
 try (ArraySampleParquetDatasetBuilder builder = ArraySampleParquets.openSession(
         "data/array_sample_parquet",

@@ -464,6 +464,18 @@ def array_sample_parquet_traces(req: ArraySampleParquetTraceRequest):
         entry = _get_dataset(req.manifest_path)
         if entry.kind != "array-sample-parquet":
             raise HTTPException(status_code=400, detail="manifest is not array_sample_parquet")
+        trace_count = entry.reader.count_traces(
+            sample_ids=req.sample_ids,
+            sample_keys=req.sample_keys,
+            feature_ids=req.feature_ids,
+            feature_keys=req.feature_keys,
+            include_missing=bool(req.include_missing),
+        )
+        if int(trace_count) > int(req.max_traces):
+            raise HTTPException(
+                status_code=413,
+                detail=f"trace_count exceeds max_traces: {int(trace_count)} > {int(req.max_traces)}",
+            )
         result = entry.reader.get_traces_json(
             sample_ids=req.sample_ids,
             sample_keys=req.sample_keys,
@@ -473,12 +485,6 @@ def array_sample_parquet_traces(req: ArraySampleParquetTraceRequest):
             decode_categorical=bool(req.decode_categorical),
             layout=str(req.layout),
         )
-        trace_count = int(result.get("trace_count", 0))
-        if trace_count > int(req.max_traces):
-            raise HTTPException(
-                status_code=413,
-                detail=f"trace_count exceeds max_traces: {trace_count} > {int(req.max_traces)}",
-            )
         return {"manifest_path": entry.manifest_path, **_json_safe_nested(result)}
     except HTTPException:
         raise

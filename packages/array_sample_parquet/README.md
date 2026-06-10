@@ -46,6 +46,13 @@ out_dir/
 
 ## Build Behavior
 
+중요 제약:
+
+- 같은 sample 안에서 같은 feature에 대해 trace는 최대 하나만 쓸 수 있습니다. `(sample_id, feature_id)` 하나가 trace 하나를 뜻하므로 중복 `add_trace(...)` 호출은 즉시 예외가 납니다.
+- raw writer는 sample 전체를 Python list로 계속 들고 있지 않고, 일정 row 단위로 parquet writer에 flush합니다. 호출 순서가 이미 `(sample_id, feature_id)` 기준으로 정렬되어 있으면 추가 정렬 없이 final raw 파일로 확정합니다.
+- 호출 순서가 feature 순서와 다르면 sample close 시 해당 sample 파일만 정렬해서 raw 파일을 확정합니다.
+- compact 결과의 `sample_parts`는 `(sample_id, feature_id, point_idx)`, `trace_index_parts`는 `(sample_id, feature_id)` 순서를 보장합니다.
+
 builder는 final part를 메모리에 계속 들고 있지 않습니다. sample 하나가 끝날 때 raw point parquet와 raw trace-index parquet를 commit하고, 마지막 compact 단계에서 raw sample 파일들을 final part로 묶습니다.
 
 commit 규칙:

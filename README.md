@@ -151,7 +151,7 @@ python -m pip wheel . -w wheelhouse --no-deps --no-build-isolation
 
 자세한 설명은 [java/README.md](java/README.md)를 참고하십시오.
 
-필요한 runtime jar는 `java\download_java_libs.ps1`로 받습니다. 현재 Java package 3개 기준으로 Hadoop/Parquet Java writer stack은 필요하지 않습니다. `array-binary-shard-java`와 `scalar-feature-shard-java`는 DuckDB JDBC와 Jackson만 필요하고, `array-sample-parquet-java`는 raw sample write fast path 때문에 Arrow bridge jar가 추가로 필요합니다.
+필요한 runtime jar는 `java\download_java_libs.ps1`로 받습니다. 현재 Java package 3개 기준으로 Hadoop/Parquet Java writer stack과 Arrow stack은 필요하지 않습니다. `array-binary-shard-java`, `scalar-feature-shard-java`, `array-sample-parquet-java` 모두 DuckDB JDBC와 Jackson만 필요합니다.
 
 컴파일:
 

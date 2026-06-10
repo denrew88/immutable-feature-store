@@ -20,13 +20,7 @@ $requiredJarNames = @(
     "duckdb_jdbc-1.1.3.jar",
     "jackson-core-2.20.0.jar",
     "jackson-databind-2.20.0.jar",
-    "jackson-annotations-2.20.jar",
-    "arrow-c-data-14.0.2.jar",
-    "arrow-memory-core-14.0.2.jar",
-    "arrow-memory-unsafe-14.0.2.jar",
-    "arrow-vector-14.0.2-shade-format-flatbuffers.jar",
-    "netty-common-4.1.96.Final.jar",
-    "slf4j-api-1.7.36.jar"
+    "jackson-annotations-2.20.jar"
 )
 
 $libJars = @()

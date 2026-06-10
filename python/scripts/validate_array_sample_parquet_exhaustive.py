@@ -134,6 +134,14 @@ def _assert_sorted(label: str, df: pl.DataFrame, keys: list[str]):
     _assert_frame_equal(label, df.select(keys), sorted_keys, keys)
 
 
+def _assert_unique_pairs(label: str, df: pl.DataFrame, keys: list[str]):
+    if df.height <= 1:
+        return
+    unique_count = int(df.select(keys).unique().height)
+    if unique_count != int(df.height):
+        _fail(label, f"duplicate trace key rows detected for keys={keys}")
+
+
 def _validate_raw_records(label: str, records: dict[int, dict[str, Any]], n_samples: int, require_all: bool):
     if require_all and len(records) != int(n_samples):
         pending = [idx for idx in range(int(n_samples)) if idx not in records]
@@ -153,6 +161,7 @@ def _validate_raw_records(label: str, records: dict[int, dict[str, Any]], n_samp
         trace_index_df = pl.read_parquet(trace_index_path)
         _assert_sorted(f"{label}:raw-points:{sample_id}", point_df, POINT_KEY_COLS)
         _assert_sorted(f"{label}:raw-trace-index:{sample_id}", trace_index_df, ["sample_id", "feature_id"])
+        _assert_unique_pairs(f"{label}:raw-trace-index:{sample_id}", trace_index_df, ["sample_id", "feature_id"])
         if point_df.height and set(int(value) for value in point_df["sample_id"].to_list()) != {sample_id}:
             _fail(label, f"raw point file contains another sample_id: {point_path}")
         if trace_index_df.height and set(int(value) for value in trace_index_df["sample_id"].to_list()) != {sample_id}:
@@ -184,6 +193,7 @@ def _validate_part_metadata(label: str, manifest_path: Path, manifest: dict[str,
         trace_index_df = pl.read_parquet(trace_index_path)
         _assert_sorted(f"{label}:final-points:{part_id}", point_df, POINT_KEY_COLS)
         _assert_sorted(f"{label}:final-trace-index:{part_id}", trace_index_df, ["sample_id", "feature_id"])
+        _assert_unique_pairs(f"{label}:final-trace-index:{part_id}", trace_index_df, ["sample_id", "feature_id"])
         trace_len_sum = int(trace_index_df.select(pl.col("trace_len").sum()).item() or 0)
         if trace_len_sum != int(point_df.height):
             _fail(label, f"final trace_len sum mismatch at part_id={part_id}: trace_len_sum={trace_len_sum} point_rows={point_df.height}")

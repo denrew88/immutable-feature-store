@@ -37,6 +37,10 @@ def _build_key_to_id_index(meta_path: str, key_col: str, id_col: str) -> Optiona
     df = pl.read_parquet(meta_path)
     if not key_col or key_col not in df.columns:
         return None
+    if int(df[key_col].null_count()) != 0:
+        raise ValueError(f"metadata key column contains nulls: {key_col}")
+    if int(df[key_col].n_unique()) != int(df.height):
+        raise ValueError(f"metadata key column must be unique: {key_col}")
     ids = df[id_col].to_list() if id_col in df.columns else list(range(df.height))
     return {str(key): int(value) for key, value in zip(df[key_col].to_list(), ids)}
 
@@ -45,6 +49,10 @@ def _build_id_to_key_index(meta_path: str, key_col: str, id_col: str) -> Optiona
     df = pl.read_parquet(meta_path)
     if not key_col or key_col not in df.columns:
         return None
+    if int(df[key_col].null_count()) != 0:
+        raise ValueError(f"metadata key column contains nulls: {key_col}")
+    if int(df[key_col].n_unique()) != int(df.height):
+        raise ValueError(f"metadata key column must be unique: {key_col}")
     ids = df[id_col].to_list() if id_col in df.columns else list(range(df.height))
     return {int(value): str(key) for key, value in zip(df[key_col].to_list(), ids)}
 
@@ -265,6 +273,30 @@ class ArraySampleParquetReader:
                     )
         traces.sort(key=lambda item: (int(item.sample_id), int(item.feature_id)))
         return traces
+
+    def count_traces(
+        self,
+        *,
+        sample_ids=None,
+        sample_keys=None,
+        feature_ids=None,
+        feature_keys=None,
+        include_missing: bool = False,
+    ) -> int:
+        """Return the trace count without reading point rows."""
+
+        resolved_sample_ids = self._resolve_sample_ids(sample_ids=sample_ids, sample_keys=sample_keys)
+        resolved_feature_ids = self._resolve_feature_ids(feature_ids=feature_ids, feature_keys=feature_keys)
+        if include_missing and resolved_feature_ids is not None:
+            return int(len(resolved_sample_ids) * len(resolved_feature_ids))
+
+        trace_index_paths = self._candidate_trace_index_paths(resolved_sample_ids)
+        if not trace_index_paths:
+            return 0
+        trace_lazy = pl.scan_parquet(trace_index_paths, glob=False).filter(pl.col("sample_id").is_in(resolved_sample_ids))
+        if resolved_feature_ids is not None:
+            trace_lazy = trace_lazy.filter(pl.col("feature_id").is_in(resolved_feature_ids))
+        return int(trace_lazy.select(pl.len()).collect().item())
 
     def get_traces_json(self, *, layout: str = "nested", **kwargs) -> dict:
         """API 서버가 그대로 사용할 수 있는 JSON-compatible layout으로 조회한다."""

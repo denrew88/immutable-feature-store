@@ -30,12 +30,14 @@ from .manifest import (
     ArraySampleParquetPart,
     write_array_sample_parquet_manifest,
 )
-from .parquet_io import arrow_value_type, normalize_array_sample_point_schema, replace_file_with_retry
+from .parquet_io import arrow_value_type, empty_point_columns, normalize_array_sample_point_schema, replace_file_with_retry
 from .support import _load_dense_meta, _normalize_point_schema
 
 
 RAW_STATE_VERSION = 1
 RAW_SAMPLE_PADDING = 12
+RAW_WRITER_BATCH_TRACES = 1024
+RAW_WRITER_BATCH_POINTS = 262_144
 
 
 @dataclass(frozen=True)
@@ -707,50 +709,131 @@ class _RawSampleFileWriter:
         self.compression = None if str(compression).lower() in {"", "none"} else str(compression)
         self.schema = _raw_point_arrow_schema(self.point_schema)
         self.trace_index_schema = _raw_trace_index_arrow_schema()
-        self._trace_rows: list[tuple[int, int, int, dict[str, np.ndarray]]] = []
+        self._stream_path = self.path + ".stream"
+        self._stream_trace_index_path = self.trace_index_path + ".stream"
+        self._trace_sample_ids: list[int] = []
+        self._trace_feature_ids: list[int] = []
+        self._trace_lens: list[int] = []
+        self._point_columns = empty_point_columns(self.point_schema)
+        self._batch_point_count = 0
+        self._seen_trace_keys: set[tuple[int, int]] = set()
+        self._last_trace_key: Optional[tuple[int, int]] = None
+        self._is_sorted = True
         self._closed = False
+        self._writers_closed = False
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         os.makedirs(os.path.dirname(self.trace_index_path), exist_ok=True)
+        for stale_path in [self._stream_path, self._stream_trace_index_path]:
+            try:
+                os.remove(stale_path)
+            except FileNotFoundError:
+                pass
+        self._writer = pq.ParquetWriter(self._stream_path, self.schema, compression=self.compression)
+        self._trace_index_writer = pq.ParquetWriter(
+            self._stream_trace_index_path,
+            self.trace_index_schema,
+            compression=self.compression,
+        )
 
     def write_row(self, *, sample_id: int, feature_id: int, trace_len: int, columns: dict[str, np.ndarray]):
         if self._closed:
             raise RuntimeError("raw sample writer is already closed")
+        trace_key = (int(sample_id), int(feature_id))
+        if trace_key in self._seen_trace_keys:
+            raise ValueError(f"duplicate trace for sample_id={sample_id}, feature_id={feature_id}")
+        if self._last_trace_key is not None and self._last_trace_key > trace_key:
+            self._is_sorted = False
+        self._seen_trace_keys.add(trace_key)
+        self._last_trace_key = trace_key
+
         copied = {spec.name: np.asarray(columns[spec.name]).reshape(-1).copy() for spec in self.point_schema}
-        self._trace_rows.append((int(sample_id), int(feature_id), int(trace_len), copied))
+        self._trace_sample_ids.append(int(sample_id))
+        self._trace_feature_ids.append(int(feature_id))
+        self._trace_lens.append(int(trace_len))
+        for spec in self.point_schema:
+            self._point_columns[spec.name].append(copied[spec.name])
+        self._batch_point_count += int(trace_len)
+        if (
+            len(self._trace_sample_ids) >= RAW_WRITER_BATCH_TRACES
+            or int(self._batch_point_count) >= RAW_WRITER_BATCH_POINTS
+        ):
+            self.flush()
+
+    def flush(self):
+        if not self._trace_sample_ids:
+            return
+
+        trace_index_arrays = [
+            pa.array(self._trace_sample_ids, type=pa.int64()),
+            pa.array(self._trace_feature_ids, type=pa.int32()),
+            pa.array(self._trace_lens, type=pa.int32()),
+        ]
+        self._trace_index_writer.write_table(pa.Table.from_arrays(trace_index_arrays, schema=self.trace_index_schema))
+
+        point_count = int(sum(self._trace_lens))
+        if point_count > 0:
+            point_arrays = [
+                pa.array(np.repeat(np.asarray(self._trace_sample_ids, dtype=np.int64), self._trace_lens), type=pa.int64()),
+                pa.array(np.repeat(np.asarray(self._trace_feature_ids, dtype=np.int32), self._trace_lens), type=pa.int32()),
+                pa.array(_point_indices_from_lengths(self._trace_lens), type=pa.int32()),
+            ]
+            for spec in self.point_schema:
+                point_arrays.append(_raw_value_array_from_rows(self._point_columns[spec.name], spec, point_count))
+            self._writer.write_table(pa.Table.from_arrays(point_arrays, schema=self.schema))
+
+        self._trace_sample_ids = []
+        self._trace_feature_ids = []
+        self._trace_lens = []
+        self._point_columns = empty_point_columns(self.point_schema)
+        self._batch_point_count = 0
+
+    def _close_writers(self):
+        if self._writers_closed:
+            return
+        self.flush()
+        self._writer.close()
+        self._trace_index_writer.close()
+        self._writers_closed = True
 
     def close(self):
         if self._closed:
             return
-        rows = self._trace_rows
-        if any((rows[idx - 1][0], rows[idx - 1][1]) > (rows[idx][0], rows[idx][1]) for idx in range(1, len(rows))):
-            rows = sorted(rows, key=lambda row: (int(row[0]), int(row[1])))
-
-        trace_index_arrays = [
-            pa.array([row[0] for row in rows], type=pa.int64()),
-            pa.array([row[1] for row in rows], type=pa.int32()),
-            pa.array([row[2] for row in rows], type=pa.int32()),
-        ]
-        pq.write_table(
-            pa.Table.from_arrays(trace_index_arrays, schema=self.trace_index_schema),
-            self.trace_index_path,
-            compression=self.compression,
-        )
-
-        trace_lens = [int(row[2]) for row in rows]
-        point_count = int(sum(trace_lens))
-        point_arrays = [
-            pa.array(np.repeat(np.asarray([row[0] for row in rows], dtype=np.int64), trace_lens), type=pa.int64()),
-            pa.array(np.repeat(np.asarray([row[1] for row in rows], dtype=np.int32), trace_lens), type=pa.int32()),
-            pa.array(_point_indices_from_lengths(trace_lens), type=pa.int32()),
-        ]
-        for spec in self.point_schema:
-            point_arrays.append(_raw_value_array_from_rows([row[3][spec.name] for row in rows], spec, point_count))
-        pq.write_table(pa.Table.from_arrays(point_arrays, schema=self.schema), self.path, compression=self.compression)
-        self._closed = True
+        try:
+            self._close_writers()
+            if self._is_sorted:
+                replace_file_with_retry(self._stream_path, self.path)
+                replace_file_with_retry(self._stream_trace_index_path, self.trace_index_path)
+            else:
+                _sort_raw_point_file(
+                    self._stream_path,
+                    self.path,
+                    point_schema=self.point_schema,
+                    compression=self.compression,
+                )
+                _sort_raw_trace_index_file(
+                    self._stream_trace_index_path,
+                    self.trace_index_path,
+                    compression=self.compression,
+                )
+                for stale_path in [self._stream_path, self._stream_trace_index_path]:
+                    try:
+                        os.remove(stale_path)
+                    except FileNotFoundError:
+                        pass
+        finally:
+            self._closed = True
 
     def abort(self):
+        if not self._writers_closed:
+            for writer in [getattr(self, "_writer", None), getattr(self, "_trace_index_writer", None)]:
+                try:
+                    if writer is not None:
+                        writer.close()
+                except Exception:
+                    pass
+            self._writers_closed = True
         self._closed = True
-        for path in [self.path, self.trace_index_path]:
+        for path in [self.path, self.trace_index_path, self._stream_path, self._stream_trace_index_path]:
             try:
                 os.remove(path)
             except FileNotFoundError:
@@ -797,6 +880,23 @@ def _raw_value_array_from_rows(rows: list[np.ndarray], spec: PointColumnSpec, to
     else:
         values = np.concatenate([row for row in rows if int(row.size) > 0]).astype(point_storage_dtype(spec.storage_type), copy=False)
     return pa.array(values, type=arrow_value_type(spec))
+
+
+def _sort_raw_point_file(
+    src_path: str,
+    out_path: str,
+    *,
+    point_schema: list[PointColumnSpec],
+    compression: Optional[str],
+):
+    columns = ["sample_id", "feature_id", "point_idx", *[spec.name for spec in point_schema]]
+    df = pl.scan_parquet(src_path).select(columns).sort(["sample_id", "feature_id", "point_idx"]).collect()
+    _write_part_frame(df, out_path, compression=compression or "none")
+
+
+def _sort_raw_trace_index_file(src_path: str, out_path: str, *, compression: Optional[str]):
+    df = pl.scan_parquet(src_path).select(["sample_id", "feature_id", "trace_len"]).sort(["sample_id", "feature_id"]).collect()
+    _write_part_frame(df, out_path, compression=compression or "none")
 
 def _would_exceed_part(
     *,

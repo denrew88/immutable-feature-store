@@ -27,7 +27,7 @@ package별 추가 dependency:
 
 - `array-binary-shard-java`: 공통 dependency만 필요합니다.
 - `scalar-feature-shard-java`: 공통 dependency만 필요합니다.
-- `array-sample-parquet-java`: 공통 dependency에 더해 Arrow bridge jar가 필요합니다. raw sample write에서 Java 배열을 Arrow vector batch로 묶어 DuckDB `registerArrowStream(...)`에 넘기기 위한 경로입니다.
+- `array-sample-parquet-java`: 공통 dependency만 필요합니다. raw sample write는 `DuckDBAppender`로 DuckDB temp table에 append하고 `COPY ... TO parquet`로 파일을 씁니다.
 
 현재 Java package 3개 기준으로 Hadoop/Parquet Java writer, Woodstox, stax2, commons jar는 필요하지 않습니다.
 
@@ -119,7 +119,6 @@ binaryOptions.codec = "none";
 
 - `sampleKeyCol`, `featureKeyCol`은 metadata key column 이름이 기본값과 다를 때만 바꿉니다.
 - scalar의 `denseLongRowGroupFeatures`는 기본 128을 권장합니다. 성능 테스트 후에만 조정하십시오.
-- array sample parquet의 `arrowBatchRows`는 Java writer의 Arrow batch 크기입니다. 메모리 피크가 크면 줄이고, batch overhead가 크면 키웁니다.
 - array custom binary는 빠른 serving용 특수 포맷입니다. 유지보수성이 중요하면 array sample parquet를 우선 사용하십시오.
 
 ## Array Public API

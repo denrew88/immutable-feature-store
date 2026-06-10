@@ -430,13 +430,15 @@ public class ArraySampleParquetReader implements AutoCloseable {
     private static Map<String, Long> buildKeyToLongId(String path, String keyCol, String idCol) throws Exception {
         LinkedHashMap<String, Long> out = new LinkedHashMap<String, Long>();
         List<LinkedHashMap<String, Object>> rows = ArrayMetadataWriter.readRows(path);
+        if (!hasKeyColumn(rows, keyCol)) {
+            return out;
+        }
+        requireUniqueKeys(rows, keyCol, path);
         for (int i = 0; i < rows.size(); i++) {
             Map<String, Object> row = rows.get(i);
             Object key = row.get(keyCol);
-            if (key != null) {
-                Object id = row.get(idCol);
-                out.put(key.toString(), Long.valueOf(id == null ? i : ((Number) id).longValue()));
-            }
+            Object id = row.get(idCol);
+            out.put(key.toString(), Long.valueOf(id == null ? i : ((Number) id).longValue()));
         }
         return out;
     }
@@ -444,13 +446,15 @@ public class ArraySampleParquetReader implements AutoCloseable {
     private static Map<String, Integer> buildKeyToIntId(String path, String keyCol, String idCol) throws Exception {
         LinkedHashMap<String, Integer> out = new LinkedHashMap<String, Integer>();
         List<LinkedHashMap<String, Object>> rows = ArrayMetadataWriter.readRows(path);
+        if (!hasKeyColumn(rows, keyCol)) {
+            return out;
+        }
+        requireUniqueKeys(rows, keyCol, path);
         for (int i = 0; i < rows.size(); i++) {
             Map<String, Object> row = rows.get(i);
             Object key = row.get(keyCol);
-            if (key != null) {
-                Object id = row.get(idCol);
-                out.put(key.toString(), Integer.valueOf(id == null ? i : ((Number) id).intValue()));
-            }
+            Object id = row.get(idCol);
+            out.put(key.toString(), Integer.valueOf(id == null ? i : ((Number) id).intValue()));
         }
         return out;
     }
@@ -458,13 +462,15 @@ public class ArraySampleParquetReader implements AutoCloseable {
     private static Map<Long, String> buildLongIdToKey(String path, String keyCol, String idCol) throws Exception {
         LinkedHashMap<Long, String> out = new LinkedHashMap<Long, String>();
         List<LinkedHashMap<String, Object>> rows = ArrayMetadataWriter.readRows(path);
+        if (!hasKeyColumn(rows, keyCol)) {
+            return out;
+        }
+        requireUniqueKeys(rows, keyCol, path);
         for (int i = 0; i < rows.size(); i++) {
             Map<String, Object> row = rows.get(i);
             Object key = row.get(keyCol);
-            if (key != null) {
-                Object id = row.get(idCol);
-                out.put(Long.valueOf(id == null ? i : ((Number) id).longValue()), key.toString());
-            }
+            Object id = row.get(idCol);
+            out.put(Long.valueOf(id == null ? i : ((Number) id).longValue()), key.toString());
         }
         return out;
     }
@@ -472,15 +478,36 @@ public class ArraySampleParquetReader implements AutoCloseable {
     private static Map<Integer, String> buildIntIdToKey(String path, String keyCol, String idCol) throws Exception {
         LinkedHashMap<Integer, String> out = new LinkedHashMap<Integer, String>();
         List<LinkedHashMap<String, Object>> rows = ArrayMetadataWriter.readRows(path);
+        if (!hasKeyColumn(rows, keyCol)) {
+            return out;
+        }
+        requireUniqueKeys(rows, keyCol, path);
         for (int i = 0; i < rows.size(); i++) {
             Map<String, Object> row = rows.get(i);
             Object key = row.get(keyCol);
-            if (key != null) {
-                Object id = row.get(idCol);
-                out.put(Integer.valueOf(id == null ? i : ((Number) id).intValue()), key.toString());
-            }
+            Object id = row.get(idCol);
+            out.put(Integer.valueOf(id == null ? i : ((Number) id).intValue()), key.toString());
         }
         return out;
+    }
+
+    private static boolean hasKeyColumn(List<LinkedHashMap<String, Object>> rows, String keyCol) {
+        return keyCol != null && keyCol.length() > 0 && (rows.isEmpty() || rows.get(0).containsKey(keyCol));
+    }
+
+    private static void requireUniqueKeys(List<LinkedHashMap<String, Object>> rows, String keyCol, String path) {
+        HashMap<String, Boolean> seen = new HashMap<String, Boolean>();
+        for (Map<String, Object> row : rows) {
+            Object key = row.get(keyCol);
+            if (key == null) {
+                throw new IllegalArgumentException("metadata key column contains nulls: " + keyCol + " in " + path);
+            }
+            String text = key.toString();
+            if (seen.containsKey(text)) {
+                throw new IllegalArgumentException("metadata key column must be unique: " + keyCol + " in " + path);
+            }
+            seen.put(text, Boolean.TRUE);
+        }
     }
 
     private static final class TraceIndexRow {

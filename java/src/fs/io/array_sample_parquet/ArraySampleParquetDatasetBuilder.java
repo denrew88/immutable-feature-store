@@ -51,6 +51,8 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     private static final int RAW_STATE_VERSION = 1;
     private static final int RAW_SAMPLE_PADDING = 12;
     private static final long DEFAULT_FILE_LOCK_TIMEOUT_MILLIS = 30000L;
+    private static final int FILE_OPERATION_RETRY_COUNT = 10;
+    private static final long FILE_OPERATION_RETRY_BASE_MILLIS = 25L;
 
     private final File outDir;
     private final File rawSamplesDir;
@@ -823,13 +825,26 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
     }
 
     private static void moveTmpToFinal(File tmp, File finalPath) throws IOException {
-        try {
-            Files.move(tmp.toPath(), finalPath.toPath(),
-                    StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp.toPath(), finalPath.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        IOException last = null;
+        for (int attempt = 0; attempt < FILE_OPERATION_RETRY_COUNT; attempt++) {
+            try {
+                try {
+                    Files.move(tmp.toPath(), finalPath.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(tmp.toPath(), finalPath.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+                return;
+            } catch (IOException e) {
+                last = e;
+                if (attempt >= FILE_OPERATION_RETRY_COUNT - 1) {
+                    break;
+                }
+                sleepBeforeRetry(tmp, attempt);
+            }
         }
+        throw last == null ? new IOException("failed to move tmp parquet: " + tmp.getAbsolutePath()) : last;
     }
 
     private static void deleteQuietly(File file) {
@@ -852,6 +867,15 @@ public class ArraySampleParquetDatasetBuilder implements AutoCloseable {
         }
         if (!file.delete()) {
             throw new IllegalStateException("failed to delete: " + file.getAbsolutePath());
+        }
+    }
+
+    private static void sleepBeforeRetry(File file, int attempt) throws IOException {
+        try {
+            Thread.sleep(FILE_OPERATION_RETRY_BASE_MILLIS * (long) (attempt + 1));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while moving tmp parquet: " + file.getAbsolutePath(), e);
         }
     }
 

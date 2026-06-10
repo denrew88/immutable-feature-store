@@ -5,56 +5,35 @@ import fs.io.common.DuckDBUtils;
 import fs.model.array_sample_parquet.ArraySampleParquetBuildOptions;
 import fs.model.common.PointColumnSpec;
 import fs.model.common.StorageType;
-import org.apache.arrow.c.ArrowArrayStream;
-import org.apache.arrow.c.Data;
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.BigIntVector;
-import org.apache.arrow.vector.FieldVector;
-import org.apache.arrow.vector.Float8Vector;
-import org.apache.arrow.vector.IntVector;
-import org.apache.arrow.vector.UInt1Vector;
-import org.apache.arrow.vector.UInt2Vector;
-import org.apache.arrow.vector.UInt4Vector;
-import org.apache.arrow.vector.UInt8Vector;
-import org.apache.arrow.vector.VarCharVector;
-import org.apache.arrow.vector.VectorUnloader;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.ipc.ArrowReader;
-import org.apache.arrow.vector.types.FloatingPointPrecision;
-import org.apache.arrow.vector.types.pojo.ArrowType;
-import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.FieldType;
-import org.apache.arrow.vector.types.pojo.Schema;
+import org.duckdb.DuckDBAppender;
 import org.duckdb.DuckDBConnection;
 
 import java.io.File;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * sample 하나를 raw point parquet와 raw trace-index parquet 파일로 저장하는 writer.
+ * sample 하나를 raw point parquet와 raw trace-index parquet로 저장하는 writer입니다.
  *
- * <p>이 writer는 point row를 JDBC row appender로 하나씩 넣지 않는다. {@code addTrace} 시점에는
- * trace별 primitive array를 보관하고, sample close 시점에 Arrow record batch stream으로 DuckDB에
- * 등록한 뒤 {@code COPY ... TO parquet}를 실행한다. 즉 Java/DuckDB 경계는 row 단위 호출이 아니라
- * column vector batch 단위로 넘어간다.</p>
+ * <p>이 writer의 중요한 제약은 sample-feature 쌍 하나가 trace 하나만 가질 수 있다는 점입니다.
+ * 같은 sample 안에서 같은 feature에 대해 {@code addTrace(...)}가 두 번 호출되면 reader가
+ * trace index row 하나와 point row 묶음 하나를 1:1로 맞출 수 없으므로 즉시 실패시킵니다.</p>
+ *
+ * <p>현재 구현은 {@link DuckDBAppender}로 DuckDB temp table에 row를 바로 append합니다.
+ * close 시점에는 DuckDB가 temp table을 {@code ORDER BY sample_id, feature_id, point_idx}로
+ * 정렬해서 parquet로 씁니다. Java heap에는 현재 trace 하나와 중복 검사용 feature set만
+ * 남고, 대량 row buffering은 DuckDB temp storage가 담당합니다.</p>
  */
 final class ArraySampleParquetRawSampleWriter implements AutoCloseable {
-    private static final String POINT_STREAM_TABLE = "arrow_array_sample_raw_points";
-    private static final String TRACE_INDEX_STREAM_TABLE = "arrow_array_sample_raw_trace_index";
-    private static final int DEFAULT_ARROW_BATCH_ROWS = 262144;
+    private static final String POINT_TABLE = "tmp_array_sample_raw_points";
+    private static final String TRACE_INDEX_TABLE = "tmp_array_sample_raw_trace_index";
+    private static final int FILE_OPERATION_RETRY_COUNT = 10;
+    private static final long FILE_OPERATION_RETRY_BASE_MILLIS = 25L;
 
     private final File outDir;
     private final File pointTmpPath;
@@ -62,9 +41,12 @@ final class ArraySampleParquetRawSampleWriter implements AutoCloseable {
     private final List<PointColumnSpec> pointSchema;
     private final ArraySampleParquetBuildOptions options;
     private final String compression;
-    private final int arrowBatchRows;
-    private final ArrayList<TraceData> traces = new ArrayList<TraceData>();
-    private final ArrayList<TraceIndexRow> traceIndexRows = new ArrayList<TraceIndexRow>();
+    private final HashSet<String> seenTraceKeys = new HashSet<String>();
+
+    private Connection rawConn;
+    private Statement statement;
+    private DuckDBAppender pointAppender;
+    private DuckDBAppender traceIndexAppender;
     private boolean closed;
     private int traceCount;
     private int pointCount;
@@ -81,11 +63,11 @@ final class ArraySampleParquetRawSampleWriter implements AutoCloseable {
         this.pointSchema = PointColumnSpec.normalizeList(pointSchema);
         this.options = options;
         this.compression = options == null ? "zstd" : options.compression;
-        this.arrowBatchRows = options == null || options.arrowBatchRows <= 0
-                ? DEFAULT_ARROW_BATCH_ROWS
-                : options.arrowBatchRows;
         ensureParent(this.pointTmpPath);
         ensureParent(this.traceIndexTmpPath);
+        deleteIfExistsWithRetry(this.pointTmpPath);
+        deleteIfExistsWithRetry(this.traceIndexTmpPath);
+        openDuckDBWriters();
     }
 
     int traceCount() {
@@ -96,13 +78,33 @@ final class ArraySampleParquetRawSampleWriter implements AutoCloseable {
         return pointCount;
     }
 
-    void writeTrace(long sampleId, int featureId, int traceLen, Map<String, Object> columns) throws SQLException {
+    void writeTrace(long sampleId, int featureId, int traceLen, Map<String, Object> columns) throws Exception {
         ensureOpen();
+        String traceKey = sampleId + ":" + featureId;
+        if (!seenTraceKeys.add(traceKey)) {
+            throw new IllegalArgumentException("duplicate trace for sample_id=" + sampleId + ", feature_id=" + featureId);
+        }
         LinkedHashMap<String, Object> prepared = prepareColumns(traceLen, columns);
-        traces.add(new TraceData(sampleId, featureId, traceLen, prepared));
-        traceIndexRows.add(new TraceIndexRow(sampleId, featureId, traceLen));
+
+        traceIndexAppender.beginRow();
+        traceIndexAppender.append(sampleId);
+        traceIndexAppender.append(featureId);
+        traceIndexAppender.append(traceLen);
+        traceIndexAppender.endRow();
+
+        for (int pointIdx = 0; pointIdx < traceLen; pointIdx++) {
+            pointAppender.beginRow();
+            pointAppender.append(sampleId);
+            pointAppender.append(featureId);
+            pointAppender.append(pointIdx);
+            for (PointColumnSpec spec : pointSchema) {
+                appendPointValue(pointAppender, spec, prepared.get(spec.name), pointIdx);
+            }
+            pointAppender.endRow();
+        }
+
         traceCount++;
-        long nextPointCount = (long) pointCount + traceLen;
+        long nextPointCount = (long) pointCount + (long) traceLen;
         if (nextPointCount > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("sample point count exceeds int range: " + nextPointCount);
         }
@@ -115,73 +117,88 @@ final class ArraySampleParquetRawSampleWriter implements AutoCloseable {
             return;
         }
         closed = true;
-        deleteQuietly(pointTmpPath);
-        deleteQuietly(traceIndexTmpPath);
         try {
-            writeParquetFromArrow();
+            closeAppenders();
+            statement.execute(copyRawPointsSql(POINT_TABLE, pointTmpPath.getAbsolutePath(), pointSchema, compression));
+            statement.execute(copyRawTraceIndexSql(TRACE_INDEX_TABLE, traceIndexTmpPath.getAbsolutePath(), compression));
         } catch (Exception e) {
             deleteQuietly(pointTmpPath);
             deleteQuietly(traceIndexTmpPath);
             throw e;
         } finally {
-            traces.clear();
-            traceIndexRows.clear();
+            closeDuckDBQuietly();
+            seenTraceKeys.clear();
         }
     }
 
     void abort() {
-        if (!closed) {
-            closed = true;
-        }
-        traces.clear();
-        traceIndexRows.clear();
+        closed = true;
+        closeDuckDBQuietly();
+        seenTraceKeys.clear();
         deleteQuietly(pointTmpPath);
         deleteQuietly(traceIndexTmpPath);
     }
 
-    private void writeParquetFromArrow() throws Exception {
-        sortTraceRowsForStreaming();
-        try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
-             PointArrowReader pointReader = new PointArrowReader(allocator, traces, pointSchema, arrowBatchRows);
-             TraceIndexArrowReader traceIndexReader = new TraceIndexArrowReader(allocator, traceIndexRows, arrowBatchRows);
-             ArrowArrayStream pointStream = ArrowArrayStream.allocateNew(allocator);
-             ArrowArrayStream traceIndexStream = ArrowArrayStream.allocateNew(allocator);
-             Connection conn = DuckDBUtils.connect(null);
-             Statement st = conn.createStatement()) {
-            ArraySampleParquetDuckDB.configure(conn, outDir, options);
-            Data.exportArrayStream(allocator, pointReader, pointStream);
-            ((DuckDBConnection) conn).registerArrowStream(POINT_STREAM_TABLE, pointStream);
-            st.execute(copyRawPointsSql(POINT_STREAM_TABLE, pointTmpPath.getAbsolutePath(), pointSchema, compression));
+    private void openDuckDBWriters() throws Exception {
+        rawConn = DuckDBUtils.connect(null);
+        ArraySampleParquetDuckDB.configure(rawConn, outDir, options);
+        statement = rawConn.createStatement();
+        statement.execute(createRawPointsTableSql(pointSchema));
+        statement.execute("CREATE TEMP TABLE " + TRACE_INDEX_TABLE + " (sample_id BIGINT, feature_id INTEGER, trace_len INTEGER)");
+        DuckDBConnection conn = (DuckDBConnection) rawConn;
+        pointAppender = conn.createAppender(DuckDBConnection.DEFAULT_SCHEMA, POINT_TABLE);
+        traceIndexAppender = conn.createAppender(DuckDBConnection.DEFAULT_SCHEMA, TRACE_INDEX_TABLE);
+    }
 
-            Data.exportArrayStream(allocator, traceIndexReader, traceIndexStream);
-            ((DuckDBConnection) conn).registerArrowStream(TRACE_INDEX_STREAM_TABLE, traceIndexStream);
-            st.execute(copyRawTraceIndexSql(TRACE_INDEX_STREAM_TABLE, traceIndexTmpPath.getAbsolutePath(), compression));
+    private void closeAppenders() throws SQLException {
+        SQLException first = null;
+        if (pointAppender != null) {
+            try {
+                pointAppender.flush();
+                pointAppender.close();
+            } catch (SQLException e) {
+                first = e;
+            } finally {
+                pointAppender = null;
+            }
+        }
+        if (traceIndexAppender != null) {
+            try {
+                traceIndexAppender.flush();
+                traceIndexAppender.close();
+            } catch (SQLException e) {
+                if (first == null) {
+                    first = e;
+                }
+            } finally {
+                traceIndexAppender = null;
+            }
+        }
+        if (first != null) {
+            throw first;
         }
     }
 
-    private void sortTraceRowsForStreaming() {
-        // 사용자가 addTrace를 feature_id 순서대로 호출한다는 보장은 없다.
-        // DuckDB SQL sort를 피하려면 Arrow stream 자체가 포맷의 물리 정렬 순서를 만족해야 한다.
-        Collections.sort(traces, new Comparator<TraceData>() {
-            @Override
-            public int compare(TraceData a, TraceData b) {
-                int sampleCmp = Long.compare(a.sampleId, b.sampleId);
-                if (sampleCmp != 0) {
-                    return sampleCmp;
-                }
-                return Integer.compare(a.featureId, b.featureId);
+    private void closeDuckDBQuietly() {
+        try {
+            closeAppenders();
+        } catch (Exception ignored) {
+            // close/abort 중에는 원래 예외를 가리지 않도록 best-effort로만 정리합니다.
+        }
+        if (statement != null) {
+            try {
+                statement.close();
+            } catch (Exception ignored) {
             }
-        });
-        Collections.sort(traceIndexRows, new Comparator<TraceIndexRow>() {
-            @Override
-            public int compare(TraceIndexRow a, TraceIndexRow b) {
-                int sampleCmp = Long.compare(a.sampleId, b.sampleId);
-                if (sampleCmp != 0) {
-                    return sampleCmp;
-                }
-                return Integer.compare(a.featureId, b.featureId);
+            statement = null;
+        }
+        if (rawConn != null) {
+            try {
+                rawConn.close();
+            } catch (Exception ignored) {
             }
-        });
+            rawConn = null;
+        }
     }
 
     private LinkedHashMap<String, Object> prepareColumns(int traceLen, Map<String, Object> columns) {
@@ -223,7 +240,7 @@ final class ArraySampleParquetRawSampleWriter implements AutoCloseable {
             if (length != traceLen) {
                 throw new IllegalArgumentException("point column length mismatch for " + spec.name + ": " + length + " != " + traceLen);
             }
-            out.put(spec.name, copyPointColumn(normalized));
+            out.put(spec.name, normalized);
         }
         if (columns.size() != pointSchema.size()) {
             for (String name : columns.keySet()) {
@@ -235,13 +252,53 @@ final class ArraySampleParquetRawSampleWriter implements AutoCloseable {
         return out;
     }
 
+    private static void appendPointValue(DuckDBAppender appender, PointColumnSpec spec, Object values, int index) throws SQLException {
+        switch (spec.storageType) {
+            case FLOAT64:
+                appender.append(((double[]) values)[index]);
+                return;
+            case INT32:
+                appender.append(((int[]) values)[index]);
+                return;
+            case INT64:
+                appender.append(((long[]) values)[index]);
+                return;
+            case STRING:
+                appender.append(((String[]) values)[index]);
+                return;
+            case UINT8:
+            case UINT16:
+            case UINT32:
+            case UINT64:
+                appender.append(((long[]) values)[index]);
+                return;
+            default:
+                throw new IllegalArgumentException("unsupported storage type: " + spec.storageType.value);
+        }
+    }
+
+    private static String createRawPointsTableSql(List<PointColumnSpec> pointSchema) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("CREATE TEMP TABLE ").append(POINT_TABLE).append(" (");
+        sb.append("sample_id BIGINT, feature_id INTEGER, point_idx INTEGER");
+        for (PointColumnSpec spec : pointSchema) {
+            sb.append(", ")
+                    .append(DuckDBUtils.quoteIdentifier(spec.name))
+                    .append(" ")
+                    .append(sqlType(spec.storageType));
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
     private static String copyRawPointsSql(String tableName, String path, List<PointColumnSpec> pointSchema, String compression) {
         StringBuilder sb = new StringBuilder();
         sb.append("COPY (SELECT sample_id, feature_id, point_idx");
         for (PointColumnSpec spec : pointSchema) {
             sb.append(", ").append(DuckDBUtils.quoteIdentifier(spec.name));
         }
-        sb.append(" FROM ").append(tableName).append(")");
+        sb.append(" FROM ").append(tableName);
+        sb.append(" ORDER BY sample_id, feature_id, point_idx)");
         sb.append(" TO ").append(DuckDBUtils.quotePath(path)).append(" ");
         sb.append(ArraySampleParquetDuckDB.parquetCopyOptions(compression));
         return sb.toString();
@@ -249,112 +306,31 @@ final class ArraySampleParquetRawSampleWriter implements AutoCloseable {
 
     private static String copyRawTraceIndexSql(String tableName, String path, String compression) {
         return "COPY (SELECT sample_id, feature_id, trace_len FROM " + tableName
-                + ") TO " + DuckDBUtils.quotePath(path) + " "
+                + " ORDER BY sample_id, feature_id)"
+                + " TO " + DuckDBUtils.quotePath(path) + " "
                 + ArraySampleParquetDuckDB.parquetCopyOptions(compression);
     }
 
-    private static Schema pointArrowSchema(List<PointColumnSpec> pointSchema) {
-        ArrayList<Field> fields = new ArrayList<Field>();
-        fields.add(new Field("sample_id", FieldType.notNullable(new ArrowType.Int(64, true)), null));
-        fields.add(new Field("feature_id", FieldType.notNullable(new ArrowType.Int(32, true)), null));
-        fields.add(new Field("point_idx", FieldType.notNullable(new ArrowType.Int(32, true)), null));
-        for (PointColumnSpec spec : pointSchema) {
-            fields.add(new Field(spec.name, FieldType.notNullable(arrowType(spec.storageType)), null));
-        }
-        return new Schema(fields);
-    }
-
-    private static Schema traceIndexArrowSchema() {
-        return new Schema(Arrays.asList(
-                new Field("sample_id", FieldType.notNullable(new ArrowType.Int(64, true)), null),
-                new Field("feature_id", FieldType.notNullable(new ArrowType.Int(32, true)), null),
-                new Field("trace_len", FieldType.notNullable(new ArrowType.Int(32, true)), null)));
-    }
-
-    private static ArrowType arrowType(StorageType storageType) {
+    private static String sqlType(StorageType storageType) {
         switch (storageType) {
             case FLOAT64:
-                return new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
+                return "DOUBLE";
             case INT32:
-                return new ArrowType.Int(32, true);
+                return "INTEGER";
             case INT64:
-                return new ArrowType.Int(64, true);
+                return "BIGINT";
             case STRING:
-                return new ArrowType.Utf8();
+                return "VARCHAR";
             case UINT8:
-                return new ArrowType.Int(8, false);
+                return "UTINYINT";
             case UINT16:
-                return new ArrowType.Int(16, false);
+                return "USMALLINT";
             case UINT32:
-                return new ArrowType.Int(32, false);
+                return "UINTEGER";
             case UINT64:
-                return new ArrowType.Int(64, false);
+                return "UBIGINT";
             default:
                 throw new IllegalArgumentException("unsupported storage type: " + storageType.value);
-        }
-    }
-
-    private static Object copyPointColumn(Object values) {
-        if (values instanceof double[]) {
-            double[] source = (double[]) values;
-            return Arrays.copyOf(source, source.length);
-        }
-        if (values instanceof int[]) {
-            int[] source = (int[]) values;
-            return Arrays.copyOf(source, source.length);
-        }
-        if (values instanceof long[]) {
-            long[] source = (long[]) values;
-            return Arrays.copyOf(source, source.length);
-        }
-        if (values instanceof String[]) {
-            String[] source = (String[]) values;
-            return Arrays.copyOf(source, source.length);
-        }
-        throw new IllegalArgumentException("unsupported point column array type: " + values.getClass().getName());
-    }
-
-    private static void setPointColumn(
-            FieldVector vector,
-            PointColumnSpec spec,
-            Object values,
-            int sourceIndex,
-            int targetIndex,
-            Map<String, byte[]> stringBytesCache) {
-        switch (spec.storageType) {
-            case FLOAT64:
-                ((Float8Vector) vector).set(targetIndex, ((double[]) values)[sourceIndex]);
-                return;
-            case INT32:
-                ((IntVector) vector).set(targetIndex, ((int[]) values)[sourceIndex]);
-                return;
-            case INT64:
-                ((BigIntVector) vector).set(targetIndex, ((long[]) values)[sourceIndex]);
-                return;
-            case STRING: {
-                String value = ((String[]) values)[sourceIndex];
-                byte[] bytes = stringBytesCache.get(value);
-                if (bytes == null) {
-                    bytes = value.getBytes(StandardCharsets.UTF_8);
-                    stringBytesCache.put(value, bytes);
-                }
-                ((VarCharVector) vector).setSafe(targetIndex, bytes, 0, bytes.length);
-                return;
-            }
-            case UINT8:
-                ((UInt1Vector) vector).set(targetIndex, (int) ((long[]) values)[sourceIndex]);
-                return;
-            case UINT16:
-                ((UInt2Vector) vector).set(targetIndex, (int) ((long[]) values)[sourceIndex]);
-                return;
-            case UINT32:
-                ((UInt4Vector) vector).set(targetIndex, (int) ((long[]) values)[sourceIndex]);
-                return;
-            case UINT64:
-                ((UInt8Vector) vector).set(targetIndex, ((long[]) values)[sourceIndex]);
-                return;
-            default:
-                throw new IllegalArgumentException("unsupported storage type: " + spec.storageType.value);
         }
     }
 
@@ -403,171 +379,36 @@ final class ArraySampleParquetRawSampleWriter implements AutoCloseable {
         }
     }
 
+    private static void deleteIfExistsWithRetry(File file) throws SQLException {
+        if (!file.exists()) {
+            return;
+        }
+        SQLException last = null;
+        for (int attempt = 0; attempt < FILE_OPERATION_RETRY_COUNT; attempt++) {
+            if (!file.exists() || file.delete()) {
+                return;
+            }
+            last = new SQLException("failed to remove stale tmp file: " + file.getAbsolutePath());
+            if (attempt >= FILE_OPERATION_RETRY_COUNT - 1) {
+                break;
+            }
+            sleepBeforeRetry(file, attempt);
+        }
+        throw last == null ? new SQLException("failed to remove stale tmp file: " + file.getAbsolutePath()) : last;
+    }
+
     private static void deleteQuietly(File path) {
         if (path.exists() && !path.delete()) {
             // best-effort cleanup
         }
     }
 
-    private static void prepareRoot(VectorSchemaRoot root, int batchRows) {
-        for (FieldVector vector : root.getFieldVectors()) {
-            vector.setInitialCapacity(batchRows);
-        }
-        root.allocateNew();
-    }
-
-    private static final class TraceData {
-        final long sampleId;
-        final int featureId;
-        final int traceLen;
-        final LinkedHashMap<String, Object> columns;
-
-        TraceData(long sampleId, int featureId, int traceLen, LinkedHashMap<String, Object> columns) {
-            this.sampleId = sampleId;
-            this.featureId = featureId;
-            this.traceLen = traceLen;
-            this.columns = columns;
-        }
-    }
-
-    private static final class TraceIndexRow {
-        final long sampleId;
-        final int featureId;
-        final int traceLen;
-
-        TraceIndexRow(long sampleId, int featureId, int traceLen) {
-            this.sampleId = sampleId;
-            this.featureId = featureId;
-            this.traceLen = traceLen;
-        }
-    }
-
-    private static final class PointArrowReader extends ArrowReader {
-        private final List<TraceData> traces;
-        private final List<PointColumnSpec> pointSchema;
-        private final Schema schema;
-        private final int batchRows;
-        private final HashMap<String, byte[]> stringBytesCache = new HashMap<String, byte[]>();
-        private int traceCursor;
-        private int pointCursor;
-
-        PointArrowReader(BufferAllocator allocator, List<TraceData> traces, List<PointColumnSpec> pointSchema, int batchRows) {
-            super(allocator);
-            this.traces = traces;
-            this.pointSchema = pointSchema;
-            this.schema = pointArrowSchema(pointSchema);
-            this.batchRows = Math.max(1, batchRows);
-        }
-
-        @Override
-        public boolean loadNextBatch() throws IOException {
-            prepareLoadNextBatch();
-            stringBytesCache.clear();
-
-            try (VectorSchemaRoot batchRoot = VectorSchemaRoot.create(schema, allocator)) {
-                prepareRoot(batchRoot, batchRows);
-                BigIntVector sampleIdVector = (BigIntVector) batchRoot.getVector("sample_id");
-                IntVector featureIdVector = (IntVector) batchRoot.getVector("feature_id");
-                IntVector pointIdxVector = (IntVector) batchRoot.getVector("point_idx");
-                FieldVector[] pointVectors = new FieldVector[pointSchema.size()];
-                for (int i = 0; i < pointSchema.size(); i++) {
-                    pointVectors[i] = batchRoot.getVector(pointSchema.get(i).name);
-                }
-
-                int row = 0;
-                while (row < batchRows && traceCursor < traces.size()) {
-                    TraceData trace = traces.get(traceCursor);
-                    if (pointCursor >= trace.traceLen) {
-                        traceCursor++;
-                        pointCursor = 0;
-                        continue;
-                    }
-                    sampleIdVector.set(row, trace.sampleId);
-                    featureIdVector.set(row, trace.featureId);
-                    pointIdxVector.set(row, pointCursor);
-                    for (int col = 0; col < pointSchema.size(); col++) {
-                        PointColumnSpec spec = pointSchema.get(col);
-                        setPointColumn(pointVectors[col], spec, trace.columns.get(spec.name), pointCursor, row, stringBytesCache);
-                    }
-                    row++;
-                    pointCursor++;
-                }
-
-                if (row == 0) {
-                    return false;
-                }
-                batchRoot.setRowCount(row);
-                loadRecordBatch(new VectorUnloader(batchRoot).getRecordBatch());
-                return true;
-            }
-        }
-
-        @Override
-        public long bytesRead() {
-            return 0L;
-        }
-
-        @Override
-        protected void closeReadSource() {
-        }
-
-        @Override
-        protected Schema readSchema() {
-            return schema;
-        }
-    }
-
-    private static final class TraceIndexArrowReader extends ArrowReader {
-        private final List<TraceIndexRow> rows;
-        private final Schema schema = traceIndexArrowSchema();
-        private final int batchRows;
-        private int cursor;
-
-        TraceIndexArrowReader(BufferAllocator allocator, List<TraceIndexRow> rows, int batchRows) {
-            super(allocator);
-            this.rows = rows;
-            this.batchRows = Math.max(1, batchRows);
-        }
-
-        @Override
-        public boolean loadNextBatch() throws IOException {
-            prepareLoadNextBatch();
-            try (VectorSchemaRoot batchRoot = VectorSchemaRoot.create(schema, allocator)) {
-                prepareRoot(batchRoot, batchRows);
-                BigIntVector sampleIdVector = (BigIntVector) batchRoot.getVector("sample_id");
-                IntVector featureIdVector = (IntVector) batchRoot.getVector("feature_id");
-                IntVector traceLenVector = (IntVector) batchRoot.getVector("trace_len");
-
-                int row = 0;
-                while (row < batchRows && cursor < rows.size()) {
-                    TraceIndexRow source = rows.get(cursor);
-                    sampleIdVector.set(row, source.sampleId);
-                    featureIdVector.set(row, source.featureId);
-                    traceLenVector.set(row, source.traceLen);
-                    row++;
-                    cursor++;
-                }
-                if (row == 0) {
-                    return false;
-                }
-                batchRoot.setRowCount(row);
-                loadRecordBatch(new VectorUnloader(batchRoot).getRecordBatch());
-                return true;
-            }
-        }
-
-        @Override
-        public long bytesRead() {
-            return 0L;
-        }
-
-        @Override
-        protected void closeReadSource() {
-        }
-
-        @Override
-        protected Schema readSchema() {
-            return schema;
+    private static void sleepBeforeRetry(File file, int attempt) throws SQLException {
+        try {
+            Thread.sleep(FILE_OPERATION_RETRY_BASE_MILLIS * (long) (attempt + 1));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new SQLException("interrupted while waiting for file operation retry: " + file.getAbsolutePath(), e);
         }
     }
 }

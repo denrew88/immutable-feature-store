@@ -62,7 +62,6 @@ public class BuildArraySampleParquetWithJarExample {
         options.maxPartRows = 10000000;
         options.maxPartSamples = 0;
         options.compression = "zstd";
-        options.arrowBatchRows = 262144;
 
         File datasetDir = new File(root, "array_sample_parquet");
 

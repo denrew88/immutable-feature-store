@@ -108,7 +108,7 @@ public class RunArraySampleParquetTestsMain {
         ArraySampleParquetManifest manifest = ArraySampleParquetManifestIO.read(manifestPath);
         require(new File(manifest.parts.get(0).path).exists(), "missing point part");
         require(new File(manifest.parts.get(0).traceIndexPath).exists(), "missing trace index part");
-        require(manifest.parts.get(0).rowCount == 3, "first point part should contain three point rows");
+        require(totalRowCount(manifest) == 4, "final point parts should contain four point rows");
         ArraySampleParquetOrderChecks.requirePointRowsSorted(manifest.parts.get(0).path);
         ArraySampleParquetOrderChecks.requireTraceIndexRowsSorted(manifest.parts.get(0).traceIndexPath);
         assertOrderCheckDetectsUnsortedPointRows(root);
@@ -132,7 +132,40 @@ public class RunArraySampleParquetTestsMain {
             require(byPair.get("3:0").traceLen == 0, "sample3 feature_a should be empty");
         }
 
+        assertDuplicateTraceRejected(root, sampleMetaPath, featureMetaPath, schema, options);
         System.out.println("java array_sample_parquet tests passed");
+    }
+
+    private static void assertDuplicateTraceRejected(
+            File root,
+            String sampleMetaPath,
+            String featureMetaPath,
+            List<PointColumnSpec> schema,
+            ArraySampleParquetBuildOptions options) throws Exception {
+        File duplicateDir = new File(root, "duplicate_dataset");
+        String error = null;
+        try (ArraySampleParquetDatasetBuilder builder = ArraySampleParquets.openSession(
+                duplicateDir.getAbsolutePath(),
+                sampleMetaPath,
+                schema,
+                featureMetaPath,
+                options)) {
+            try (ArraySampleParquetSampleContext sample = builder.sample(0L)) {
+                sample.addTrace(0, null, columns(
+                        new long[]{0L},
+                        new double[]{1.0},
+                        new int[]{1},
+                        new String[]{"A"}));
+                sample.addTrace(0, null, columns(
+                        new long[]{1L},
+                        new double[]{2.0},
+                        new int[]{2},
+                        new String[]{"B"}));
+            }
+        } catch (IllegalArgumentException e) {
+            error = e.getMessage();
+        }
+        require(error != null && error.contains("duplicate trace"), "duplicate trace should be rejected");
     }
 
     private static List<Map<String, Object>> sampleRows() {
@@ -142,6 +175,14 @@ public class RunArraySampleParquetTestsMain {
         out.add(row("sample_key", "sample_000002", "split", "valid"));
         out.add(row("sample_key", "sample_000003", "split", "test"));
         return out;
+    }
+
+    private static int totalRowCount(ArraySampleParquetManifest manifest) {
+        int total = 0;
+        for (int i = 0; i < manifest.parts.size(); i++) {
+            total += manifest.parts.get(i).rowCount;
+        }
+        return total;
     }
 
     private static List<Map<String, Object>> featureRows() {

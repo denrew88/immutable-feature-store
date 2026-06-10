@@ -99,6 +99,13 @@ API에서 `include_missing=true`와 명시적인 feature 목록을 주면 trace 
 
 ## Build Algorithm
 
+현재 표준 제약:
+
+- 같은 sample 안에서 같은 feature에 대해 trace는 최대 하나만 존재합니다. 즉 `(sample_id, feature_id)`가 trace의 논리 key입니다. 중복 trace가 들어오면 builder가 즉시 실패합니다.
+- Python raw writer는 일정 trace/point row 단위로 parquet writer에 flush합니다. Java raw writer는 `DuckDBAppender`로 DuckDB temp table에 append한 뒤 sample close 시 parquet로 씁니다.
+- 호출 순서가 이미 정렬되어 있지 않아도 raw/final parquet는 정렬된 상태로 확정됩니다. point row 정렬 기준은 `(sample_id, feature_id, point_idx)`, trace index 정렬 기준은 `(sample_id, feature_id)`입니다.
+- compact 단계의 part 계획에서 point row가 전혀 없는 raw sample은 final point part 배치에는 포함하지 않습니다. 단, empty trace는 `trace_len=0`인 trace index row로 보존됩니다.
+
 표준 builder는 sample별 raw parquet를 먼저 만들고 마지막에 compact합니다.
 
 1. `open_session(...)`이 `out_dir`을 초기화하거나 기존 `raw_state.json`을 읽어 resume합니다.
@@ -213,14 +220,12 @@ options.compression = "zstd";
 | `sample_key_col` | `sampleKeyCol` | `"sample_key"` | sample metadata의 key column 이름이 다를 때만 바꿉니다. |
 | `feature_key_col` | `featureKeyCol` | `"feature_key"` | feature metadata의 key column 이름이 다를 때만 바꿉니다. |
 | 없음 | `duckdbThreads` | 0 | Java DuckDB writer thread 수입니다. 0이면 DuckDB 기본값입니다. 병목이 확인됐을 때만 조정합니다. |
-| 없음 | `arrowBatchRows` | 262,144 | Java raw sample writer가 DuckDB로 넘기는 Arrow batch의 최대 point row 수입니다. 값을 키우면 batch overhead는 줄지만 off-heap memory 사용량이 커집니다. |
 
 권장값:
 
 - 일반 viewer/debugging dataset: `target_part_bytes=128MB`, `compression="zstd"`
 - trace가 길고 sample 하나가 큰 경우: `max_part_rows`를 낮춰 part 폭증이나 메모리 피크를 방지합니다.
 - sample 단위로 part를 강하게 나누고 싶을 때만 `max_part_samples`를 양수로 둡니다.
-- Java에서 `arrowBatchRows`는 성능 문제가 실제로 보일 때만 바꿉니다. 기본값은 대량 point row write 기준 절충값입니다.
 
 ## Reader Algorithm
 
@@ -347,3 +352,5 @@ python python\scripts\serve_feature_query_api.py --host 127.0.0.1 --port 8000
 ```
 
 응답은 trace 단위 layout입니다. 저장은 long format이지만 API 응답에서는 `columns: {name: [...]}` 형태로 재조립합니다. categorical column은 이미 string list입니다.
+
+`max_traces`를 지정하면 서버는 point rows를 읽기 전에 trace index만으로 반환 예정 trace 수를 먼저 셉니다. 제한을 넘으면 큰 point array를 메모리에 올리기 전에 `413`으로 거절합니다. `include_missing=true`이고 feature 목록을 명시한 경우에는 missing trace까지 포함한 sample-feature 조합 수를 기준으로 검사합니다.

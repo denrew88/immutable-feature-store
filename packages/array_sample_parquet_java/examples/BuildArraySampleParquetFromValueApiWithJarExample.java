@@ -58,7 +58,6 @@ public class BuildArraySampleParquetFromValueApiWithJarExample {
         options.maxPartRows = Integer.parseInt(getArg(args, "--max-part-rows", "10000000"));
         options.maxPartSamples = Integer.parseInt(getArg(args, "--max-part-samples", "0"));
         options.compression = getArg(args, "--compression", "zstd");
-        options.arrowBatchRows = Integer.parseInt(getArg(args, "--arrow-batch-rows", "262144"));
 
         String manifestPath;
         try (ArraySampleParquetDatasetBuilder builder = ArraySampleParquets.openSession(

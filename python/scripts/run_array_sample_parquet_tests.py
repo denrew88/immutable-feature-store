@@ -445,6 +445,24 @@ def main():
                     )
         random_manifest_path = random_builder.finish()
     validate_manifest(random_manifest_path, stage_dir=random_out_dir, label="python-array-sample-random")
+
+    duplicate_out_dir = root / "duplicate_dataset"
+    duplicate_error = None
+    try:
+        with ArraySampleParquetDatasetBuilder.open_session(
+            duplicate_out_dir,
+            sample_meta_path,
+            schema,
+            feature_meta_path=feature_meta_path,
+            options=ArraySampleParquetBuildOptions(compression="none"),
+        ) as duplicate_builder:
+            with duplicate_builder.sample(sample_id=0) as sample:
+                sample.add_trace(feature_id=0, columns=_columns(["2024-01-01T00:00:00"], [1.0], [1], ["A"]))
+                sample.add_trace(feature_id=0, columns=_columns(["2024-01-01T00:00:01"], [2.0], [2], ["B"]))
+    except ValueError as exc:
+        duplicate_error = str(exc)
+    assert duplicate_error is not None and "duplicate trace" in duplicate_error, duplicate_error
+
     print("array_sample_parquet tests passed")
 
 
